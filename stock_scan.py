@@ -2,6 +2,9 @@ import os
 import requests
 from ai_stock_model import train_model
 
+
+print("DEBUG:", os.getenv("DISCORD_WEBHOOK_URL"))
+
 DISCORD_WEBHOOK_URL =os.getenv("DISCORD_WEBHOOK_URL")
 
 stocks = {
