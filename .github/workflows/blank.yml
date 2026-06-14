@@ -2,6 +2,8 @@ name: Stock Scan
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"  # 毎日9:00（日本時間）
 
 jobs:
   run:
