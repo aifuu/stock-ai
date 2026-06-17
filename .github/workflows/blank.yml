@@ -1,10 +1,6 @@
 name: AI Stock Scan
 
 on:
-  schedule:
-    - cron: '30,45 23 * * 0-4'
-    - cron: '0,15,30,45 0-4 * * 1-5'
-
   workflow_dispatch:
 
 jobs:
@@ -12,19 +8,5 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Packages
-        run: |
-          pip install yfinance pandas requests
-
-      - name: Run Stock Scan
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python stock_scan.py
+      - name: Test
+        run: echo "Hello"
