@@ -6,56 +6,75 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
 # =====================
-# 銘柄
+# あなたの銘柄
 # =====================
-TICKER = "9984.T"  # まず1銘柄で学習（重要）
-
-# =====================
-# データ取得
-# =====================
-df = yf.download(TICKER, period="5y", interval="1d", auto_adjust=True)
-
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
-
-df = df.dropna()
-
-close = df["Close"]
-volume = df["Volume"]
+TICKERS = [
+    "6857.T",
+    "8035.T",
+    "6920.T",
+    "6526.T",
+    "6501.T",
+    "6503.T",
+    "5803.T",
+    "7011.T",
+    "4980.T",
+    "9984.T"
+]
 
 # =====================
-# 特徴量作成（AI用）
+# データ統合
 # =====================
-df["ret1"] = close.pct_change()
-df["ma5"] = close.rolling(5).mean()
-df["ma25"] = close.rolling(25).mean()
-df["ma75"] = close.rolling(75).mean()
+all_data = []
 
-df["vol_ratio"] = volume / volume.rolling(20).mean()
+for ticker in TICKERS:
 
-# RSI
-delta = close.diff()
-gain = delta.clip(lower=0).rolling(14).mean()
-loss = (-delta.clip(upper=0)).rolling(14).mean()
-rs = gain / loss.replace(0, 1e-10)
-df["rsi"] = 100 - (100 / (1 + rs))
+    df = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
 
-# MACD
-ema12 = close.ewm(span=12).mean()
-ema26 = close.ewm(span=26).mean()
-df["macd"] = ema12 - ema26
-df["signal"] = df["macd"].ewm(span=9).mean()
+    if df is None or df.empty or len(df) < 200:
+        continue
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df.dropna()
+
+    close = df["Close"]
+    volume = df["Volume"]
+
+    df["ticker"] = ticker
+
+    # =====特徴量=====
+    df["ret1"] = close.pct_change()
+    df["ma5"] = close.rolling(5).mean()
+    df["ma25"] = close.rolling(25).mean()
+    df["ma75"] = close.rolling(75).mean()
+
+    df["vol_ratio"] = volume / volume.rolling(20).mean()
+
+    # RSI
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rs = gain / loss.replace(0, 1e-10)
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    # MACD
+    ema12 = close.ewm(span=12).mean()
+    ema26 = close.ewm(span=26).mean()
+    df["macd"] = ema12 - ema26
+    df["signal"] = df["macd"].ewm(span=9).mean()
+
+    # 目的変数（翌日上昇）
+    df["target"] = (close.shift(-1) > close).astype(int)
+
+    all_data.append(df)
 
 # =====================
-# 目的変数（翌日上がるか）
+# 統合
 # =====================
-df["target"] = (close.shift(-1) > close).astype(int)
+data = pd.concat(all_data)
+data = data.dropna()
 
-df = df.dropna()
-
-# =====================
-# 学習データ
-# =====================
 features = [
     "ret1",
     "ma5",
@@ -67,48 +86,87 @@ features = [
     "signal"
 ]
 
-X = df[features]
-y = df["target"]
+X = data[features]
+y = data["target"]
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.3, shuffle=False
-)
+# =====================
+# 時系列分割（重要）
+# =====================
+split = int(len(data) * 0.7)
+
+X_train = X.iloc[:split]
+X_test = X.iloc[split:]
+
+y_train = y.iloc[:split]
+y_test = y.iloc[split:]
 
 # =====================
 # モデル
 # =====================
 model = RandomForestClassifier(
-    n_estimators=200,
-    max_depth=6,
+    n_estimators=300,
+    max_depth=7,
     random_state=42
 )
 
 model.fit(X_train, y_train)
 
 # =====================
-# 予測精度（勝率）
+# バックテスト（勝率）
 # =====================
 accuracy = model.score(X_test, y_test)
 
 print("\n=== バックテスト結果 ===")
-print(f"勝率（精度）: {accuracy:.3f}")
+print(f"勝率: {accuracy:.3f}")
 
 # =====================
-# 最新予測（翌日上昇確率）
+# 最新シグナル（全銘柄）
 # =====================
-latest = X.iloc[-1:].copy()
+print("\n=== 最新AIシグナル ===")
 
-prob_up = model.predict_proba(latest)[0][1]
+for ticker in TICKERS:
 
-print("\n=== 最新シグナル ===")
-print(f"翌日上昇確率: {prob_up*100:.2f}%")
+    df = yf.download(ticker, period="6mo", interval="1d", auto_adjust=True, progress=False)
 
-# =====================
-# シグナル判定
-# =====================
-if prob_up >= 0.65:
-    print("🔥 強い買いシグナル")
-elif prob_up >= 0.55:
-    print("🟢 買い候補")
-else:
-    print("⚪ 見送り")
+    if df is None or df.empty or len(df) < 100:
+        continue
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    close = df["Close"]
+    volume = df["Volume"]
+
+    latest = pd.DataFrame({
+        "ret1": [close.pct_change().iloc[-1]],
+        "ma5": [close.rolling(5).mean().iloc[-1]],
+        "ma25": [close.rolling(25).mean().iloc[-1]],
+        "ma75": [close.rolling(75).mean().iloc[-1]],
+        "vol_ratio": [volume.iloc[-1] / volume.rolling(20).mean().iloc[-1]],
+        "rsi": [0],
+        "macd": [0],
+        "signal": [0]
+    })
+
+    # RSI
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rs = gain / loss.replace(0, 1e-10)
+    latest["rsi"] = 100 - (100 / (1 + rs.iloc[-1]))
+
+    # MACD
+    ema12 = close.ewm(span=12).mean()
+    ema26 = close.ewm(span=26).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9).mean()
+
+    latest["macd"] = macd.iloc[-1]
+    latest["signal"] = signal.iloc[-1]
+
+    prob = model.predict_proba(latest[features])[0][1]
+
+    if prob >= 0.6:
+        print(f"🔥 {ticker} 上昇確率: {prob*100:.1f}%")
+    elif prob >= 0.55:
+        print(f"🟢 {ticker} 監視: {prob*100:.1f}%")
