@@ -1,16 +1,18 @@
-name: Stock Scan
+```yaml
+name: AI Stock Scan
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"  # 毎日9:00（日本時間）
+    # JST 8:30～13:30 を15分ごと
+    # UTCでは 23:30～4:30
+    - cron: '30,45 23 * * 0-4'
+    - cron: '0,15,30,45 0-4 * * 1-5'
+
+  workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
-    env:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
     steps:
       - name: Checkout
@@ -19,10 +21,14 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install dependencies
-        run: pip install requests
+      - name: Install Packages
+        run: |
+          pip install yfinance pandas requests
 
-      - name: Run script
+      - name: Run Stock Scan
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python stock_scan.py
+```
