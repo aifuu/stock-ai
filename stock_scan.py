@@ -1,27 +1,61 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import os
+import requests
 
 from sklearn.ensemble import RandomForestClassifier
 
 # =====================
-# 銘柄（あなたのやつ）
+# Discord
+# =====================
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
+
+def send(msg):
+    if not WEBHOOK_URL:
+        print("no webhook")
+        return
+    if len(msg) > 1900:
+        msg = msg[:1900]
+    requests.post(WEBHOOK_URL, json={"content": msg})
+
+# =====================
+# 銘柄
 # =====================
 TICKERS = [
-    "6857.T",
-    "8035.T",
-    "6920.T",
-    "6526.T",
-    "6501.T",
-    "6503.T",
-    "5803.T",
-    "7011.T",
-    "4980.T",
-    "9984.T"
+    "6857.T","8035.T","6920.T","6526.T","6501.T",
+    "6503.T","5803.T","7011.T","4980.T","9984.T"
 ]
 
 # =====================
-# データ作成
+# ニューススコア関数
+# =====================
+def news_score(ticker):
+
+    try:
+        t = yf.Ticker(ticker)
+        news = t.news
+    except:
+        return 0
+
+    score = 0
+
+    for n in news[:5]:
+        title = n.get("title", "")
+
+        if any(k in title for k in ["上方修正", "増益", "好調", "買収", "自社株"]):
+            score += 10
+
+        if any(k in title for k in ["下方修正", "減益", "不祥事", "赤字"]):
+            score -= 15
+
+        if any(k in title for k in ["AI", "半導体", "需要", "成長"]):
+            score += 5
+
+    return score
+
+# =====================
+# AIモデル用データ
 # =====================
 all_data = []
 
@@ -60,84 +94,30 @@ for t in TICKERS:
     df["macd"] = ema12 - ema26
     df["signal"] = df["macd"].ewm(span=9).mean()
 
-    # =====目的変数=====
-    # 翌日上がるか
+    # 目的変数
     df["target"] = (close.shift(-1) > close).astype(int)
 
     all_data.append(df)
 
-# =====================
-# 統合
-# =====================
-data = pd.concat(all_data)
-data = data.dropna()
+data = pd.concat(all_data).dropna()
 
-features = [
-    "ret1",
-    "ma5",
-    "ma25",
-    "ma75",
-    "vol_ratio",
-    "rsi",
-    "macd",
-    "signal"
-]
+features = ["ret1","ma5","ma25","ma75","vol_ratio","rsi","macd","signal"]
 
 X = data[features]
 y = data["target"]
 
-# =====================
-# 時系列分割
-# =====================
-split = int(len(data) * 0.7)
+split = int(len(data)*0.7)
 
-X_train = X.iloc[:split]
-X_test = X.iloc[split:]
-
-y_train = y.iloc[:split]
-y_test = y.iloc[split:]
+X_train, X_test = X.iloc[:split], X.iloc[split:]
+y_train, y_test = y.iloc[:split], y.iloc[split:]
 
 # =====================
-# AIモデル
+# モデル
 # =====================
-model = RandomForestClassifier(
-    n_estimators=300,
-    max_depth=7,
-    random_state=42
-)
-
+model = RandomForestClassifier(n_estimators=300, max_depth=7, random_state=42)
 model.fit(X_train, y_train)
 
-# =====================
-# AI勝率（バックテスト）
-# =====================
-accuracy = model.score(X_test, y_test)
-
-print("\n=== AIバックテスト結果 ===")
-print(f"勝率（正解率）: {accuracy:.3f}")
-
-# =====================
-# 利益シミュレーション
-# =====================
-test_prices = data.iloc[split:].copy()
-
-test_prices["prob"] = model.predict_proba(X_test)[:, 1]
-
-test_prices["strategy"] = 0
-
-# シグナル条件
-test_prices.loc[test_prices["prob"] > 0.6, "strategy"] = 1
-
-# リターン
-test_prices["market_return"] = data["Close"].pct_change().iloc[split:]
-test_prices["strategy_return"] = test_prices["market_return"] * test_prices["strategy"]
-
-cum_market = (1 + test_prices["market_return"]).cumprod().iloc[-1]
-cum_strategy = (1 + test_prices["strategy_return"]).cumprod().iloc[-1]
-
-print("\n=== 利益バックテスト ===")
-print(f"市場リターン: {cum_market:.2f}倍")
-print(f"AI戦略リターン: {cum_strategy:.2f}倍")
+acc = model.score(X_test, y_test)
 
 # =====================
 # 最新予測
@@ -145,12 +125,48 @@ print(f"AI戦略リターン: {cum_strategy:.2f}倍")
 latest = X.iloc[-1:]
 prob = model.predict_proba(latest)[0][1]
 
-print("\n=== 最新シグナル ===")
-print(f"翌日上昇確率: {prob*100:.2f}%")
+# =====================
+# ニューススコア
+# =====================
+news_total = 0
+for t in TICKERS:
+    news_total += news_score(t)
 
-if prob > 0.65:
-    print("🔥 強い買い")
-elif prob > 0.55:
-    print("🟢 監視")
+# =====================
+# 最終スコア
+# =====================
+final_score = (prob * 100) + news_total
+
+if final_score > 75:
+    judge = "🔥 強い買い"
+elif final_score > 60:
+    judge = "🟢 買い候補"
 else:
-    print("⚪ 見送り")
+    judge = "⚪ 見送り"
+
+# =====================
+# Discord送信
+# =====================
+msg = f"""
+📊 AI株スキャン（ニュース統合版）
+
+■ AI勝率
+{acc:.3f}
+
+■ 翌日上昇確率
+{prob*100:.2f}%
+
+■ ニューススコア
+{news_total}
+
+■ 最終スコア
+{final_score:.1f}
+
+判定:
+{judge}
+"""
+
+print(msg)
+send(msg)
+
+send("📊 ニュース統合AIスキャン完了")
