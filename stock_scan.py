@@ -1,39 +1,30 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import os
-import requests
 
 from sklearn.ensemble import RandomForestClassifier
 
 # =====================
-# Discord
-# =====================
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
-
-def send_discord(msg):
-    if not WEBHOOK_URL:
-        print("Webhookなし")
-        return
-
-    if len(msg) > 1900:
-        msg = msg[:1900]
-
-    requests.post(WEBHOOK_URL, json={"content": msg})
-
-# =====================
-# 銘柄
+# 銘柄（あなたのやつ）
 # =====================
 TICKERS = [
-    "6857.T","8035.T","6920.T","6526.T","6501.T",
-    "6503.T","5803.T","7011.T","4980.T","9984.T"
+    "6857.T",
+    "8035.T",
+    "6920.T",
+    "6526.T",
+    "6501.T",
+    "6503.T",
+    "5803.T",
+    "7011.T",
+    "4980.T",
+    "9984.T"
 ]
-
-all_data = []
 
 # =====================
 # データ作成
 # =====================
+all_data = []
+
 for t in TICKERS:
 
     df = yf.download(t, period="5y", interval="1d", auto_adjust=True, progress=False)
@@ -49,6 +40,7 @@ for t in TICKERS:
 
     df = df.copy()
 
+    # =====特徴量=====
     df["ret1"] = close.pct_change()
     df["ma5"] = close.rolling(5).mean()
     df["ma25"] = close.rolling(25).mean()
@@ -68,43 +60,84 @@ for t in TICKERS:
     df["macd"] = ema12 - ema26
     df["signal"] = df["macd"].ewm(span=9).mean()
 
+    # =====目的変数=====
+    # 翌日上がるか
     df["target"] = (close.shift(-1) > close).astype(int)
 
     all_data.append(df)
 
-data = pd.concat(all_data).dropna()
+# =====================
+# 統合
+# =====================
+data = pd.concat(all_data)
+data = data.dropna()
 
-features = ["ret1","ma5","ma25","ma75","vol_ratio","rsi","macd","signal"]
+features = [
+    "ret1",
+    "ma5",
+    "ma25",
+    "ma75",
+    "vol_ratio",
+    "rsi",
+    "macd",
+    "signal"
+]
 
 X = data[features]
 y = data["target"]
 
+# =====================
+# 時系列分割
+# =====================
 split = int(len(data) * 0.7)
 
-X_train, X_test = X.iloc[:split], X.iloc[split:]
-y_train, y_test = y.iloc[:split], y.iloc[split:]
+X_train = X.iloc[:split]
+X_test = X.iloc[split:]
+
+y_train = y.iloc[:split]
+y_test = y.iloc[split:]
 
 # =====================
 # AIモデル
 # =====================
-model = RandomForestClassifier(n_estimators=300, max_depth=7, random_state=42)
+model = RandomForestClassifier(
+    n_estimators=300,
+    max_depth=7,
+    random_state=42
+)
+
 model.fit(X_train, y_train)
 
-acc = model.score(X_test, y_test)
+# =====================
+# AI勝率（バックテスト）
+# =====================
+accuracy = model.score(X_test, y_test)
+
+print("\n=== AIバックテスト結果 ===")
+print(f"勝率（正解率）: {accuracy:.3f}")
 
 # =====================
 # 利益シミュレーション
 # =====================
-test = data.iloc[split:].copy()
-test["prob"] = model.predict_proba(X_test)[:, 1]
+test_prices = data.iloc[split:].copy()
 
-test["signal"] = (test["prob"] > 0.6).astype(int)
+test_prices["prob"] = model.predict_proba(X_test)[:, 1]
 
-test["market_return"] = data["Close"].pct_change().iloc[split:]
-test["strategy_return"] = test["market_return"] * test["signal"]
+test_prices["strategy"] = 0
 
-market = (1 + test["market_return"]).cumprod().iloc[-1]
-strategy = (1 + test["strategy_return"]).cumprod().iloc[-1]
+# シグナル条件
+test_prices.loc[test_prices["prob"] > 0.6, "strategy"] = 1
+
+# リターン
+test_prices["market_return"] = data["Close"].pct_change().iloc[split:]
+test_prices["strategy_return"] = test_prices["market_return"] * test_prices["strategy"]
+
+cum_market = (1 + test_prices["market_return"]).cumprod().iloc[-1]
+cum_strategy = (1 + test_prices["strategy_return"]).cumprod().iloc[-1]
+
+print("\n=== 利益バックテスト ===")
+print(f"市場リターン: {cum_market:.2f}倍")
+print(f"AI戦略リターン: {cum_strategy:.2f}倍")
 
 # =====================
 # 最新予測
@@ -112,29 +145,12 @@ strategy = (1 + test["strategy_return"]).cumprod().iloc[-1]
 latest = X.iloc[-1:]
 prob = model.predict_proba(latest)[0][1]
 
-# =====================
-# Discordメッセージ
-# =====================
-msg = f"""
-📊 AI株スキャン結果
+print("\n=== 最新シグナル ===")
+print(f"翌日上昇確率: {prob*100:.2f}%")
 
-■ AI精度（勝率）
-{acc:.3f}
-
-■ 市場リターン
-{market:.2f}倍
-
-■ AI戦略リターン
-{strategy:.2f}倍
-
-■ 翌日上昇確率
-{prob*100:.2f}%
-
-判定:
-{"🔥 強い買い" if prob > 0.65 else "🟢 監視" if prob > 0.55 else "⚪ 見送り"}
-"""
-
-print(msg)
-send_discord(msg)
-
-send_discord("📊 AI株スキャン完了テスト")
+if prob > 0.65:
+    print("🔥 強い買い")
+elif prob > 0.55:
+    print("🟢 監視")
+else:
+    print("⚪ 見送り")
