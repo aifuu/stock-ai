@@ -1,119 +1,162 @@
-```python
 import yfinance as yf
 import pandas as pd
 import requests
 import os
 
+# =====================
+# 銘柄リスト
+# =====================
 TICKERS = [
-    "6526.T",  # ソシオネクスト
-    "6501.T",  # 日立製作所
-    "6503.T",  # 三菱電機
-    "5803.T",  # フジクラ
-    "4980.T",  # デクセリアルズ
-    "9984.T",  # ソフトバンクG
-    "6613.T",  # QDレーザ
-    "6506.T",  # 安川電機
-    "6269.T"   # 三井海洋開発
+    "6526.T",
+    "6501.T",
+    "6503.T",
+    "5803.T",
+    "4980.T",
+    "9984.T",
+    "6613.T",
+    "6506.T",
+    "6269.T"
 ]
 
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 
+# =====================
+# Discord送信
+# =====================
 def send_discord(message):
     if not WEBHOOK_URL:
         print("Discord Webhook未設定")
         return
 
-    requests.post(
-        WEBHOOK_URL,
-        json={"content": message}
+    if len(message) > 1900:
+        message = message[:1900]
+
+    requests.post(WEBHOOK_URL, json={"content": message})
+
+
+# =====================
+# 株データ分析
+# =====================
+def analyze_stock(ticker):
+
+    df = yf.download(
+        ticker,
+        period="6mo",
+        interval="1d",
+        progress=False,
+        auto_adjust=True
     )
 
-for ticker in TICKERS:
+    if df is None or df.empty or len(df) < 100:
+        return None
 
-    try:
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-        df = yf.download(
-            ticker,
-            period="6mo",
-            progress=False,
-            auto_adjust=True
-        )
+    close = df["Close"]
+    volume = df["Volume"]
+    high = df["High"]
 
-        if len(df) < 100:
-            continue
+    price = float(close.iloc[-1])
 
-        close = df["Close"]
+    # =====================
+    # 移動平均
+    # =====================
+    ma5 = close.rolling(5).mean().iloc[-1]
+    ma25 = close.rolling(25).mean().iloc[-1]
+    ma75 = close.rolling(75).mean().iloc[-1]
 
-        ma5 = close.rolling(5).mean().iloc[-1]
-        ma25 = close.rolling(25).mean().iloc[-1]
-        ma75 = close.rolling(75).mean().iloc[-1]
+    # =====================
+    # RSI
+    # =====================
+    delta = close.diff()
 
-        # RSI
-        delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
 
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rs = gain / loss.replace(0, 1e-10)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = float(rsi.iloc[-1])
 
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        rsi = float(rsi.iloc[-1])
+    # =====================
+    # MACD
+    # =====================
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
 
-        score = 0
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
 
-        if rsi <= 30:
-            score += 25
-        elif rsi <= 40:
-            score += 15
+    # =====================
+    # 出来高
+    # =====================
+    vol20 = volume.rolling(20).mean().iloc[-1]
+    today_vol = volume.iloc[-1]
 
-        if ma5 > ma25:
-            score += 20
+    # =====================
+    # 高値更新
+    # =====================
+    high20 = high.rolling(20).max().iloc[-2]
+    today_high = high.iloc[-1]
 
-        if ma25 > ma75:
-            score += 20
+    # =====================
+    # スコア計算
+    # =====================
+    score = 0
 
-        # MACD
-        ema12 = close.ewm(span=12, adjust=False).mean()
-        ema26 = close.ewm(span=26, adjust=False).mean()
+    # RSI
+    if rsi <= 30:
+        score += 25
+    elif rsi <= 40:
+        score += 15
 
-        macd = ema12 - ema26
-        signal = macd.ewm(span=9, adjust=False).mean()
+    # トレンド
+    if ma5 > ma25:
+        score += 15
 
-        if macd.iloc[-1] > signal.iloc[-1]:
-            score += 15
+    if ma25 > ma75:
+        score += 15
 
-        # 出来高
-        vol20 = df["Volume"].rolling(20).mean().iloc[-1]
-        today_vol = df["Volume"].iloc[-1]
+    if price > ma75:
+        score += 10
 
-        if today_vol > vol20 * 1.5:
-            score += 10
+    # MACD
+    if macd.iloc[-1] > signal.iloc[-1]:
+        score += 15
 
-        # 高値更新
-        high20 = df["High"].rolling(20).max().iloc[-2]
-        today_high = df["High"].iloc[-1]
+    # 出来高
+    if today_vol > vol20 * 2:
+        score += 15
+    elif today_vol > vol20 * 1.5:
+        score += 8
 
-        if today_high > high20:
-            score += 10
+    # 高値更新
+    if today_high > high20:
+        score += 10
 
-        price = float(close.iloc[-1])
+    score = min(score, 100)
 
-        buy_price = round(price * 1.005, 1)
-        take_profit1 = round(price * 1.05, 1)
-        take_profit2 = round(price * 1.10, 1)
-        stop_loss = round(price * 0.97, 1)
+    # =====================
+    # 判定
+    # =====================
+    if score >= 80:
+        rank = "🔥 強い買い"
+    elif score >= 60:
+        rank = "🟢 買い候補"
+    elif score >= 40:
+        rank = "🟡 監視"
+    else:
+        return None
 
-        if score >= 80:
-            rank = "🔥 強い買い"
-        elif score >= 60:
-            rank = "🟢 買い候補"
-        elif score >= 40:
-            rank = "🟡 監視"
-        else:
-            rank = "⚪ 見送り"
+    # =====================
+    # 売買目安
+    # =====================
+    buy_price = round(price * 1.005, 1)
+    take_profit1 = round(price * 1.05, 1)
+    take_profit2 = round(price * 1.10, 1)
+    stop_loss = round(price * 0.97, 1)
 
-        if score >= 60:
-
-            msg = f"""
+    msg = f"""
 {rank}
 
 銘柄: {ticker}
@@ -121,7 +164,7 @@ AIスコア: {score}
 
 現在値: {price:,.1f}
 
-買い: {buy_price:,.1f}
+買い目安: {buy_price:,.1f}
 
 利確①: {take_profit1:,.1f}
 利確②: {take_profit2:,.1f}
@@ -131,11 +174,35 @@ AIスコア: {score}
 RSI: {rsi:.1f}
 """
 
-            print(msg)
-            send_discord(msg)
+    return msg
 
-    except Exception as e:
-        print(ticker, e)
 
-send_discord("GitHub株スキャン動作テスト成功")
-```
+# =====================
+# メイン処理
+# =====================
+def main():
+
+    results = []
+
+    for ticker in TICKERS:
+        try:
+            msg = analyze_stock(ticker)
+            if msg:
+                print(msg)
+                results.append(msg)
+        except Exception as e:
+            print(f"{ticker} エラー: {e}")
+
+    if results:
+        send_discord("\n\n".join(results))
+    else:
+        send_discord("📊 条件一致銘柄なし")
+
+
+# =====================
+# 実行
+# =====================
+if __name__ == "__main__":
+    main()
+
+    send_discord("📊 AI株スキャン完了（正常動作）")
