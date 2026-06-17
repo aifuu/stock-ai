@@ -1,208 +1,114 @@
 import yfinance as yf
 import pandas as pd
-import requests
-import os
+import numpy as np
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
 # =====================
-# 銘柄リスト
+# 銘柄
 # =====================
-TICKERS = [
-    "6526.T",
-    "6501.T",
-    "6503.T",
-    "5803.T",
-    "4980.T",
-    "9984.T",
-    "6613.T",
-    "6506.T",
-    "6269.T"
+TICKER = "9984.T"  # まず1銘柄で学習（重要）
+
+# =====================
+# データ取得
+# =====================
+df = yf.download(TICKER, period="5y", interval="1d", auto_adjust=True)
+
+if isinstance(df.columns, pd.MultiIndex):
+    df.columns = df.columns.get_level_values(0)
+
+df = df.dropna()
+
+close = df["Close"]
+volume = df["Volume"]
+
+# =====================
+# 特徴量作成（AI用）
+# =====================
+df["ret1"] = close.pct_change()
+df["ma5"] = close.rolling(5).mean()
+df["ma25"] = close.rolling(25).mean()
+df["ma75"] = close.rolling(75).mean()
+
+df["vol_ratio"] = volume / volume.rolling(20).mean()
+
+# RSI
+delta = close.diff()
+gain = delta.clip(lower=0).rolling(14).mean()
+loss = (-delta.clip(upper=0)).rolling(14).mean()
+rs = gain / loss.replace(0, 1e-10)
+df["rsi"] = 100 - (100 / (1 + rs))
+
+# MACD
+ema12 = close.ewm(span=12).mean()
+ema26 = close.ewm(span=26).mean()
+df["macd"] = ema12 - ema26
+df["signal"] = df["macd"].ewm(span=9).mean()
+
+# =====================
+# 目的変数（翌日上がるか）
+# =====================
+df["target"] = (close.shift(-1) > close).astype(int)
+
+df = df.dropna()
+
+# =====================
+# 学習データ
+# =====================
+features = [
+    "ret1",
+    "ma5",
+    "ma25",
+    "ma75",
+    "vol_ratio",
+    "rsi",
+    "macd",
+    "signal"
 ]
 
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
+X = df[features]
+y = df["target"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.3, shuffle=False
+)
 
 # =====================
-# Discord送信
+# モデル
 # =====================
-def send_discord(message):
-    if not WEBHOOK_URL:
-        print("Discord Webhook未設定")
-        return
+model = RandomForestClassifier(
+    n_estimators=200,
+    max_depth=6,
+    random_state=42
+)
 
-    if len(message) > 1900:
-        message = message[:1900]
-
-    requests.post(WEBHOOK_URL, json={"content": message})
-
+model.fit(X_train, y_train)
 
 # =====================
-# 株データ分析
+# 予測精度（勝率）
 # =====================
-def analyze_stock(ticker):
+accuracy = model.score(X_test, y_test)
 
-    df = yf.download(
-        ticker,
-        period="6mo",
-        interval="1d",
-        progress=False,
-        auto_adjust=True
-    )
-
-    if df is None or df.empty or len(df) < 100:
-        return None
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    close = df["Close"]
-    volume = df["Volume"]
-    high = df["High"]
-
-    price = float(close.iloc[-1])
-
-    # =====================
-    # 移動平均
-    # =====================
-    ma5 = close.rolling(5).mean().iloc[-1]
-    ma25 = close.rolling(25).mean().iloc[-1]
-    ma75 = close.rolling(75).mean().iloc[-1]
-
-    # =====================
-    # RSI
-    # =====================
-    delta = close.diff()
-
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-
-    rs = gain / loss.replace(0, 1e-10)
-    rsi = 100 - (100 / (1 + rs))
-    rsi = float(rsi.iloc[-1])
-
-    # =====================
-    # MACD
-    # =====================
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-
-    # =====================
-    # 出来高
-    # =====================
-    vol20 = volume.rolling(20).mean().iloc[-1]
-    today_vol = volume.iloc[-1]
-
-    # =====================
-    # 高値更新
-    # =====================
-    high20 = high.rolling(20).max().iloc[-2]
-    today_high = high.iloc[-1]
-
-    # =====================
-    # スコア計算
-    # =====================
-    score = 0
-
-    # RSI
-    if rsi <= 30:
-        score += 25
-    elif rsi <= 40:
-        score += 15
-
-    # トレンド
-    if ma5 > ma25:
-        score += 15
-
-    if ma25 > ma75:
-        score += 15
-
-    if price > ma75:
-        score += 10
-
-    # MACD
-    if macd.iloc[-1] > signal.iloc[-1]:
-        score += 15
-
-    # 出来高
-    if today_vol > vol20 * 2:
-        score += 15
-    elif today_vol > vol20 * 1.5:
-        score += 8
-
-    # 高値更新
-    if today_high > high20:
-        score += 10
-
-    score = min(score, 100)
-
-    # =====================
-    # 判定
-    # =====================
-    if score >= 80:
-        rank = "🔥 強い買い"
-    elif score >= 60:
-        rank = "🟢 買い候補"
-    elif score >= 40:
-        rank = "🟡 監視"
-    else:
-        return None
-
-    # =====================
-    # 売買目安
-    # =====================
-    buy_price = round(price * 1.005, 1)
-    take_profit1 = round(price * 1.05, 1)
-    take_profit2 = round(price * 1.10, 1)
-    stop_loss = round(price * 0.97, 1)
-
-    msg = f"""
-{rank}
-
-銘柄: {ticker}
-AIスコア: {score}
-
-現在値: {price:,.1f}
-
-買い目安: {buy_price:,.1f}
-
-利確①: {take_profit1:,.1f}
-利確②: {take_profit2:,.1f}
-
-損切り: {stop_loss:,.1f}
-
-RSI: {rsi:.1f}
-"""
-
-    return msg
-
+print("\n=== バックテスト結果 ===")
+print(f"勝率（精度）: {accuracy:.3f}")
 
 # =====================
-# メイン処理
+# 最新予測（翌日上昇確率）
 # =====================
-def main():
+latest = X.iloc[-1:].copy()
 
-    results = []
+prob_up = model.predict_proba(latest)[0][1]
 
-    for ticker in TICKERS:
-        try:
-            msg = analyze_stock(ticker)
-            if msg:
-                print(msg)
-                results.append(msg)
-        except Exception as e:
-            print(f"{ticker} エラー: {e}")
-
-    if results:
-        send_discord("\n\n".join(results))
-    else:
-        send_discord("📊 条件一致銘柄なし")
-
+print("\n=== 最新シグナル ===")
+print(f"翌日上昇確率: {prob_up*100:.2f}%")
 
 # =====================
-# 実行
+# シグナル判定
 # =====================
-if __name__ == "__main__":
-    main()
-
-    send_discord("📊 AI株スキャン完了（正常動作）")
+if prob_up >= 0.65:
+    print("🔥 強い買いシグナル")
+elif prob_up >= 0.55:
+    print("🟢 買い候補")
+else:
+    print("⚪ 見送り")
