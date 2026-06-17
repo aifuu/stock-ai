@@ -22,6 +22,7 @@ jobs:
 
       - name: Install Packages
         run: |
+          install --upgrade pip
           pip install yfinance pandas requests scikit-learn
 
       - name: Run Stock Scan
