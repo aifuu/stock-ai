@@ -136,4 +136,6 @@ RSI: {rsi:.1f}
 
     except Exception as e:
         print(ticker, e)
+
+send_discord("GitHub株スキャン動作テスト成功")
 ```
