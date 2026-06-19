@@ -276,8 +276,8 @@ for ticker in TICKERS:
         score += market_score
 
         price = float(close.iloc[-1])
-
-             results.append({
+        
+        results.append({
             "ticker": ticker,
             "score": round(score, 1),
             "prob": round(prob * 100, 1),
@@ -298,7 +298,6 @@ for ticker in TICKERS:
             ])
 
     except Exception as e:
-
         print(
             f"{ticker} エラー: {e}"
         )
