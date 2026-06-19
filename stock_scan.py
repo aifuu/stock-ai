@@ -1,6 +1,5 @@
 import csv
 from datetime import datetime
-
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -13,13 +12,9 @@ from sklearn.model_selection import train_test_split
 # =====================
 # Discord
 # =====================
-
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 
-HISTORY_FILE = "prediction_history.csv"
-
 def send(msg):
-
     if not WEBHOOK_URL:
         print("Webhookなし")
         return
@@ -27,27 +22,17 @@ def send(msg):
     if len(msg) > 1900:
         msg = msg[:1900]
 
-    requests.post(
-        WEBHOOK_URL,
-        json={"content": msg}
-    )
+    requests.post(WEBHOOK_URL, json={"content": msg})
+
 
 # =====================
-# 監視銘柄
+# 銘柄
 # =====================
-
 TICKERS = [
-    "6857.T",
-    "8035.T",
-    "6920.T",
-    "6526.T",
-    "6501.T",
-    "6503.T",
-    "5803.T",
-    "7011.T",
-    "4980.T",
-    "9984.T"
+    "6857.T","8035.T","6920.T","6526.T","6501.T",
+    "6503.T","5803.T","7011.T","4980.T","9984.T"
 ]
+
 COMPANY_NAMES = {
     "6857.T": "アドバンテスト",
     "8035.T": "東京エレクトロン",
@@ -58,192 +43,30 @@ COMPANY_NAMES = {
     "5803.T": "フジクラ",
     "7011.T": "三菱重工業",
     "4980.T": "デクセリアルズ",
-    "9984.T": "ソフトバンクグループ"
+    "9984.T": "ソフトバンクG"
 }
-
 
 # =====================
 # RSI
 # =====================
-
 def calc_rsi(close, period=14):
-
     delta = close.diff()
-
     gain = delta.clip(lower=0).rolling(period).mean()
-
-    loss = (
-        -delta.clip(upper=0)
-    ).rolling(period).mean()
-
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss.replace(0, 0.0001)
-
     return 100 - (100 / (1 + rs))
-# =====================
-# メイン処理
-# =====================
+
 
 # =====================
-# 日経平均先物 強化版
+# メイン
 # =====================
-
-market_score = 0
-
-try:
-
-    nikkei = yf.download(
-        "NK=F",
-        period="6mo",
-        interval="1d",
-        auto_adjust=True,
-        progress=False
-    )
-
-    if isinstance(nikkei.columns, pd.MultiIndex):
-        nikkei.columns = nikkei.columns.get_level_values(0)
-
-    close = nikkei["Close"]
-
-    current = float(close.iloc[-1])
-
-    ma25 = float(
-        close.rolling(25).mean().iloc[-1]
-    )
-
-    ma75 = float(
-        close.rolling(75).mean().iloc[-1]
-    )
-
-    change5 = (
-        current /
-        float(close.iloc[-6]) - 1
-    ) * 100
-
-    # 25日線判定
-    if current > ma25:
-        market_score += 10
-    else:
-        market_score -= 10
-
-    # 75日線判定
-    if current > ma75:
-        market_score += 10
-    else:
-        market_score -= 10
-
-    # 5日騰落率判定
-    if change5 > 2:
-        market_score += 10
-
-    elif change5 < -2:
-        market_score -= 10
-
-except Exception as e:
-
-    print("日経先物取得失敗", e)
-
-    market_score = 0
-
+results = []
 HISTORY_FILE = "prediction_history.csv"
-results = []
 
 for ticker in TICKERS:
 
     try:
-
-        print(f"解析中: {ticker}")
-
-        df = yf.download(
-            ticker,
-            period="3y",
-            interval="1d",
-            auto_adjust=True,
-            progress=False
-        )
-
-        if df is None or len(df) < 150:
-            continue
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        close = df["Close"]
-        volume = df["Volume"]
-
-        df["ret1"] = close.pct_change()
-
-        df["ma25"] = close.rolling(25).mean()
-        df["ma75"] = close.rolling(75).mean()
-
-        df["vol_ratio"] = (
-            volume /
-            volume.rolling(20).mean()
-        )
-
-        df["rsi"] = calc_rsi(close)
-
-        ema12 = close.ewm(span=12).mean()
-        ema26 = close.ewm(span=26).mean()
-
-        df["macd"] = ema12 - ema26
-        df["signal"] = (
-            df["macd"]
-            .ewm(span=9)
-            .mean()
-        )
-
-        df["target"] = (
-            close.shift(-1) > close
-        ).astype(int)
-
-        features = [
-            "ret1",
-            "ma25",
-            "ma75",
-            "vol_ratio",
-            "rsi",
-            "macd",
-            "signal"
-        ]
-
-        model_df = df.dropna()
-
-        if len(model_df) < 100:
-            continue
-
-        X = model_df[features]
-        y = model_df["target"]
-
-        split = int(len(X) * 0.8)
-
-        X_train = X.iloc[:split]
-        y_train = y.iloc[:split]
-
-        model = RandomForestClassifier(
-            n_estimators=300,
-            max_depth=7,
-            random_state=42
-        )
-
-        model.fit(X_train, y_train)
-
-        latest = X.iloc[-1:]
-
-        prob = (
-            model
-            .predict_proba(latest)[0][1]
-        )
-        # =====================
-# ① ループ（銘柄処理）
-# =====================
-
-results = []
-
-for ticker in TICKERS:
-
-    try:
-
-        print(f"解析中: {ticker}")
+        print("解析中:", ticker)
 
         df = yf.download(ticker, period="3y", interval="1d", auto_adjust=True)
 
@@ -251,30 +74,39 @@ for ticker in TICKERS:
             continue
 
         close = df["Close"]
+        volume = df["Volume"]
 
-        df["rsi"] = calc_rsi(close)
+        # ===== features =====
+        df["ret1"] = close.pct_change()
         df["ma25"] = close.rolling(25).mean()
         df["ma75"] = close.rolling(75).mean()
+        df["vol_ratio"] = volume / volume.rolling(20).mean()
+        df["rsi"] = calc_rsi(close)
 
-        df["macd"] = close.ewm(span=12).mean() - close.ewm(span=26).mean()
+        ema12 = close.ewm(span=12).mean()
+        ema26 = close.ewm(span=26).mean()
+        df["macd"] = ema12 - ema26
         df["signal"] = df["macd"].ewm(span=9).mean()
 
-        df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+        df = df.dropna()
 
-        model_df = df.dropna().copy()
+        # ===== target =====
+        df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
 
-        model_df["target"] = (model_df["Close"].shift(-1) > model_df["Close"]).astype(int)
+        features = ["ret1","ma25","ma75","vol_ratio","rsi","macd","signal"]
 
-        features = ["rsi","ma25","ma75","vol_ratio","macd","signal"]
+        X = df[features]
+        y = df["target"]
 
-        X = model_df[features]
-        y = model_df["target"]
+        if len(X) < 100:
+            continue
 
         split = int(len(X) * 0.8)
 
         X_train = X.iloc[:split]
         y_train = y.iloc[:split]
 
+        # ===== model =====
         model = RandomForestClassifier(
             n_estimators=300,
             max_depth=7,
@@ -287,16 +119,17 @@ for ticker in TICKERS:
 
         prob = model.predict_proba(latest)[0][1]
 
+        # ===== score =====
+        rsi = df["rsi"].iloc[-1]
+        macd = df["macd"].iloc[-1]
+        signal = df["signal"].iloc[-1]
+        ma25 = df["ma25"].iloc[-1]
+        ma75 = df["ma75"].iloc[-1]
+        vol_ratio = df["vol_ratio"].iloc[-1]
+        price = close.iloc[-1]
+
         score = 0
 
-        rsi = float(model_df["rsi"].iloc[-1])
-        macd = float(model_df["macd"].iloc[-1])
-        signal = float(model_df["signal"].iloc[-1])
-        ma25 = float(model_df["ma25"].iloc[-1])
-        ma75 = float(model_df["ma75"].iloc[-1])
-        vol_ratio = float(model_df["vol_ratio"].iloc[-1])
-
-        # スコア
         if rsi < 35:
             score += 25
         if macd > signal:
@@ -307,20 +140,17 @@ for ticker in TICKERS:
             score += 20
 
         score += prob * 30
-        score += market_score
-
-        price = float(close.iloc[-1])
 
         results.append({
             "ticker": ticker,
-            "score": round(score, 1),
-            "prob": round(prob * 100, 1),
-            "price": price,
-            "rsi": rsi,
-            "vol": vol_ratio
+            "score": round(score,1),
+            "prob": round(prob*100,1),
+            "price": round(price,0),
+            "rsi": round(rsi,1),
+            "vol": round(vol_ratio,2)
         })
 
-        # CSV保存
+        # ===== 学習データ保存 =====
         with open("train_data.csv", "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
 
@@ -333,120 +163,21 @@ for ticker in TICKERS:
                 ma25,
                 ma75,
                 vol_ratio,
-                int(model_df["target"].iloc[-1])
+                int(df["target"].iloc[-1])
             ])
 
     except Exception as e:
-        print(f"{ticker} エラー:", e)
-    score = 0
+        print(ticker, "エラー:", e)
 
-
-        rsi = float(
-            model_df["rsi"].iloc[-1]
-        )
-
-        macd = float(
-            model_df["macd"].iloc[-1]
-        )
-
-        signal = float(
-            model_df["signal"].iloc[-1]
-        )
-
-        ma25 = float(
-            model_df["ma25"].iloc[-1]
-        )
-
-        ma75 = float(
-            model_df["ma75"].iloc[-1]
-        )
-
-        vol_ratio = float(
-            model_df["vol_ratio"].iloc[-1]
-        )
-
-        if rsi < 35:
-            score += 25
-
-        if macd > signal:
-            score += 25
-
-        if ma25 > ma75:
-            score += 20
-
-        if vol_ratio > 1.5:
-            score += 20
-
-        score += prob * 30
-
-        score += market_score
-
-        price = float(close.iloc[-1])
-        
-        results.append({
-            "ticker": ticker,
-            "score": round(score, 1),
-            "prob": round(prob * 100, 1),
-            "price": round(price, 0),
-            "rsi": round(rsi, 1),
-            "vol": round(vol_ratio, 2)
-        })
-
-        with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-
-            writer.writerow([
-                datetime.now().strftime("%Y-%m-%d"),
-                ticker,
-                round(score, 1),
-                round(prob * 100, 1),
-                round(price, 0)
-            ])
 
 # =====================
-# AI学習（forループの外）
+# 結果
 # =====================
-
-train_df = pd.read_csv("train_data.csv").dropna()
-
-X = train_df[
-    ["rsi","macd","signal","ma25","ma75","vol"]
-]
-
-y = train_df["target"]
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
-
-model = RandomForestClassifier(
-    n_estimators=300,
-    max_depth=7,
-    random_state=42
-)
-
-model.fit(X_train, y_train)
-
-    except Exception as e:
-        print(
-            f"{ticker} エラー: {e}"
-        )
-id="r4e2bz"
-# =====================
-# 結果判定
-# =====================
-
-if len(results) == 0:
-
-    send("⚪ データ取得なし")
+if not results:
+    send("⚪ データなし")
     exit()
 
-results = sorted(
-    results,
-    key=lambda x: x["score"],
-    reverse=True
-)
-
+results = sorted(results, key=lambda x: x["score"], reverse=True)
 top = results[:3]
 
 msg = "📊 AI株スキャン結果\n\n"
@@ -455,33 +186,18 @@ for i, r in enumerate(top):
 
     if r["score"] >= 85:
         rank = "🔥 強い買い"
-
     elif r["score"] >= 70:
         rank = "🟢 買い候補"
-
     elif r["score"] >= 60:
         rank = "🟡 監視"
-
     else:
         continue
 
     buy = r["price"]
 
-    take_profit = round(
-        buy * 1.08,
-        0
-    )
-
-    stop_loss = round(
-        buy * 0.95,
-        0
-    )
-
     msg += f"""
 ━━━━━━━━━━━━━━
-
-#{i+1} {r['ticker']}  {COMPANY_NAMES.get(r['ticker'], '')}
-
+#{i+1} {r['ticker']} {COMPANY_NAMES.get(r['ticker'],'')}
 
 {rank}
 
@@ -492,15 +208,8 @@ RSI: {r['rsi']}
 出来高倍率: {r['vol']}
 
 買値: {buy}
-利確: {take_profit}
-損切: {stop_loss}
-
+━━━━━━━━━━━━━━
 """
 
-if msg == "📊 AI株スキャン結果\n\n":
-
-    msg = "⚪ 本日の買い候補なし"
-
 print(msg)
-
 send(msg)
