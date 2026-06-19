@@ -1,5 +1,6 @@
 import csv
 from datetime import datetime
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -13,6 +14,8 @@ from sklearn.ensemble import RandomForestClassifier
 # =====================
 
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
+
+HISTORY_FILE = "prediction_history.csv"
 
 def send(msg):
 
