@@ -47,7 +47,6 @@ COMPANY_NAMES = {
     "9984.T": "ソフトバンクG"
 }
 
-HISTORY_FILE = "prediction_history.csv"
 TRAIN_FILE = "train_data.csv"
 MODEL_FILE = "model.pkl"
 
@@ -63,11 +62,35 @@ def calc_rsi(close, period=14):
 
 
 # =====================
-# 学習モデルロード or 新規作成
+# 学習データ読み込み
+# =====================
+def load_training_data():
+    if not os.path.exists(TRAIN_FILE):
+        return None, None
+
+    df = pd.read_csv(TRAIN_FILE)
+    df = df.dropna()
+
+    X = df[[
+        "rsi",
+        "macd",
+        "signal",
+        "ma25",
+        "ma75",
+        "vol_ratio"
+    ]]
+
+    y = df["target"]
+
+    return X, y
+
+
+# =====================
+# モデルロード
 # =====================
 if os.path.exists(MODEL_FILE):
     model = joblib.load(MODEL_FILE)
-    print("✅ 既存モデル読み込み")
+    print("✅ 既存モデル")
 else:
     model = RandomForestClassifier(
         n_estimators=300,
@@ -79,9 +102,8 @@ else:
 
 results = []
 
-
 # =====================
-# メインループ
+# メイン
 # =====================
 for ticker in TICKERS:
 
@@ -127,31 +149,36 @@ for ticker in TICKERS:
         y_train = y.iloc[:split]
 
         # =====================
-        # 学習
+        # 学習（銘柄別）
         # =====================
         model.fit(X_train, y_train)
 
         joblib.dump(model, MODEL_FILE)
 
         latest = X.iloc[-1:]
-
         prob = model.predict_proba(latest)[0][1]
 
-# =====================
-# CSV全履歴で再学習（追加）
-# =====================
-try:
-    X_all, y_all = load_training_data()
+        # =====================
+        # CSV保存（学習データ）
+        # =====================
+        with open(TRAIN_FILE, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
 
-    if X_all is not None and len(X_all) > 200:
-        model.fit(X_all, y_all)
-        joblib.dump(model, MODEL_FILE)
-        print("✅ CSV学習データで強化学習完了")
+            writer.writerow([
+                datetime.now().strftime("%Y-%m-%d"),
+                ticker,
+                df["rsi"].iloc[-1],
+                df["macd"].iloc[-1],
+                df["signal"].iloc[-1],
+                df["ma25"].iloc[-1],
+                df["ma75"].iloc[-1],
+                df["vol_ratio"].iloc[-1],
+                int(df["target"].iloc[-1])
+            ])
 
-except Exception as e:
-    print("CSV学習スキップ:", e)
-
-        # ===== スコア =====
+        # =====================
+        # スコア
+        # =====================
         rsi = df["rsi"].iloc[-1]
         macd = df["macd"].iloc[-1]
         signal = df["signal"].iloc[-1]
@@ -182,52 +209,23 @@ except Exception as e:
             "vol": round(vol_ratio,2)
         })
 
-
-# =====================
-# CSV学習データ読み込み
-# =====================
-def load_training_data():
-    if not os.path.exists(TRAIN_FILE):
-        return None, None
-
-    df = pd.read_csv(TRAIN_FILE)
-
-    df = df.dropna()
-
-    X = df[[
-        "rsi",
-        "macd",
-        "signal",
-        "ma25",
-        "ma75",
-        "vol_ratio"
-    ]]
-
-    y = df["target"]
-
-    return X, y
-
-    
-        # =====================
-        # 学習データ保存
-        # =====================
-        with open(TRAIN_FILE, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-
-            writer.writerow([
-                datetime.now().strftime("%Y-%m-%d"),
-                ticker,
-                rsi,
-                macd,
-                signal,
-                ma25,
-                ma75,
-                vol_ratio,
-                int(df["target"].iloc[-1])
-            ])
-
     except Exception as e:
         print(ticker, "エラー:", e)
+
+
+# =====================
+# CSV全履歴で再学習（正しい位置）
+# =====================
+try:
+    X_all, y_all = load_training_data()
+
+    if X_all is not None and len(X_all) > 200:
+        model.fit(X_all, y_all)
+        joblib.dump(model, MODEL_FILE)
+        print("✅ CSV全履歴で再学習完了")
+
+except Exception as e:
+    print("CSV学習スキップ:", e)
 
 
 # =====================
