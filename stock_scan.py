@@ -69,8 +69,7 @@ def load_training_data():
     if not os.path.exists(TRAIN_FILE):
         return None, None
 
-    df = pd.read_csv(TRAIN_FILE)
-    df = df.dropna()
+    df = pd.read_csv(TRAIN_FILE).dropna()
 
     X = df[[
         "rsi",
@@ -160,10 +159,19 @@ for ticker in TICKERS:
         prob = model.predict_proba(latest)[0][1]
 
         # =====================
-        # 価格
+        # 数値取得（Series事故防止）
         # =====================
-        price = close.iloc[-1]
+        price = float(close.iloc[-1])
+        rsi = float(df["rsi"].iloc[-1])
+        macd = float(df["macd"].iloc[-1])
+        signal = float(df["signal"].iloc[-1])
+        ma25 = float(df["ma25"].iloc[-1])
+        ma75 = float(df["ma75"].iloc[-1])
+        vol_ratio = float(df["vol_ratio"].iloc[-1])
 
+        # =====================
+        # 利確・損切
+        # =====================
         take_profit = price * 1.08
         stop_loss = price * 0.95
 
@@ -172,29 +180,21 @@ for ticker in TICKERS:
         # =====================
         with open(TRAIN_FILE, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-
             writer.writerow([
                 datetime.now().strftime("%Y-%m-%d"),
                 ticker,
-                df["rsi"].iloc[-1],
-                df["macd"].iloc[-1],
-                df["signal"].iloc[-1],
-                df["ma25"].iloc[-1],
-                df["ma75"].iloc[-1],
-                df["vol_ratio"].iloc[-1],
+                rsi,
+                macd,
+                signal,
+                ma25,
+                ma75,
+                vol_ratio,
                 int(df["target"].iloc[-1])
             ])
 
         # =====================
         # スコア
         # =====================
-        rsi = df["rsi"].iloc[-1]
-        macd = df["macd"].iloc[-1]
-        signal = df["signal"].iloc[-1]
-        ma25 = df["ma25"].iloc[-1]
-        ma75 = df["ma75"].iloc[-1]
-        vol_ratio = df["vol_ratio"].iloc[-1]
-
         score = 0
 
         if rsi < 35:
