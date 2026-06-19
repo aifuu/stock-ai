@@ -234,7 +234,7 @@ for ticker in TICKERS:
             .predict_proba(latest)[0][1]
         )
 
-        with open("train_data.csv", "a", newline="", encoding="utf-8") as f:
+with open("train_data.csv", "a", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
 
     writer.writerow([
