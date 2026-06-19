@@ -236,33 +236,31 @@ for ticker in TICKERS:
 
 for ticker in TICKERS:
 
-    ...
+    prob = model.predict_proba(latest)[0][1]
 
-prob = model.predict_proba(latest)[0][1]
+    score = 0
 
-score = 0
+    try:
+        with open("train_data.csv", "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
 
-try:
-    with open("train_data.csv", "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+            writer.writerow([
+                datetime.now().strftime("%Y-%m-%d"),
+                ticker,
+                rsi,
+                macd,
+                signal,
+                ma25,
+                ma75,
+                vol_ratio,
+                int(close.shift(-1).iloc[-1] > close.iloc[-1])
+            ])
 
-        writer.writerow([
-            datetime.now().strftime("%Y-%m-%d"),
-            ticker,
-            rsi,
-            macd,
-            signal,
-            ma25,
-            ma75,
-            vol_ratio,
-            int(close.shift(-1).iloc[-1] > close.iloc[-1])
-        ])
+    except Exception as e:
+        print("CSV保存エラー:", e)
 
-except Exception as e:
-    print("CSV保存エラー:", e)
+    score = 0
 
-
-score = 0
 
         rsi = float(
             model_df["rsi"].iloc[-1]
