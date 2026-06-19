@@ -1,4 +1,3 @@
-```python
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -61,8 +60,6 @@ def calc_rsi(close, period=14):
     rs = gain / loss.replace(0, 0.0001)
 
     return 100 - (100 / (1 + rs))
-```
-```python
 # =====================
 # メイン処理
 # =====================
@@ -212,8 +209,7 @@ for ticker in TICKERS:
         print(
             f"{ticker} エラー: {e}"
         )
-```
-```python id="r4e2bz"
+id="r4e2bz"
 # =====================
 # 結果判定
 # =====================
