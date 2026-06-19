@@ -233,62 +233,111 @@ for ticker in TICKERS:
             model
             .predict_proba(latest)[0][1]
         )
+        # =====================
+# ① ループ（銘柄処理）
+# =====================
+
+results = []
 
 for ticker in TICKERS:
 
-    # ===== データ取得・特徴量作成 =====
-
-    df = yf.download(ticker, period="3y", interval="1d", auto_adjust=True)
-
-    if df is None or len(df) < 100:
-        continue
-
-    close = df["Close"]
-
-    df["rsi"] = calc_rsi(close)
-    df["ma25"] = close.rolling(25).mean()
-    df["ma75"] = close.rolling(75).mean()
-
-    model_df = df.dropna().copy()
-
-    model_df["target"] = (model_df["Close"].shift(-1) > model_df["Close"]).astype(int)
-
-    X = model_df[["rsi", "ma25", "ma75"]]
-    y = model_df["target"]
-
-    split = int(len(X) * 0.8)
-
-    X_train = X.iloc[:split]
-    y_train = y.iloc[:split]
-
-    model = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=7,
-        random_state=42
-    )
-
-    model.fit(X_train, y_train)
-
-    latest = X.iloc[-1:]
-
-    prob = model.predict_proba(latest)[0][1]
-
-    score = 0
-
     try:
+
+        print(f"解析中: {ticker}")
+
+        df = yf.download(ticker, period="3y", interval="1d", auto_adjust=True)
+
+        if df is None or len(df) < 150:
+            continue
+
+        close = df["Close"]
+
+        df["rsi"] = calc_rsi(close)
+        df["ma25"] = close.rolling(25).mean()
+        df["ma75"] = close.rolling(75).mean()
+
+        df["macd"] = close.ewm(span=12).mean() - close.ewm(span=26).mean()
+        df["signal"] = df["macd"].ewm(span=9).mean()
+
+        df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+
+        model_df = df.dropna().copy()
+
+        model_df["target"] = (model_df["Close"].shift(-1) > model_df["Close"]).astype(int)
+
+        features = ["rsi","ma25","ma75","vol_ratio","macd","signal"]
+
+        X = model_df[features]
+        y = model_df["target"]
+
+        split = int(len(X) * 0.8)
+
+        X_train = X.iloc[:split]
+        y_train = y.iloc[:split]
+
+        model = RandomForestClassifier(
+            n_estimators=300,
+            max_depth=7,
+            random_state=42
+        )
+
+        model.fit(X_train, y_train)
+
+        latest = X.iloc[-1:]
+
+        prob = model.predict_proba(latest)[0][1]
+
+        score = 0
+
+        rsi = float(model_df["rsi"].iloc[-1])
+        macd = float(model_df["macd"].iloc[-1])
+        signal = float(model_df["signal"].iloc[-1])
+        ma25 = float(model_df["ma25"].iloc[-1])
+        ma75 = float(model_df["ma75"].iloc[-1])
+        vol_ratio = float(model_df["vol_ratio"].iloc[-1])
+
+        # スコア
+        if rsi < 35:
+            score += 25
+        if macd > signal:
+            score += 25
+        if ma25 > ma75:
+            score += 20
+        if vol_ratio > 1.5:
+            score += 20
+
+        score += prob * 30
+        score += market_score
+
+        price = float(close.iloc[-1])
+
+        results.append({
+            "ticker": ticker,
+            "score": round(score, 1),
+            "prob": round(prob * 100, 1),
+            "price": price,
+            "rsi": rsi,
+            "vol": vol_ratio
+        })
+
+        # CSV保存
         with open("train_data.csv", "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
 
             writer.writerow([
                 datetime.now().strftime("%Y-%m-%d"),
                 ticker,
-                float(X["rsi"].iloc[-1]),
-                float(close.iloc[-1]),
-                prob
+                rsi,
+                macd,
+                signal,
+                ma25,
+                ma75,
+                vol_ratio,
+                int(model_df["target"].iloc[-1])
             ])
 
     except Exception as e:
-        print("CSV保存エラー:", e)
+        print(f"{ticker} エラー:", e)
     score = 0
 
 
