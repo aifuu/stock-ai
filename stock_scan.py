@@ -168,6 +168,32 @@ for ticker in TICKERS:
             "vol": round(vol_ratio,2)
         })
 
+
+# =====================
+# CSV学習データ読み込み
+# =====================
+def load_training_data():
+    if not os.path.exists(TRAIN_FILE):
+        return None, None
+
+    df = pd.read_csv(TRAIN_FILE)
+
+    df = df.dropna()
+
+    X = df[[
+        "rsi",
+        "macd",
+        "signal",
+        "ma25",
+        "ma75",
+        "vol_ratio"
+    ]]
+
+    y = df["target"]
+
+    return X, y
+
+    
         # =====================
         # 学習データ保存
         # =====================
