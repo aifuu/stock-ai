@@ -32,3 +32,14 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python stock_scan.py
+
+      - name: Commit History
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git add prediction_history.csv
+
+          git commit -m "Update history" || echo "No changes"
+
+          git push
