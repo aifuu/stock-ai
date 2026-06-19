@@ -259,7 +259,8 @@ for i, r in enumerate(top):
     msg += f"""
 ━━━━━━━━━━━━━━
 
-#{i+1} {r['ticker']}
+#{i+1} {r['ticker']}  {COMPANY_NAMES.get(r['ticker'], '')}
+
 
 {rank}
 
