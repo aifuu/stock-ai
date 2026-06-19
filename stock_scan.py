@@ -236,6 +236,41 @@ for ticker in TICKERS:
 
 for ticker in TICKERS:
 
+    # ===== データ取得・特徴量作成 =====
+
+    df = yf.download(ticker, period="3y", interval="1d", auto_adjust=True)
+
+    if df is None or len(df) < 100:
+        continue
+
+    close = df["Close"]
+
+    df["rsi"] = calc_rsi(close)
+    df["ma25"] = close.rolling(25).mean()
+    df["ma75"] = close.rolling(75).mean()
+
+    model_df = df.dropna().copy()
+
+    model_df["target"] = (model_df["Close"].shift(-1) > model_df["Close"]).astype(int)
+
+    X = model_df[["rsi", "ma25", "ma75"]]
+    y = model_df["target"]
+
+    split = int(len(X) * 0.8)
+
+    X_train = X.iloc[:split]
+    y_train = y.iloc[:split]
+
+    model = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=7,
+        random_state=42
+    )
+
+    model.fit(X_train, y_train)
+
+    latest = X.iloc[-1:]
+
     prob = model.predict_proba(latest)[0][1]
 
     score = 0
@@ -247,18 +282,13 @@ for ticker in TICKERS:
             writer.writerow([
                 datetime.now().strftime("%Y-%m-%d"),
                 ticker,
-                rsi,
-                macd,
-                signal,
-                ma25,
-                ma75,
-                vol_ratio,
-                int(close.shift(-1).iloc[-1] > close.iloc[-1])
+                float(X["rsi"].iloc[-1]),
+                float(close.iloc[-1]),
+                prob
             ])
 
     except Exception as e:
         print("CSV保存エラー:", e)
-
     score = 0
 
 
