@@ -210,7 +210,7 @@ for ticker in TICKERS:
             "rsi": round(rsi,1),
             "vol": round(vol_ratio,2)
             "take_profit": round(take_profit,0),
-    　　　　 "stop_loss": round(stop_loss,0)
+            "stop_loss": round(stop_loss,0) 
         })
 
     except Exception as e:
