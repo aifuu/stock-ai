@@ -281,4 +281,3 @@ if msg == "📊 AI株スキャン結果\n\n":
 print(msg)
 
 send(msg)
-```
