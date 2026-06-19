@@ -77,6 +77,38 @@ def calc_rsi(close, period=14):
 # メイン処理
 # =====================
 
+# =====================
+# 日経平均先物フィルター
+# =====================
+
+market_score = 0
+
+try:
+
+    nikkei = yf.download(
+        "NK=F",
+        period="3mo",
+        interval="1d",
+        auto_adjust=True,
+        progress=False
+    )
+
+    nikkei_close = nikkei["Close"]
+
+    nikkei_ma25 = (
+        nikkei_close
+        .rolling(25)
+        .mean()
+    )
+
+    if nikkei_close.iloc[-1] > nikkei_ma25.iloc[-1]:
+        market_score = 10
+    else:
+        market_score = -10
+
+except:
+    market_score = 0
+
 results = []
 
 for ticker in TICKERS:
