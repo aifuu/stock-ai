@@ -209,6 +209,8 @@ for ticker in TICKERS:
             "price": round(price,0),
             "rsi": round(rsi,1),
             "vol": round(vol_ratio,2)
+            "take_profit": round(take_profit,0),
+    　　　　 "stop_loss": round(stop_loss,0)
         })
 
     except Exception as e:
@@ -262,10 +264,12 @@ for i, r in enumerate(top):
 AIスコア: {r['score']}
 上昇確率: {r['prob']}%
 
+買値: {r['price']}
+利確: {r.get('take_profit', '---')}
+損切: {r.get('stop_loss', '---')}
+
 RSI: {r['rsi']}
 出来高倍率: {r['vol']}
-
-買値: {r['price']}
 ━━━━━━━━━━━━━━
 """
 
