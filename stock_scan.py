@@ -286,6 +286,14 @@ for ticker in TICKERS:
             "price"
         ])
 
+            "ticker": ticker,
+            "score": round(score, 1),
+            "prob": round(prob * 100, 1),
+            "price": round(price, 0),
+            "rsi": round(rsi, 1),
+            "vol": round(vol_ratio, 2)
+        })
+
 with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
 
@@ -296,13 +304,6 @@ with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
         round(prob * 100, 1),
         round(price, 0)
     ])
-            "ticker": ticker,
-            "score": round(score, 1),
-            "prob": round(prob * 100, 1),
-            "price": round(price, 0),
-            "rsi": round(rsi, 1),
-            "vol": round(vol_ratio, 2)
-        })
 
     except Exception as e:
 
