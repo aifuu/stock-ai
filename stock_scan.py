@@ -10,8 +10,6 @@ import joblib
 
 from sklearn.ensemble import RandomForestClassifier
 
-from sklearn.metrics import accuracy_score
-
 # =====================
 # Discord
 # =====================
@@ -52,6 +50,7 @@ COMPANY_NAMES = {
 TRAIN_FILE = "train_data.csv"
 MODEL_FILE = "model.pkl"
 
+
 # =====================
 # RSI
 # =====================
@@ -88,7 +87,7 @@ def load_training_data():
 
 
 # =====================
-# モデルロード
+# モデル
 # =====================
 if os.path.exists(MODEL_FILE):
     model = joblib.load(MODEL_FILE)
@@ -104,8 +103,9 @@ else:
 
 results = []
 
+
 # =====================
-# メイン
+# メイン処理
 # =====================
 for ticker in TICKERS:
 
@@ -151,17 +151,24 @@ for ticker in TICKERS:
         y_train = y.iloc[:split]
 
         # =====================
-        # 学習（銘柄別）
+        # 学習
         # =====================
         model.fit(X_train, y_train)
-
         joblib.dump(model, MODEL_FILE)
 
         latest = X.iloc[-1:]
         prob = model.predict_proba(latest)[0][1]
 
         # =====================
-        # CSV保存（学習データ）
+        # 価格
+        # =====================
+        price = close.iloc[-1]
+
+        take_profit = price * 1.08
+        stop_loss = price * 0.95
+
+        # =====================
+        # CSV保存
         # =====================
         with open(TRAIN_FILE, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -187,7 +194,6 @@ for ticker in TICKERS:
         ma25 = df["ma25"].iloc[-1]
         ma75 = df["ma75"].iloc[-1]
         vol_ratio = df["vol_ratio"].iloc[-1]
-        price = close.iloc[-1]
 
         score = 0
 
@@ -208,9 +214,9 @@ for ticker in TICKERS:
             "prob": round(prob*100,1),
             "price": round(price,0),
             "rsi": round(rsi,1),
-            "vol": round(vol_ratio,2)
+            "vol": round(vol_ratio,2),
             "take_profit": round(take_profit,0),
-            "stop_loss": round(stop_loss,0) 
+            "stop_loss": round(stop_loss,0)
         })
 
     except Exception as e:
@@ -218,7 +224,7 @@ for ticker in TICKERS:
 
 
 # =====================
-# CSV全履歴で再学習（正しい位置）
+# CSV全履歴学習
 # =====================
 try:
     X_all, y_all = load_training_data()
@@ -265,8 +271,8 @@ AIスコア: {r['score']}
 上昇確率: {r['prob']}%
 
 買値: {r['price']}
-利確: {r.get('take_profit', '---')}
-損切: {r.get('stop_loss', '---')}
+利確: {r['take_profit']}
+損切: {r['stop_loss']}
 
 RSI: {r['rsi']}
 出来高倍率: {r['vol']}
