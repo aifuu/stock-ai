@@ -238,6 +238,8 @@ for ticker in TICKERS:
 
         score += prob * 30
 
+        score += market_score
+
         price = float(close.iloc[-1])
 
         results.append({
