@@ -275,7 +275,13 @@ for ticker in TICKERS:
         price = float(close.iloc[-1])
 
         results.append({
-       
+    "ticker": ticker,
+    "score": round(score, 1),
+    "prob": round(prob * 100, 1),
+    "price": round(price, 0),
+    "rsi": round(rsi, 1),
+    "vol": round(vol_ratio, 2)
+})
 
     except Exception as e:
 
