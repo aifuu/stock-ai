@@ -313,6 +313,30 @@ for ticker in TICKERS:
                 round(price, 0)
             ])
 
+# =====================
+# AI学習（forループの外）
+# =====================
+
+train_df = pd.read_csv("train_data.csv").dropna()
+
+X = train_df[
+    ["rsi","macd","signal","ma25","ma75","vol"]
+]
+
+y = train_df["target"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+model = RandomForestClassifier(
+    n_estimators=300,
+    max_depth=7,
+    random_state=42
+)
+
+model.fit(X_train, y_train)
+
     except Exception as e:
         print(
             f"{ticker} エラー: {e}"
