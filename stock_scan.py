@@ -137,6 +137,20 @@ for ticker in TICKERS:
 
         prob = model.predict_proba(latest)[0][1]
 
+# =====================
+# CSV全履歴で再学習（追加）
+# =====================
+try:
+    X_all, y_all = load_training_data()
+
+    if X_all is not None and len(X_all) > 200:
+        model.fit(X_all, y_all)
+        joblib.dump(model, MODEL_FILE)
+        print("✅ CSV学習データで強化学習完了")
+
+except Exception as e:
+    print("CSV学習スキップ:", e)
+
         # ===== スコア =====
         rsi = df["rsi"].iloc[-1]
         macd = df["macd"].iloc[-1]
