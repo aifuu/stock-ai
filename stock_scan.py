@@ -234,6 +234,21 @@ for ticker in TICKERS:
             .predict_proba(latest)[0][1]
         )
 
+        with open("train_data.csv", "a", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+
+    writer.writerow([
+        datetime.now().strftime("%Y-%m-%d"),
+        ticker,
+        rsi,
+        macd,
+        signal,
+        ma25,
+        ma75,
+        vol_ratio,
+        int(close.shift(-1).iloc[-1] > close.iloc[-1])
+    ])
+
         score = 0
 
         rsi = float(
