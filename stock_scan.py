@@ -78,7 +78,7 @@ def calc_rsi(close, period=14):
 # =====================
 
 # =====================
-# 日経平均先物フィルター
+# 日経平均先物 強化版
 # =====================
 
 market_score = 0
@@ -87,26 +87,55 @@ try:
 
     nikkei = yf.download(
         "NK=F",
-        period="3mo",
+        period="6mo",
         interval="1d",
         auto_adjust=True,
         progress=False
     )
 
-    nikkei_close = nikkei["Close"]
+    if isinstance(nikkei.columns, pd.MultiIndex):
+        nikkei.columns = nikkei.columns.get_level_values(0)
 
-    nikkei_ma25 = (
-        nikkei_close
-        .rolling(25)
-        .mean()
+    close = nikkei["Close"]
+
+    current = float(close.iloc[-1])
+
+    ma25 = float(
+        close.rolling(25).mean().iloc[-1]
     )
 
-    if nikkei_close.iloc[-1] > nikkei_ma25.iloc[-1]:
-        market_score = 10
-    else:
-        market_score = -10
+    ma75 = float(
+        close.rolling(75).mean().iloc[-1]
+    )
 
-except:
+    change5 = (
+        current /
+        float(close.iloc[-6]) - 1
+    ) * 100
+
+    # 25日線判定
+    if current > ma25:
+        market_score += 10
+    else:
+        market_score -= 10
+
+    # 75日線判定
+    if current > ma75:
+        market_score += 10
+    else:
+        market_score -= 10
+
+    # 5日騰落率判定
+    if change5 > 2:
+        market_score += 10
+
+    elif change5 < -2:
+        market_score -= 10
+
+except Exception as e:
+
+    print("日経先物取得失敗", e)
+
     market_score = 0
 
 results = []
