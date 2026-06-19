@@ -261,6 +261,7 @@ try:
 except Exception as e:
     print("CSV保存エラー:", e)
 
+
 score = 0
 
         rsi = float(
