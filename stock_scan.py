@@ -1,3 +1,5 @@
+import csv
+from datetime import datetime
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -138,6 +140,7 @@ except Exception as e:
 
     market_score = 0
 
+HISTORY_FILE = "prediction_history.csv"
 results = []
 
 for ticker in TICKERS:
@@ -272,6 +275,27 @@ for ticker in TICKERS:
         price = float(close.iloc[-1])
 
         results.append({
+        if not os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "date",
+            "ticker",
+            "score",
+            "probability",
+            "price"
+        ])
+
+with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+
+    writer.writerow([
+        datetime.now().strftime("%Y-%m-%d"),
+        ticker,
+        round(score, 1),
+        round(prob * 100, 1),
+        round(price, 0)
+    ])
             "ticker": ticker,
             "score": round(score, 1),
             "prob": round(prob * 100, 1),
