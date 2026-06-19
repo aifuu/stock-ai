@@ -1,13 +1,14 @@
 import csv
+import os
 from datetime import datetime
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
-import os
+import joblib
 
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
 
 # =====================
 # Discord
@@ -46,6 +47,10 @@ COMPANY_NAMES = {
     "9984.T": "ソフトバンクG"
 }
 
+HISTORY_FILE = "prediction_history.csv"
+TRAIN_FILE = "train_data.csv"
+MODEL_FILE = "model.pkl"
+
 # =====================
 # RSI
 # =====================
@@ -58,11 +63,26 @@ def calc_rsi(close, period=14):
 
 
 # =====================
-# メイン
+# 学習モデルロード or 新規作成
 # =====================
-results = []
-HISTORY_FILE = "prediction_history.csv"
+if os.path.exists(MODEL_FILE):
+    model = joblib.load(MODEL_FILE)
+    print("✅ 既存モデル読み込み")
+else:
+    model = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=7,
+        random_state=42
+    )
+    print("🆕 新規モデル")
 
+
+results = []
+
+
+# =====================
+# メインループ
+# =====================
 for ticker in TICKERS:
 
     try:
@@ -76,7 +96,7 @@ for ticker in TICKERS:
         close = df["Close"]
         volume = df["Volume"]
 
-        # ===== features =====
+        # ===== 特徴量 =====
         df["ret1"] = close.pct_change()
         df["ma25"] = close.rolling(25).mean()
         df["ma75"] = close.rolling(75).mean()
@@ -90,7 +110,7 @@ for ticker in TICKERS:
 
         df = df.dropna()
 
-        # ===== target =====
+        # ===== ラベル =====
         df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
 
         features = ["ret1","ma25","ma75","vol_ratio","rsi","macd","signal"]
@@ -106,20 +126,18 @@ for ticker in TICKERS:
         X_train = X.iloc[:split]
         y_train = y.iloc[:split]
 
-        # ===== model =====
-        model = RandomForestClassifier(
-            n_estimators=300,
-            max_depth=7,
-            random_state=42
-        )
-
+        # =====================
+        # 学習
+        # =====================
         model.fit(X_train, y_train)
+
+        joblib.dump(model, MODEL_FILE)
 
         latest = X.iloc[-1:]
 
         prob = model.predict_proba(latest)[0][1]
 
-        # ===== score =====
+        # ===== スコア =====
         rsi = df["rsi"].iloc[-1]
         macd = df["macd"].iloc[-1]
         signal = df["signal"].iloc[-1]
@@ -150,8 +168,10 @@ for ticker in TICKERS:
             "vol": round(vol_ratio,2)
         })
 
-        # ===== 学習データ保存 =====
-        with open("train_data.csv", "a", newline="", encoding="utf-8") as f:
+        # =====================
+        # 学習データ保存
+        # =====================
+        with open(TRAIN_FILE, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
 
             writer.writerow([
@@ -193,8 +213,6 @@ for i, r in enumerate(top):
     else:
         continue
 
-    buy = r["price"]
-
     msg += f"""
 ━━━━━━━━━━━━━━
 #{i+1} {r['ticker']} {COMPANY_NAMES.get(r['ticker'],'')}
@@ -207,7 +225,7 @@ AIスコア: {r['score']}
 RSI: {r['rsi']}
 出来高倍率: {r['vol']}
 
-買値: {buy}
+買値: {r['price']}
 ━━━━━━━━━━━━━━
 """
 
