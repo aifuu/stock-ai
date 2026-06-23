@@ -1,6 +1,7 @@
 import csv
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import yfinance as yf
 import pandas as pd
