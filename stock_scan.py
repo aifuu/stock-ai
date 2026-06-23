@@ -108,16 +108,25 @@ results = []
 # =====================
 for ticker in TICKERS:
 
-    try:
-        print("解析中:", ticker)
 
-        df = yf.download(ticker, period="3y", interval="1d", auto_adjust=True)
+try:
+    print("解析中:", ticker)
 
-               if df is None or len(df) < 150:
-            continue
+    df = yf.download(
+        ticker,
+        period="3y",
+        interval="1d",
+        auto_adjust=True
+    )
 
-        close = df["Close"].squeeze()
-        volume = df["Volume"].squeeze()
+    if df is None or len(df) < 150:
+        continue
+
+    close = df["Close"].squeeze()
+    volume = df["Volume"].squeeze()
+
+    # 特徴量
+    df["ret1"] = close.pct_change()
 
 　　　　price = float(close.iloc[-1])
 
