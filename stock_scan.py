@@ -125,30 +125,35 @@ try:
     close = df["Close"].squeeze()
     volume = df["Volume"].squeeze()
 
-    # 特徴量
-    df["ret1"] = close.pct_change)
-    price = float(close.iloc[-1])
-        # ===== 特徴量 =====
-        df["ret1"] = close.pct_change()
-        df["ma25"] = close.rolling(25).mean()
-        df["ma75"] = close.rolling(75).mean()
-        df["vol_ratio"] = volume / volume.rolling(20).mean()
-        df["rsi"] = calc_rsi(close)
+    # ===== 特徴量 =====
+    df["ret1"] = close.pct_change()
+    df["ma25"] = close.rolling(25).mean()
+    df["ma75"] = close.rolling(75).mean()
+    df["vol_ratio"] = volume / volume.rolling(20).mean()
+    df["rsi"] = calc_rsi(close)
 
-        ema12 = close.ewm(span=12).mean()
-        ema26 = close.ewm(span=26).mean()
-        df["macd"] = ema12 - ema26
-        df["signal"] = df["macd"].ewm(span=9).mean()
+    ema12 = close.ewm(span=12).mean()
+    ema26 = close.ewm(span=26).mean()
+    df["macd"] = ema12 - ema26
+    df["signal"] = df["macd"].ewm(span=9).mean()
 
-        df = df.dropna()
+    df = df.dropna()
 
-        # ===== ラベル =====
-        df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
+    # ===== ラベル =====
+    df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
 
-        features = ["ret1","ma25","ma75","vol_ratio","rsi","macd","signal"]
+    features = [
+        "ret1",
+        "ma25",
+        "ma75",
+        "vol_ratio",
+        "rsi",
+        "macd",
+        "signal"
+    ]
 
-        X = df[features]
-        y = df["target"]
+    X = df[features]
+    y = df["target"]   
 
         if len(X) < 100:
             continue
@@ -170,13 +175,13 @@ try:
         # =====================
         # 数値取得（Series事故防止）
         # =====================
-        price = float(close.iloc[-1])
-        rsi = float(df["rsi"].iloc[-1])
-        macd = float(df["macd"].iloc[-1])
-        signal = float(df["signal"].iloc[-1])
-        ma25 = float(df["ma25"].iloc[-1])
-        ma75 = float(df["ma75"].iloc[-1])
-        vol_ratio = float(df["vol_ratio"].iloc[-1])
+       price = float(close.squeeze().iloc[-1])
+       rsi = float(df["rsi"].squeeze().iloc[-1])
+       macd = float(df["macd"].squeeze().iloc[-1])
+       signal = float(df["signal"].squeeze().iloc[-1])
+       ma25 = float(df["ma25"].squeeze().iloc[-1])
+       ma75 = float(df["ma75"].squeeze().iloc[-1])
+       vol_ratio = float(df["vol_ratio"].squeeze().iloc[-1])
 
         # =====================
         # 利確・損切
