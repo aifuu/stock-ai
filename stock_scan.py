@@ -128,7 +128,7 @@ try:
     # 特徴量
     df["ret1"] = close.pct_change()
 
-　　　　price = float(close.iloc[-1])
+　　 price = float(close.iloc[-1])
 
         # ===== 特徴量 =====
         df["ret1"] = close.pct_change()
