@@ -116,8 +116,8 @@ for ticker in TICKERS:
         if df is None or len(df) < 150:
             continue
 
-        close = df["Close"].squeeze()
-　　　　volume = df["Volume"].squeeze()
+     close = df["Close"].squeeze()
+     volume = df["Volume"].squeeze()
 
 　　　　price = float(close.iloc[-1])
 
