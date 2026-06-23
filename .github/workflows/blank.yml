@@ -38,8 +38,10 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
 
+          git add train_data.csv
+          git add model.pkl
           git add prediction_history.csv
 
-          git commit -m "Update history" || echo "No changes"
+          git commit -m "Update AI data" || echo "No changes"
 
           git push
