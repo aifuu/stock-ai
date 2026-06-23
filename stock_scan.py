@@ -111,48 +111,47 @@ for ticker in TICKERS:
     try:
         print("解析中:", ticker)
 
-    df = yf.download(
-        ticker,
-        period="3y",
-        interval="1d",
-        auto_adjust=True
-    )
+        df = yf.download(
+            ticker,
+            period="3y",
+            interval="1d",
+            auto_adjust=True
+        )
 
-    if df is None or len(df) < 150:
-        continue
+        if df is None or len(df) < 150:
+            continue
 
-    close = df["Close"].squeeze()
-    volume = df["Volume"].squeeze()
+        close = df["Close"].squeeze()
+        volume = df["Volume"].squeeze()
 
-    # ===== 特徴量 =====
-    df["ret1"] = close.pct_change()
-    df["ma25"] = close.rolling(25).mean()
-    df["ma75"] = close.rolling(75).mean()
-    df["vol_ratio"] = volume / volume.rolling(20).mean()
-    df["rsi"] = calc_rsi(close)
+        # ===== 特徴量 =====
+        df["ret1"] = close.pct_change()
+        df["ma25"] = close.rolling(25).mean()
+        df["ma75"] = close.rolling(75).mean()
+        df["vol_ratio"] = volume / volume.rolling(20).mean()
+        df["rsi"] = calc_rsi(close)
 
-    ema12 = close.ewm(span=12).mean()
-    ema26 = close.ewm(span=26).mean()
-    df["macd"] = ema12 - ema26
-    df["signal"] = df["macd"].ewm(span=9).mean()
+        ema12 = close.ewm(span=12).mean()
+        ema26 = close.ewm(span=26).mean()
+        df["macd"] = ema12 - ema26
+        df["signal"] = df["macd"].ewm(span=9).mean()
 
-    df = df.dropna()
+        df = df.dropna()
 
-    # ===== ラベル =====
-    df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
+        df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
 
-    features = [
-        "ret1",
-        "ma25",
-        "ma75",
-        "vol_ratio",
-        "rsi",
-        "macd",
-        "signal"
-    ]
+        features = [
+            "ret1",
+            "ma25",
+            "ma75",
+            "vol_ratio",
+            "rsi",
+            "macd",
+            "signal"
+        ]
 
-    X = df[features]
-    y = df["target"]   
+        X = df[features]
+        y = df["target"]
 
         if len(X) < 100:
             continue
@@ -162,75 +161,22 @@ for ticker in TICKERS:
         X_train = X.iloc[:split]
         y_train = y.iloc[:split]
 
-        # =====================
-        # 学習
-        # =====================
         model.fit(X_train, y_train)
         joblib.dump(model, MODEL_FILE)
 
         latest = X.iloc[-1:]
         prob = model.predict_proba(latest)[0][1]
+        price = float(np.asarray(close)[-1])
+        rsi = float(np.asarray(df["rsi"])[-1])
+        macd = float(np.asarray(df["macd"])[-1])
+        signal = float(np.asarray(df["signal"])[-1])
+        ma25 = float(np.asarray(df["ma25"])[-1])
+        ma75 = float(np.asarray(df["ma75"])[-1])
+        vol_ratio = float(np.asarray(df["vol_ratio"])[-1])
 
-        # =====================
-        # 数値取得（Series事故防止）
-        # =====================
-       price = float(close.squeeze().iloc[-1])
-       rsi = float(df["rsi"].squeeze().iloc[-1])
-       macd = float(df["macd"].squeeze().iloc[-1])
-       signal = float(df["signal"].squeeze().iloc[-1])
-       ma25 = float(df["ma25"].squeeze().iloc[-1])
-       ma75 = float(df["ma75"].squeeze().iloc[-1])
-       vol_ratio = float(df["vol_ratio"].squeeze().iloc[-1])
 
-        # =====================
-        # 利確・損切
-        # =====================
-        take_profit = price * 1.08
-        stop_loss = price * 0.95
 
-        # =====================
-        # CSV保存
-        # =====================
-        with open(TRAIN_FILE, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                datetime.now().strftime("%Y-%m-%d"),
-                ticker,
-                rsi,
-                macd,
-                signal,
-                ma25,
-                ma75,
-                vol_ratio,
-                int(df["target"].iloc[-1])
-            ])
-
-        # =====================
-        # スコア
-        # =====================
-        score = 0
-
-        if rsi < 35:
-            score += 25
-        if macd > signal:
-            score += 25
-        if ma25 > ma75:
-            score += 20
-        if vol_ratio > 1.5:
-            score += 20
-
-        score += prob * 30
-
-        results.append({
-            "ticker": ticker,
-            "score": round(score,1),
-            "prob": round(prob*100,1),
-            "price": round(price,0),
-            "rsi": round(rsi,1),
-            "vol": round(vol_ratio,2),
-            "take_profit": round(take_profit,0),
-            "stop_loss": round(stop_loss,0)
-        })
+        # 以下続く...
 
     except Exception as e:
         print(ticker, "エラー:", e)
