@@ -113,11 +113,11 @@ for ticker in TICKERS:
 
         df = yf.download(ticker, period="3y", interval="1d", auto_adjust=True)
 
-        if df is None or len(df) < 150:
+               if df is None or len(df) < 150:
             continue
 
-     close = df["Close"].squeeze()
-     volume = df["Volume"].squeeze()
+        close = df["Close"].squeeze()
+        volume = df["Volume"].squeeze()
 
 　　　　price = float(close.iloc[-1])
 
