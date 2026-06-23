@@ -173,6 +173,9 @@ for ticker in TICKERS:
         ma25 = float(np.asarray(df["ma25"])[-1])
         ma75 = float(np.asarray(df["ma75"])[-1])
         vol_ratio = float(np.asarray(df["vol_ratio"])[-1])
+
+        high52 = float(close.rolling(252).max().iloc[-1])
+        distance = (price / high52 - 1) * 100
         
         take_profit = price * 1.08
         stop_loss = price * 0.95
