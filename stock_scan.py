@@ -116,8 +116,10 @@ for ticker in TICKERS:
         if df is None or len(df) < 150:
             continue
 
-        close = df["Close"]
-        volume = df["Volume"]
+        close = df["Close"].squeeze()
+　　　　volume = df["Volume"].squeeze()
+
+　　　　price = float(close.iloc[-1])
 
         # ===== 特徴量 =====
         df["ret1"] = close.pct_change()
