@@ -108,9 +108,8 @@ results = []
 # =====================
 for ticker in TICKERS:
 
-
-try:
-    print("解析中:", ticker)
+    try:
+        print("解析中:", ticker)
 
     df = yf.download(
         ticker,
