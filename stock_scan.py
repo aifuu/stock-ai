@@ -251,7 +251,8 @@ if not results:
 results = sorted(results, key=lambda x: x["score"], reverse=True)
 top = results[:3]
 
-msg = "📊 AI株スキャン結果\n\n"
+msg = f"⏰ 実行時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+msg += "📊 AI株スキャン結果\n\n"
 
 for i, r in enumerate(top):
 
