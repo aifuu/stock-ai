@@ -126,10 +126,8 @@ try:
     volume = df["Volume"].squeeze()
 
     # 特徴量
-    df["ret1"] = close.pct_change()
-
-　　 price = float(close.iloc[-1])
-
+    df["ret1"] = close.pct_change)
+    price = float(close.iloc[-1])
         # ===== 特徴量 =====
         df["ret1"] = close.pct_change()
         df["ma25"] = close.rolling(25).mean()
