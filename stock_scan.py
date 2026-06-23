@@ -211,11 +211,11 @@ msg = "📊 AI株スキャン結果\n\n"
 
 for i, r in enumerate(top):
 
-    if r["score"] >= 85:
+    if r["score"] >= 60:
         rank = "🔥 強い買い"
-    elif r["score"] >= 70:
+    elif r["score"] >= 45:
         rank = "🟢 買い候補"
-    elif r["score"] >= 60:
+    elif r["score"] >= 35:
         rank = "🟡 監視"
     else:
         continue
