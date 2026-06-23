@@ -193,8 +193,17 @@ for ticker in TICKERS:
 
         if vol_ratio > 1.5:
             score += 20
-
+        # ★追加
+        if distance > -10:
+            score += 15
+        elif distance > -20:
+            score += 8
+            
         score += prob * 30
+
+ 
+
+       
 
         results.append({
             "ticker": ticker,
