@@ -173,10 +173,42 @@ for ticker in TICKERS:
         ma25 = float(np.asarray(df["ma25"])[-1])
         ma75 = float(np.asarray(df["ma75"])[-1])
         vol_ratio = float(np.asarray(df["vol_ratio"])[-1])
+        
+        take_profit = price * 1.08
+        stop_loss = price * 0.95
 
+        score = 0
 
+        if rsi < 35:
+            score += 25
 
-        # 以下続く...
+        if macd > signal:
+            score += 25
+
+        if ma25 > ma75:
+            score += 20
+
+        if vol_ratio > 1.5:
+            score += 20
+
+        score += prob * 30
+
+        results.append({
+            "ticker": ticker,
+            "score": round(score, 1),
+            "prob": round(prob * 100, 1),
+            "price": round(price, 0),
+            "rsi": round(rsi, 1),
+            "vol": round(vol_ratio, 2),
+            "take_profit": round(take_profit, 0),
+            "stop_loss": round(stop_loss, 0)
+        })
+        print(
+            ticker,
+            "score=", round(score,1),
+            "prob=", round(prob*100,1)
+        )
+
 
     except Exception as e:
         print(ticker, "エラー:", e)
