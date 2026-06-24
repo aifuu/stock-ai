@@ -18,14 +18,25 @@ WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 
 def send(msg):
     if not WEBHOOK_URL:
-        print("Webhookなし")
+        print("❌ Webhookなし")
         return
 
     if len(msg) > 1900:
         msg = msg[:1900]
 
-    requests.post(WEBHOOK_URL, json={"content": msg})
+    r = requests.post(
+        WEBHOOK_URL,
+        json={"content": msg},
+        timeout=30
+    )
 
+    print("Discord status =", r.status_code)
+
+    if r.status_code == 204:
+        print("✅ Discord送信成功")
+    else:
+        print("❌ Discord送信失敗")
+        print(r.text)
 
 # =====================
 # 銘柄
