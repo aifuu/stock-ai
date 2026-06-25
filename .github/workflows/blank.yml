@@ -2,7 +2,9 @@ name: AI Stock Scan
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '30 23 * * 1-5'      # 8:30 JST
+    - cron: '0,30 0-4 * * 1-5'   # 9:00～13:30 JST
+
   workflow_dispatch:
 
 jobs:
