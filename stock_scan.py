@@ -135,13 +135,19 @@ def load_training_data():
     df = pd.read_csv(TRAIN_FILE).dropna()
 
     X = df[[
-        "rsi",
-        "macd",
-        "signal",
-        "ma25",
-        "ma75",
-        "vol_ratio"
-    ]]
+    "rsi",
+    "macd",
+    "signal",
+    "ma25",
+    "ma75",
+    "vol_ratio",
+    "from_high",
+    "from_low",
+    "nikkei_kairi25",
+    "nikkei_rsi",
+    "nikkei_macd",
+    "nikkei_return_5d"
+]]
 
     y = df["target"]
 
