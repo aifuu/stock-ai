@@ -219,6 +219,7 @@ for ticker in TICKERS:
 
         df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
 
+
         features = [
             "ret1",
             "ma25",
@@ -226,8 +227,13 @@ for ticker in TICKERS:
             "vol_ratio",
             "rsi",
             "macd",
-            "signal"
+            "signal",
+            "nikkei_kairi25",
+            "nikkei_rsi",
+            "nikkei_macd",
+            "nikkei_return_5d"
         ]
+
 
         X = df[features]
         y = df["target"]
