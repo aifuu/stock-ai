@@ -128,7 +128,7 @@ nikkei["nikkei_return_5d"] = (
 # =====================
 # 学習データ読み込み
 # =====================
-def load_training_data():
+def load_training_data():    
     if not os.path.exists(TRAIN_FILE):
         return None, None
 
@@ -152,6 +152,31 @@ def load_training_data():
     y = df["target"]
 
     return X, y
+
+
+# =====================
+# 学習データ保存
+# =====================
+def save_training_data(row):
+
+    file_exists = os.path.exists(TRAIN_FILE)
+
+    with open(
+        TRAIN_FILE,
+        "a",
+        newline="",
+        encoding="utf-8"
+    ) as f:
+
+        writer = csv.DictWriter(
+            f,
+            fieldnames=row.keys()
+        )
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow(row)
 
 
 # =====================
@@ -324,15 +349,26 @@ for ticker in TICKERS:
         score += prob * 50
 
 
+        save_training_data({
+            "rsi": rsi,
+            "macd": macd,
+            "signal": signal,
+            "ma25": ma25,
+            "ma75": ma75,
+            "vol_ratio": vol_ratio,
+            
+            "from_high": float(df["from_high"].iloc[-1]),
+            "from_low": float(df["from_low"].iloc[-1]),
+            "nikkei_kairi25": float(df["nikkei_kairi25"].iloc[-1]),
+            "nikkei_rsi": float(df["nikkei_rsi"].iloc[-1]),
+            "nikkei_macd": float(df["nikkei_macd"].iloc[-1]),
+            "nikkei_return_5d": float(df["nikkei_return_5d"].iloc[-1]),
+            
+            "target": int(prob > 0.5)
+        })
         
-
-
-
- 
-
-       
-
         results.append({
+            
             "ticker": ticker,
             "score": round(score, 1),
             "prob": round(prob * 100, 1),
