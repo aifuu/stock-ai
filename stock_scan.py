@@ -321,7 +321,7 @@ for ticker in TICKERS:
         if nikkei_return > 0:
             score += 5
 
-        score += prob * 30
+        score += prob * 50
 
 
         
