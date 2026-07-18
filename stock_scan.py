@@ -199,6 +199,15 @@ for ticker in TICKERS:
         df["macd"] = ema12 - ema26
         df["signal"] = df["macd"].ewm(span=9).mean()
 
+        df["high252"] = close.rolling(252).max()
+        df["low252"] = close.rolling(252).min()
+        df["from_high"] = (
+            (close / df["high252"] - 1) * 100
+        )
+        df["from_low"] = (
+            (close / df["low252"] - 1) * 100
+        )
+
 
         # 日経平均特徴量を結合
         df = df.join(
