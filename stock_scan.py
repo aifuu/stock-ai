@@ -38,38 +38,6 @@ def send(msg):
         print("❌ Discord送信失敗")
         print(r.text)
 
-# =====================
-# 日経平均
-# =====================
-nikkei = yf.download(
-    "^N225",
-    period="3y",
-    interval="1d",
-    auto_adjust=True
-)
-
-nikkei_close = nikkei["Close"].squeeze()
-
-nikkei["nikkei_ma25"] = nikkei_close.rolling(25).mean()
-nikkei["nikkei_kairi25"] = (
-    (nikkei_close - nikkei["nikkei_ma25"])
-    / nikkei["nikkei_ma25"] * 100
-)
-
-nikkei["nikkei_rsi"] = calc_rsi(nikkei_close)
-
-ema12_n = nikkei_close.ewm(span=12).mean()
-ema26_n = nikkei_close.ewm(span=26).mean()
-
-nikkei["nikkei_macd"] = ema12_n - ema26_n
-
-nikkei["nikkei_return_5d"] = (
-    nikkei_close.pct_change(5) * 100
-)
-
-
-
-
 
 # =====================
 # 銘柄
@@ -122,6 +90,39 @@ def calc_rsi(close, period=14):
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss.replace(0, 0.0001)
     return 100 - (100 / (1 + rs))
+
+
+# =====================
+# 日経平均
+# =====================
+nikkei = yf.download(
+    "^N225",
+    period="3y",
+    interval="1d",
+    auto_adjust=True
+)
+
+nikkei_close = nikkei["Close"].squeeze()
+
+nikkei["nikkei_ma25"] = nikkei_close.rolling(25).mean()
+nikkei["nikkei_kairi25"] = (
+    (nikkei_close - nikkei["nikkei_ma25"])
+    / nikkei["nikkei_ma25"] * 100
+)
+
+nikkei["nikkei_rsi"] = calc_rsi(nikkei_close)
+
+ema12_n = nikkei_close.ewm(span=12).mean()
+ema26_n = nikkei_close.ewm(span=26).mean()
+
+nikkei["nikkei_macd"] = ema12_n - ema26_n
+
+nikkei["nikkei_return_5d"] = (
+    nikkei_close.pct_change(5) * 100
+)
+
+
+
 
 
 # =====================
