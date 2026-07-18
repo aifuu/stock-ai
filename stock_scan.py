@@ -265,36 +265,38 @@ for ticker in TICKERS:
         take_profit = price * 1.08
         stop_loss = price * 0.95
 
-
         score = 0
-if rsi < 35:
-    score += 25
 
-if macd > signal:
-    score += 25
+        if rsi < 35:
+            score += 25
 
-if ma25 > ma75:
-    score += 20
+        if macd > signal:
+            score += 25
 
-if vol_ratio > 1.5:
-    score += 20
+        if ma25 > ma75:
+            score += 20
 
-if distance > -10:
-    score += 15
-elif distance > -20:
-    score += 8
+        if vol_ratio > 1.5:
+            score += 20
 
-# 日経平均を考慮
-nikkei_rsi = float(np.asarray(df["nikkei_rsi"])[-1])
-nikkei_return = float(np.asarray(df["nikkei_return_5d"])[-1])
+        if distance > -10:
+            score += 15
+        elif distance > -20:
+            score += 8
 
-if nikkei_rsi > 50:
-    score += 5
+        nikkei_rsi = float(np.asarray(df["nikkei_rsi"])[-1])
+        nikkei_return = float(np.asarray(df["nikkei_return_5d"])[-1])
 
-if nikkei_return > 0:
-    score += 5
+        if nikkei_rsi > 50:
+            score += 5
 
-score += prob * 30
+        if nikkei_return > 0:
+            score += 5
+
+        score += prob * 30
+
+
+        
 
 
 
