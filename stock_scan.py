@@ -199,18 +199,21 @@ for ticker in TICKERS:
         df["macd"] = ema12 - ema26
         df["signal"] = df["macd"].ewm(span=9).mean()
 
-　　　　# 日経平均特徴量を結合
-　　　　df = df.join(
-    　　　　　nikkei[
-        　[
-            "nikkei_kairi25",
-            "nikkei_rsi",
-            "nikkei_macd",
-            "nikkei_return_5d"
-        　]
-    　　],
-    　　how="left"
-　　　　)
+
+        # 日経平均特徴量を結合
+        df = df.join(
+            nikkei[
+            [
+                "nikkei_kairi25",
+                "nikkei_rsi",
+                "nikkei_macd",
+                "nikkei_return_5d"
+            ]
+            ],
+            how="left"
+        )
+
+
         
         df = df.dropna()
 
