@@ -237,11 +237,15 @@ for ticker in TICKERS:
             "rsi",
             "macd",
             "signal",
+            "from_high",
+            "from_low",
             "nikkei_kairi25",
             "nikkei_rsi",
-            "nikkei_macd",
-            "nikkei_return_5d"
+            "nikkei_macd","nikkei_return_5d"
         ]
+
+
+
 
 
         X = df[features]
