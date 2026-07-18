@@ -200,6 +200,15 @@ for ticker in TICKERS:
         df["vol_ratio"] = volume / volume.rolling(20).mean()
         df["rsi"] = calc_rsi(close)
 
+        df["high252"] = close.rolling(252).max()
+        df["low252"] = close.rolling(252).min()
+        df["from_high"] = (
+            (close / df["high252"] - 1) * 100
+        )
+        df["from_low"] = (
+            (close / df["low252"] - 1) * 100
+        )
+
         ema12 = close.ewm(span=12).mean()
         ema26 = close.ewm(span=26).mean()
         df["macd"] = ema12 - ema26
