@@ -196,6 +196,13 @@ else:
 
 results = []
 
+# =====================
+# 全銘柄学習用
+# =====================
+all_X = []
+all_y = []
+
+
 
 # =====================
 # メイン処理
@@ -290,17 +297,14 @@ for ticker in TICKERS:
 
         X = df[features]
         y = df["target"]
-
+        
         if len(X) < 100:
             continue
-
+            
         split = int(len(X) * 0.8)
-
-        X_train = X.iloc[:split]
-        y_train = y.iloc[:split]
-
-        model.fit(X_train, y_train)
-        joblib.dump(model, MODEL_FILE)
+        
+        all_X.append(X.iloc[:split])
+        all_y.append(y.iloc[:split])
 
         latest = X.iloc[-1:]
         prob = model.predict_proba(latest)[0][1]
@@ -364,7 +368,7 @@ for ticker in TICKERS:
             "nikkei_macd": float(df["nikkei_macd"].iloc[-1]),
             "nikkei_return_5d": float(df["nikkei_return_5d"].iloc[-1]),
             
-            "target": int(prob > 0.5)
+            "target": int(df["target"].iloc[-2])
         })
         
         results.append({
@@ -387,6 +391,23 @@ for ticker in TICKERS:
 
     except Exception as e:
         print(ticker, "エラー:", e)
+
+
+
+
+
+# =====================
+# 全銘柄まとめて学習
+# =====================
+if len(all_X) > 0:
+
+    X_train = pd.concat(all_X, ignore_index=True)
+    y_train = pd.concat(all_y, ignore_index=True)
+
+    model.fit(X_train, y_train)
+    joblib.dump(model, MODEL_FILE)
+
+    print("✅ 全銘柄まとめ学習完了")
 
 
 # =====================
