@@ -22,7 +22,7 @@ def check_prediction_history():
             try:
                 df = yf.download(
                     row["ticker"],
-                    period="5d",
+                    start=row["date"],
                     interval="1d",
                     auto_adjust=True
                 )
@@ -30,7 +30,12 @@ def check_prediction_history():
                 if len(df) == 0:
                     continue
 
-                now_price = float(df["Close"].squeeze().iloc[-1])
+                
+                # 3営業日たっていなければ判定しない
+    if len(df) < 3:
+        continue
+        
+        now_price = float(df["Close"].squeeze().iloc[2])
 
                 if now_price >= row["take_profit"]:
                     history.loc[i, "result"] = "success"
