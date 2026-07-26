@@ -499,9 +499,9 @@ def backtest(df, capital=500000):
 
     for i in range(len(df)-5):
 
-        buy = float(df["Close"].iloc[i])
+        buy = float(df["Close"].squeeze().iloc[i])
 
-        future = df["Close"].iloc[i+3]
+        future = float(df["Close"].squeeze().iloc[i+3])
 
         ret = (future / buy - 1) * 100
 
