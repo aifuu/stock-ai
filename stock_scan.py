@@ -203,6 +203,12 @@ all_X = []
 all_y = []
 all_data = []
 
+# 全銘柄特徴量
+all_features = []
+
+# 全銘柄教師データ
+all_targets = []
+
 
 
 # =====================
@@ -298,14 +304,14 @@ for ticker in TICKERS:
 
         X = df[features]
         y = df["target"]
-        
         if len(X) < 100:
             continue
-            
         split = int(len(X) * 0.8)
+        train_X = X.iloc[:split]
+        train_y = y.iloc[:split]
         
-        all_X.append(X.iloc[:split])
-        all_y.append(y.iloc[:split])
+        all_features.append(train_X)
+        all_targets.append(train_y)
 
         all_data.append({
             "ticker": ticker,
