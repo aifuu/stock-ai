@@ -307,8 +307,18 @@ for ticker in TICKERS:
         all_X.append(X.iloc[:split])
         all_y.append(y.iloc[:split])
 
-        latest = X.iloc[-1:]
-        prob = model.predict_proba(latest)[0][1]
+        all_data.append({
+            "ticker": ticker,
+            "latest": X.iloc[-1:].copy(),
+            "close": close,
+            "df": df.copy()
+        })
+        
+        continue
+
+        
+
+
         price = float(np.asarray(close)[-1])
         rsi = float(np.asarray(df["rsi"])[-1])
         macd = float(np.asarray(df["macd"])[-1])
