@@ -425,11 +425,7 @@ for item in all_data:
 
 
     
-    print(
-        ticker,
-        "score=", round(score, 1),
-        "prob=", round(prob * 100, 1)
-    )
+    print(f"{ticker} score={data['score']} prob={prob*100:.1f}")
 
 
 # =====================
