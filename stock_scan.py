@@ -30,7 +30,7 @@ def check_prediction_history():
                 if len(df) == 0:
                     continue
 
-                now_price = float(df["Close"].iloc[-1])
+                now_price = float(df["Close"].squeeze().iloc[-1])
 
                 if now_price >= row["take_profit"]:
                     history.loc[i, "result"] = "success"
