@@ -554,5 +554,6 @@ pd.DataFrame(save_rows).to_csv(
     header=not os.path.exists(history_file),
     index=False
 )
+check_prediction_history()
 print(msg)
 send(msg)
