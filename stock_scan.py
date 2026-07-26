@@ -697,11 +697,42 @@ performance = show_ai_performance()
 msg += performance
 
 # =====================
-# バックテスト結果表示
+# 全銘柄バックテスト
 # =====================
 
-bt = backtest(all_data[0]["df"])
+bt_results = []
 
+for item in all_data:
+
+    bt = backtest(item["df"])
+
+    if bt:
+        bt_results.append(bt)
+
+
+if bt_results:
+
+    total_trades = sum(x["trades"] for x in bt_results)
+    total_wins = sum(x["wins"] for x in bt_results)
+    total_loses = sum(x["loses"] for x in bt_results)
+
+    win_rate = total_wins / total_trades * 100
+
+
+    msg += f"""
+
+📈 AI実戦バックテスト
+
+対象: 全銘柄
+
+取引回数: {total_trades}回
+
+勝ち: {total_wins}回
+負け: {total_loses}回
+
+勝率: {win_rate:.1f}%
+
+"""
 if bt:
 
     msg += f"""
