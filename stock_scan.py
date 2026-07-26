@@ -575,7 +575,7 @@ df_all.to_csv(
     history_file,
     index=False
 )
-)
+
 check_prediction_history()
 print(msg)
 send(msg)
