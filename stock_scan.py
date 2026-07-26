@@ -576,6 +576,57 @@ df_all.to_csv(
     index=False
 )
 
+# =====================
+# AI成績評価
+# =====================
+def show_ai_performance():
+
+    file = "prediction_history.csv"
+
+    if not os.path.exists(file):
+        return ""
+
+    df = pd.read_csv(file)
+
+    result_df = df.dropna(subset=["result"])
+
+    if len(result_df) == 0:
+        return "\n📊 AI成績\nまだ判定データなし"
+
+    total = len(result_df)
+
+    wins = len(
+        result_df[result_df["result"] == "success"]
+    )
+
+    losses = len(
+        result_df[result_df["result"] == "fail"]
+    )
+
+    win_rate = wins / total * 100
+
+    avg_return = result_df["return"].mean()
+
+    return f"""
+📊 AI成績
+
+判定数: {total}件
+
+勝ち: {wins}件
+負け: {losses}件
+
+勝率: {win_rate:.1f}%
+
+平均リターン:
+{avg_return:.2f}%
+"""
+
+
 check_prediction_history()
+
+performance = show_ai_performance()
+
+msg += performance
+
 print(msg)
 send(msg)
