@@ -4,6 +4,50 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
+# =====================
+# 過去予測結果チェック
+# =====================
+def check_prediction_history():
+    file = "prediction_history.csv"
+
+    if not os.path.exists(file):
+        return
+
+    history = pd.read_csv(file)
+
+    for i, row in history.iterrows():
+
+        if row["result"] == "" or pd.isna(row["result"]):
+
+            try:
+                df = yf.download(
+                    row["ticker"],
+                    period="5d",
+                    interval="1d",
+                    auto_adjust=True
+                )
+
+                if len(df) == 0:
+                    continue
+
+                now_price = float(df["Close"].iloc[-1])
+
+                if now_price >= row["take_profit"]:
+                    history.loc[i, "result"] = "success"
+                    history.loc[i, "return"] = round(
+                        (now_price / row["price"] - 1) * 100, 2
+                    )
+
+                elif now_price <= row["stop_loss"]:
+                    history.loc[i, "result"] = "fail"
+                    history.loc[i, "return"] = round(
+                        (now_price / row["price"] - 1) * 100, 2
+                    )
+
+            except Exception as e:
+                print("履歴チェックエラー:", e)
+
+    history.to_csv(file, index=False)
 import pandas as pd
 import numpy as np
 import requests
