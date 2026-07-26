@@ -680,5 +680,33 @@ performance = show_ai_performance()
 
 msg += performance
 
+# =====================
+# バックテスト結果表示
+# =====================
+
+bt = backtest(all_data[0]["df"])
+
+if bt:
+
+    msg += f"""
+
+📈 AIバックテスト結果
+
+期間: 過去3年
+判定回数: {bt['trades']}回
+
+勝ち: {bt['wins']}回
+負け: {bt['loses']}回
+
+勝率: {bt['win_rate']}%
+
+50万円運用の場合:
+{bt['money']}円
+
+総リターン:
+{bt['return']}%
+
+"""
+
 print(msg)
 send(msg)
