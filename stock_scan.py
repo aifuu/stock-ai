@@ -413,10 +413,10 @@ for ticker in TICKERS:
 # =====================
 # 全銘柄まとめて学習
 # =====================
-if len(all_X) > 0:
+if len(all_features) > 0:
 
-    X_train = pd.concat(all_X, ignore_index=True)
-    y_train = pd.concat(all_y, ignore_index=True)
+    X_train = pd.concat(all_features, ignore_index=True)
+    y_train = pd.concat(all_targets, ignore_index=True)
 
     model.fit(X_train, y_train)
     joblib.dump(model, MODEL_FILE)
