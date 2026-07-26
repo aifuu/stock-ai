@@ -421,6 +421,78 @@ if len(all_X) > 0:
     print("✅ 全銘柄まとめ学習完了")
 
 
+
+# =====================
+# 一括予測
+# =====================
+for item in all_data:
+
+    latest = item["latest"]
+    df = item["df"]
+    close = item["close"]
+    ticker = item["ticker"]
+
+    prob = model.predict_proba(latest)[0][1]
+
+    price = float(close.iloc[-1])
+    rsi = float(df["rsi"].iloc[-1])
+    macd = float(df["macd"].iloc[-1])
+    signal = float(df["signal"].iloc[-1])
+    ma25 = float(df["ma25"].iloc[-1])
+    ma75 = float(df["ma75"].iloc[-1])
+    vol_ratio = float(df["vol_ratio"].iloc[-1])
+
+    high52 = float(close.rolling(252).max().iloc[-1])
+    distance = (price / high52 - 1) * 100
+
+    take_profit = price * 1.08
+    stop_loss = price * 0.95
+
+    score = 0
+
+    if rsi < 35:
+        score += 25
+
+    if macd > signal:
+        score += 25
+
+    if ma25 > ma75:
+        score += 20
+
+    if vol_ratio > 1.5:
+        score += 20
+
+    if distance > -10:
+        score += 15
+    elif distance > -20:
+        score += 8
+
+    if float(df["nikkei_rsi"].iloc[-1]) > 50:
+        score += 5
+
+    if float(df["nikkei_return_5d"].iloc[-1]) > 0:
+        score += 5
+
+    score += prob * 50
+
+    results.append({
+        "ticker": ticker,
+        "score": round(score, 1),
+        "prob": round(prob * 100, 1),
+        "price": round(price, 0),
+        "rsi": round(rsi, 1),
+        "vol": round(vol_ratio, 2),
+        "take_profit": round(take_profit, 0),
+        "stop_loss": round(stop_loss, 0)
+    })
+
+    print(
+        ticker,
+        "score=", round(score, 1),
+        "prob=", round(prob * 100, 1)
+    )
+
+
 # =====================
 # CSV全履歴学習
 # =====================
