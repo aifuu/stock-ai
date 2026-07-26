@@ -486,33 +486,51 @@ for item in all_data:
 
 
 # =====================
-# バックテスト
+# 実戦ルールバックテスト
 # =====================
-
 def backtest(df, capital=500000):
 
     wins = 0
     loses = 0
-    total_return = 0
-
     trades = 0
 
-    for i in range(len(df)-5):
+    total_money = capital
 
-        buy = float(df["Close"].squeeze().iloc[i])
+    close = df["Close"].squeeze()
 
-        future = float(df["Close"].squeeze().iloc[i+3])
+    for i in range(100, len(df)-20):
 
-        ret = (future / buy - 1) * 100
+        price = float(close.iloc[i])
 
-        trades += 1
+        # 20日後までチェック
+        future = close.iloc[i+1:i+21]
 
-        if ret > 0:
+        take_profit = price * 1.08
+        stop_loss = price * 0.95
+
+        result = None
+
+        for p in future:
+
+            p = float(p)
+
+            if p >= take_profit:
+                result = "win"
+                break
+
+            if p <= stop_loss:
+                result = "lose"
+                break
+
+        if result == "win":
             wins += 1
-        else:
-            loses += 1
+            total_money *= 1.08
+            trades += 1
 
-        total_return += ret
+        elif result == "lose":
+            loses += 1
+            total_money *= 0.95
+            trades += 1
 
 
     if trades == 0:
@@ -521,16 +539,14 @@ def backtest(df, capital=500000):
 
     win_rate = wins / trades * 100
 
-    money = capital * (1 + total_return / 100)
-
 
     return {
         "trades": trades,
         "wins": wins,
         "loses": loses,
         "win_rate": round(win_rate,1),
-        "money": round(money,0),
-        "return": round(total_return,1)
+        "money": round(total_money,0),
+        "return": round((total_money / capital - 1)*100,1)
     }
 
 
