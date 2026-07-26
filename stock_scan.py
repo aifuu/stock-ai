@@ -383,7 +383,19 @@ for ticker in TICKERS:
 
 
 
+# =====================
+# CSV全履歴学習
+# =====================
+try:
+    X_all, y_all = load_training_data()
 
+    if X_all is not None and len(X_all) > 200:
+        model.fit(X_all, y_all)
+        joblib.dump(model, MODEL_FILE)
+        print("✅ CSV全履歴で再学習完了")
+
+except Exception as e:
+    print("CSV学習スキップ:", e)
 
 # =====================
 # 全銘柄まとめて学習
@@ -429,19 +441,7 @@ for item in all_data:
     print(f"{ticker} score={data['score']} prob={prob*100:.1f}")
 
 
-# =====================
-# CSV全履歴学習
-# =====================
-try:
-    X_all, y_all = load_training_data()
 
-    if X_all is not None and len(X_all) > 200:
-        model.fit(X_all, y_all)
-        joblib.dump(model, MODEL_FILE)
-        print("✅ CSV全履歴で再学習完了")
-
-except Exception as e:
-    print("CSV学習スキップ:", e)
 
 
 # =====================
