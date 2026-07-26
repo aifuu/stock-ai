@@ -17,7 +17,7 @@ def check_prediction_history():
 
     for i, row in history.iterrows():
 
-        if row["result"] == "" or pd.isna(row["result"]):
+        if pd.isna(row["result"]) or row["result"] == "":
 
             try:
                 df = yf.download(
