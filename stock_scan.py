@@ -482,5 +482,31 @@ RSI: {r['rsi']}
 ━━━━━━━━━━━━━━
 """
 
+
+
+# =====================
+# 予測履歴保存
+# =====================
+history_file = "prediction_history.csv"
+
+save_rows = []
+
+for r in top:
+    save_rows.append({
+        "date": datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d"),
+        "ticker": r["ticker"],
+        "score": r["score"],
+        "prob": r["prob"],
+        "price": r["price"],
+        "take_profit": r["take_profit"],
+        "stop_loss": r["stop_loss"]
+    })
+
+pd.DataFrame(save_rows).to_csv(
+    history_file,
+    mode="a",
+    header=not os.path.exists(history_file),
+    index=False
+)
 print(msg)
 send(msg)
