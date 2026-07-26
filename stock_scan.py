@@ -548,11 +548,33 @@ for r in top:
     "return": ""
 })
 
-pd.DataFrame(save_rows).to_csv(
+# =====================
+# 予測履歴保存（重複防止）
+# =====================
+history_file = "prediction_history.csv"
+
+new_df = pd.DataFrame(save_rows)
+
+if os.path.exists(history_file):
+    old_df = pd.read_csv(history_file)
+
+    df_all = pd.concat(
+        [old_df, new_df],
+        ignore_index=True
+    )
+
+    df_all = df_all.drop_duplicates(
+        subset=["date", "ticker"],
+        keep="last"
+    )
+
+else:
+    df_all = new_df
+
+df_all.to_csv(
     history_file,
-    mode="a",
-    header=not os.path.exists(history_file),
     index=False
+)
 )
 check_prediction_history()
 print(msg)
