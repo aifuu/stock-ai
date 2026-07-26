@@ -27,15 +27,13 @@ def check_prediction_history():
                     auto_adjust=True
                 )
 
-                if len(df) == 0:
+                if len(df) < 3:
                     continue
 
+                now_price = float(
+                    df["Close"].squeeze().iloc[2]
+                )
                 
-                # 3営業日たっていなければ判定しない
-    if len(df) < 3:
-        continue
-        
-        now_price = float(df["Close"].squeeze().iloc[2])
 
                 if now_price >= row["take_profit"]:
                     history.loc[i, "result"] = "success"
