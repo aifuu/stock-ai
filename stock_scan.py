@@ -141,7 +141,7 @@ def calc_score(df, close, prob):
         "take_profit": round(price * 1.08, 0),
         "stop_loss": round(price * 0.95, 0),
     }
-    def create_features(df):
+def create_features(df):
         close = df["Close"].squeeze()
         volume = df["Volume"].squeeze()
         df["ret1"] = close.pct_change()
