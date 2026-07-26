@@ -485,6 +485,55 @@ for item in all_data:
 
 
 
+# =====================
+# バックテスト
+# =====================
+
+def backtest(df, capital=500000):
+
+    wins = 0
+    loses = 0
+    total_return = 0
+
+    trades = 0
+
+    for i in range(len(df)-5):
+
+        buy = float(df["Close"].iloc[i])
+
+        future = df["Close"].iloc[i+3]
+
+        ret = (future / buy - 1) * 100
+
+        trades += 1
+
+        if ret > 0:
+            wins += 1
+        else:
+            loses += 1
+
+        total_return += ret
+
+
+    if trades == 0:
+        return None
+
+
+    win_rate = wins / trades * 100
+
+    money = capital * (1 + total_return / 100)
+
+
+    return {
+        "trades": trades,
+        "wins": wins,
+        "loses": loses,
+        "win_rate": round(win_rate,1),
+        "money": round(money,0),
+        "return": round(total_return,1)
+    }
+
+
 
 
 # =====================
