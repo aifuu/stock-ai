@@ -182,17 +182,14 @@ def save_training_data(row):
 # =====================
 # モデル
 # =====================
-if os.path.exists(MODEL_FILE):
-    model = joblib.load(MODEL_FILE)
-    print("✅ 既存モデル")
-else:
-    model = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=7,
-        random_state=42
-    )
-    print("🆕 新規モデル")
+# Ver.3では毎回新しいモデルを作成
+model = RandomForestClassifier(
+    n_estimators=300,
+    max_depth=7,
+    random_state=42
+)
 
+print("🆕 新規モデル")
 
 results = []
 
