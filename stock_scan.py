@@ -10,30 +10,11 @@ import requests
 import joblib
 
 from sklearn.ensemble import RandomForestClassifier
+
+
 # =====================
 # 過去予測結果チェック
 # =====================
-def check_prediction_history():
-    file = "prediction_history.csv"
-
-    if not os.path.exists(file):
-        return
-
-    history = pd.read_csv(file)
-
-    for i, row in history.iterrows():
-
-        if pd.isna(row["result"]) or row["result"] == "":
-
-            try:
-                df = yf.download(
-                    row["ticker"],
-                    start=row["date"],
-                    interval="1d",
-                    auto_adjust=True
-                )
-
-               
 def check_prediction_history():
 
     file = "prediction_history.csv"
