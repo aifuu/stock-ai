@@ -33,11 +33,7 @@ def check_prediction_history():
                     auto_adjust=True
                 )
 
-                if len(df) < 4:
-                    continue
-                # =====================
-# 利確・損切 1〜3日判定
-# =====================
+               
 def check_prediction_history():
 
     file = "prediction_history.csv"
