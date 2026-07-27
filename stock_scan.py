@@ -642,7 +642,7 @@ df_all.to_csv(
 )
 
 # =====================
-# AI成績評価
+# AI成績評価（TOP3・3日後）
 # =====================
 def show_ai_performance():
 
@@ -653,27 +653,25 @@ def show_ai_performance():
 
     df = pd.read_csv(file)
 
-    result_df = df.dropna(subset=["result"])
+    result_df = df[
+        df["result"].notna() &
+        (df["result"] != "")
+    ]
 
     if len(result_df) == 0:
-        return "\n📊 AI成績\nまだ判定データなし"
+        return "\n📊 AI実績（TOP3・3日後）\nまだ判定データなし"
 
     total = len(result_df)
 
-    wins = len(
-        result_df[result_df["result"] == "success"]
-    )
-
-    losses = len(
-        result_df[result_df["result"] == "fail"]
-    )
+    wins = (result_df["result"] == "success").sum()
+    losses = (result_df["result"] == "fail").sum()
 
     win_rate = wins / total * 100
 
-    avg_return = result_df["return"].mean()
+    avg_return = result_df["return"].astype(float).mean()
 
     return f"""
-📊 AI成績
+📊 AI実績（TOP3・3日後）
 
 判定数: {total}件
 
@@ -682,8 +680,7 @@ def show_ai_performance():
 
 勝率: {win_rate:.1f}%
 
-平均リターン:
-{avg_return:.2f}%
+平均リターン: {avg_return:.2f}%
 """
 
 
@@ -693,64 +690,6 @@ performance = show_ai_performance()
 
 msg += performance
 
-# =====================
-# 全銘柄バックテスト
-# =====================
-
-bt_results = []
-
-for item in all_data:
-
-    bt = backtest(item["df"])
-
-    if bt:
-        bt_results.append(bt)
-
-
-if bt_results:
-
-    total_trades = sum(x["trades"] for x in bt_results)
-    total_wins = sum(x["wins"] for x in bt_results)
-    total_loses = sum(x["loses"] for x in bt_results)
-
-    win_rate = total_wins / total_trades * 100
-
-
-    msg += f"""
-
-📈 AI実戦バックテスト
-
-対象: 全銘柄
-
-取引回数: {total_trades}回
-
-勝ち: {total_wins}回
-負け: {total_loses}回
-
-勝率: {win_rate:.1f}%
-
-"""
-if bt:
-
-    msg += f"""
-
-📈 AIバックテスト結果
-
-期間: 過去3年
-判定回数: {bt['trades']}回
-
-勝ち: {bt['wins']}回
-負け: {bt['loses']}回
-
-勝率: {bt['win_rate']}%
-
-50万円運用の場合:
-{bt['money']}円
-
-総リターン:
-{bt['return']}%
-
-"""
 
 print(msg)
 send(msg)
