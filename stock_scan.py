@@ -4,6 +4,11 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
+import pandas as pd
+import numpy as np
+import requests
+import joblib
+import lightgbm as lgb
 # =====================
 # 過去予測結果チェック
 # =====================
@@ -52,8 +57,6 @@ import pandas as pd
 import numpy as np
 import requests
 import joblib
-
-from sklearn.ensemble import RandomForestClassifier
 import lightgbm as lgb
 
 # =====================
