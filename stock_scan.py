@@ -35,15 +35,116 @@ def check_prediction_history():
 
                 if len(df) < 4:
                     continue
-                now_price = float(
-                    df["Close"].squeeze().iloc[3]
+                # =====================
+# 利確・損切 1〜3日判定
+# =====================
+def check_prediction_history():
+
+    file = "prediction_history.csv"
+
+    if not os.path.exists(file):
+        return
+
+    history = pd.read_csv(file)
+
+    for i, row in history.iterrows():
+
+        if pd.isna(row["result"]) or row["result"] == "":
+
+            try:
+
+                df = yf.download(
+                    row["ticker"],
+                    start=row["date"],
+                    interval="1d",
+                    auto_adjust=True
                 )
 
 
-                if now_price > row["price"]:
-                    history.loc[i, "result"] = "success"
-                else:
-                    history.loc[i, "result"] = "fail"
+                if len(df) < 4:
+                    continue
+
+
+                take_profit = float(row["take_profit"])
+                stop_loss = float(row["stop_loss"])
+
+
+                result = ""
+                sell_price = None
+                hold_days = 0
+
+
+                # 翌日から3日間確認
+                for day in range(1,4):
+
+                    high = float(
+                        df["High"].squeeze().iloc[day]
+                    )
+
+                    low = float(
+                        df["Low"].squeeze().iloc[day]
+                    )
+
+
+                    # 利確
+                    if high >= take_profit:
+
+                        result = "success"
+                        sell_price = take_profit
+                        hold_days = day
+                        break
+
+
+                    # 損切
+                    if low <= stop_loss:
+
+                        result = "fail"
+                        sell_price = stop_loss
+                        hold_days = day
+                        break
+
+
+                # 3日以内に到達しない場合
+                if result == "":
+
+                    sell_price = float(
+                        df["Close"].squeeze().iloc[3]
+                    )
+
+                    hold_days = 3
+
+
+                    if sell_price > float(row["price"]):
+                        result = "success"
+                    else:
+                        result = "fail"
+
+
+
+                history.loc[i,"result"] = result
+
+                history.loc[i,"return"] = round(
+                    (sell_price / float(row["price"]) - 1) * 100,
+                    2
+                )
+
+
+                history.loc[i,"hold_days"] = hold_days
+
+
+
+            except Exception as e:
+
+                print(
+                    "履歴チェックエラー:",
+                    e
+                )
+
+
+    history.to_csv(
+        file,
+        index=False
+    )
 
                 history.loc[i, "return"] = round(
                     (now_price / row["price"] - 1) * 100,
