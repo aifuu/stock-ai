@@ -32,17 +32,17 @@ def check_prediction_history():
                 now_price = float(
                     df["Close"].squeeze().iloc[3]
                 )
-                
 
-               if now_price > row["price"]:
-                   history.loc[i, "result"] = "success"
-            else:
-                history.loc[i, "result"] = "fail"
-                
+
+                if now_price > row["price"]:
+                    history.loc[i, "result"] = "success"
+                else:
+                    history.loc[i, "result"] = "fail"
+
                 history.loc[i, "return"] = round(
                     (now_price / row["price"] - 1) * 100,
                     2
-                ) 
+                )
 
             except Exception as e:
                 print("履歴チェックエラー:", e)
