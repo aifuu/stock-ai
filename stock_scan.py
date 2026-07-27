@@ -27,11 +27,10 @@ def check_prediction_history():
                     auto_adjust=True
                 )
 
-                if len(df) < 3:
+                if len(df) < 4:
                     continue
-
                 now_price = float(
-                    df["Close"].squeeze().iloc[2]
+                    df["Close"].squeeze().iloc[3]
                 )
                 
 
