@@ -370,7 +370,7 @@ for ticker in TICKERS:
         
         df = df.dropna()
 
-        df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
+        df["target"] = (df["Close"].shift(-3) > df["Close"]).astype(int)
 
 
         features = [
