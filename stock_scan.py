@@ -764,6 +764,7 @@ def show_ai_performance():
 
     df = pd.read_csv(file)
 
+
     result_df = df[
         df["result"].notna() &
         (df["result"] != "")
@@ -800,18 +801,30 @@ def show_ai_performance():
     )
 
 
+    avg_days = 0
+
     if "hold_days" in result_df.columns:
 
         avg_days = (
             result_df["hold_days"]
+            .dropna()
             .astype(float)
             .mean()
         )
 
-    else:
 
-        avg_days = 0
+    best = (
+        result_df["return"]
+        .astype(float)
+        .max()
+    )
 
+
+    worst = (
+        result_df["return"]
+        .astype(float)
+        .min()
+    )
 
 
     return f"""
@@ -824,9 +837,13 @@ def show_ai_performance():
 
 勝率: {win_rate:.1f}%
 
-平均リターン: {avg_return:.2f}%
+平均利益率: {avg_return:.2f}%
 
 平均保有日数: {avg_days:.1f}日
+
+最高利益: +{best:.2f}%
+
+最大損失: {worst:.2f}%
 """
 
 
