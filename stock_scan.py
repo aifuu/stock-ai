@@ -410,13 +410,15 @@ for ticker in TICKERS:
             "ma75",
             "vol_ratio",
             "rsi",
+            "adx",
             "macd",
             "signal",
             "from_high",
             "from_low",
             "nikkei_kairi25",
             "nikkei_rsi",
-            "nikkei_macd","nikkei_return_5d"
+            "nikkei_macd",
+            "nikkei_return_5d"
         ]
 
 
