@@ -8,7 +8,8 @@ import pandas as pd
 import numpy as np
 import requests
 import joblib
-import lightgbm as lgb
+
+from sklearn.ensemble import RandomForestClassifier
 # =====================
 # 過去予測結果チェック
 # =====================
@@ -57,7 +58,6 @@ import pandas as pd
 import numpy as np
 import requests
 import joblib
-import lightgbm as lgb
 
 # =====================
 # Discord
