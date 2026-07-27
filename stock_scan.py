@@ -34,17 +34,15 @@ def check_prediction_history():
                 )
                 
 
-                if now_price >= row["take_profit"]:
-                    history.loc[i, "result"] = "success"
-                    history.loc[i, "return"] = round(
-                        (now_price / row["price"] - 1) * 100, 2
-                    )
-
-                elif now_price <= row["stop_loss"]:
-                    history.loc[i, "result"] = "fail"
-                    history.loc[i, "return"] = round(
-                        (now_price / row["price"] - 1) * 100, 2
-                    )
+               if now_price > row["price"]:
+                   history.loc[i, "result"] = "success"
+            else:
+                history.loc[i, "result"] = "fail"
+                
+                history.loc[i, "return"] = round(
+                    (now_price / row["price"] - 1) * 100,
+                    2
+                ) 
 
             except Exception as e:
                 print("履歴チェックエラー:", e)
