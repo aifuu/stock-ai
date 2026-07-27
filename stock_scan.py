@@ -54,6 +54,7 @@ import requests
 import joblib
 
 from sklearn.ensemble import RandomForestClassifier
+import lightgbm as lgb
 
 # =====================
 # Discord
@@ -301,16 +302,18 @@ def save_training_data(row):
 
 
 # =====================
-# モデル
+# モデル（LightGBM）
 # =====================
-# Ver.3では毎回新しいモデルを作成
-model = RandomForestClassifier(
+model = lgb.LGBMClassifier(
     n_estimators=300,
+    learning_rate=0.05,
+    num_leaves=31,
     max_depth=7,
-    random_state=42
+    random_state=42,
+    verbosity=-1
 )
 
-print("🆕 新規モデル")
+print("🆕 新規LightGBMモデル")
 
 results = []
 
