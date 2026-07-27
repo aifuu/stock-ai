@@ -307,13 +307,10 @@ def save_training_data(row):
 # =====================
 # モデル（LightGBM）
 # =====================
-model = lgb.LGBMClassifier(
+model = RandomForestClassifier(
     n_estimators=300,
-    learning_rate=0.05,
-    num_leaves=31,
     max_depth=7,
-    random_state=42,
-    verbosity=-1
+    random_state=42
 )
 
 print("🆕 新規LightGBMモデル")
