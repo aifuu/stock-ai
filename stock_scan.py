@@ -140,6 +140,33 @@ def calc_rsi(close, period=14):
     return 100 - (100 / (1 + rs))
 
 
+def calc_adx(df, period=14):
+
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
+
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
+
+    plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
+
+    dx = ((plus_di - minus_di).abs() / (plus_di + minus_di)) * 100
+
+    return dx.rolling(period).mean()
+
+
 def calc_score(df, close, prob):
 
     price = float(close.iloc[-1])
@@ -197,6 +224,7 @@ def create_features(df):
         df["ma75"] = close.rolling(75).mean()
         df["vol_ratio"] = volume / volume.rolling(20).mean()
         df["rsi"] = calc_rsi(close)
+        df["adx"] = calc_adx(df)  
         
         ema12 = close.ewm(span=12).mean()
         ema26 = close.ewm(span=26).mean()
