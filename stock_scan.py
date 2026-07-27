@@ -753,7 +753,7 @@ df_all.to_csv(
 )
 
 # =====================
-# AI成績評価（TOP3・3日後）
+# AI成績評価（TOP3・3日以内利確型）
 # =====================
 def show_ai_performance():
 
@@ -769,20 +769,53 @@ def show_ai_performance():
         (df["result"] != "")
     ]
 
+
     if len(result_df) == 0:
-        return "\n📊 AI実績（TOP3・3日後）\nまだ判定データなし"
+
+        return """
+📊 AI実績（TOP3・3日以内利確型）
+
+まだ判定データなし
+"""
+
 
     total = len(result_df)
 
-    wins = (result_df["result"] == "success").sum()
-    losses = (result_df["result"] == "fail").sum()
+    wins = (
+        result_df["result"] == "success"
+    ).sum()
+
+    losses = (
+        result_df["result"] == "fail"
+    ).sum()
+
 
     win_rate = wins / total * 100
 
-    avg_return = result_df["return"].astype(float).mean()
+
+    avg_return = (
+        result_df["return"]
+        .astype(float)
+        .mean()
+    )
+
+
+    if "hold_days" in result_df.columns:
+
+        avg_days = (
+            result_df["hold_days"]
+            .astype(float)
+            .mean()
+        )
+
+    else:
+
+        avg_days = 0
+
+
 
     return f"""
-📊 AI実績（TOP3・3日後）
+📊 AI実績（TOP3・3日以内利確型）
 
 判定数: {total}件
 
@@ -792,6 +825,8 @@ def show_ai_performance():
 勝率: {win_rate:.1f}%
 
 平均リターン: {avg_return:.2f}%
+
+平均保有日数: {avg_days:.1f}日
 """
 
 
