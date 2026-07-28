@@ -351,7 +351,7 @@ nikkei["nikkei_return_5d"] = (
 # 日経225先物
 # =====================
 futures = yf.download(
-    "NK=F",
+    "NIY=F",
     period="3y",
     interval="1d",
     auto_adjust=True
