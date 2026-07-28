@@ -317,7 +317,10 @@ def create_features(df):
         
         return df
 
+# 日経225先物
+futures = yf.download("^N225", period="6mo")  # データ取得できない場合は後述
 
+NIKKEI_FUTURES = yf.download("NK=F", period="6mo")
 
 
 
