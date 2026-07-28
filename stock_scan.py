@@ -509,21 +509,27 @@ for ticker in TICKERS:
 
 
         features = [
-            "ret1",
-            "ma25",
-            "ma75",
-            "vol_ratio",
-            "rsi",
-            "adx",
-            "macd",
-            "signal",
-            "from_high",
-            "from_low",
-            "nikkei_kairi25",
-            "nikkei_rsi",
-            "nikkei_macd",
-            "nikkei_return_5d"
-        ]
+    "ret1",
+    "ma25",
+    "ma75",
+    "vol_ratio",
+    "rsi",
+    "adx",
+    "macd",
+    "signal",
+    "from_high",
+    "from_low",
+    "nikkei_kairi25",
+    "nikkei_rsi",
+    "nikkei_macd",
+    "nikkei_return_5d",
+
+    # 日経225先物
+    "future_return",
+    "future_ma5",
+    "future_rsi",
+    "future_gap",
+]
 
 
 
