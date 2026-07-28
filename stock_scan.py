@@ -317,15 +317,6 @@ def create_features(df):
         
         return df
 
-# 日経225先物
-futures = yf.download("^N225", period="6mo")  # データ取得できない場合は後述
-
-NIKKEI_FUTURES = yf.download("NK=F", period="6mo")
-
-
-
-
-
 # =====================
 # 日経平均
 # =====================
@@ -355,6 +346,25 @@ nikkei["nikkei_return_5d"] = (
     nikkei_close.pct_change(5) * 100
 )
 
+
+# =====================
+# 日経225先物
+# =====================
+futures = yf.download(
+    "NK=F",
+    period="3y",
+    interval="1d",
+    auto_adjust=True
+)
+
+future_close = futures["Close"].squeeze()
+
+futures["future_return"] = future_close.pct_change()
+futures["future_ma5"] = future_close.rolling(5).mean()
+futures["future_rsi"] = calc_rsi(future_close)
+futures["future_gap"] = (
+    future_close - future_close.shift(1)
+) / future_close.shift(1)
 
 
 
