@@ -465,31 +465,31 @@ for ticker in TICKERS:
             
 
 
-        # 日経平均特徴量を結合
-df = df.join(
-    nikkei[
-        [
-            "nikkei_kairi25",
-            "nikkei_rsi",
-            "nikkei_macd",
-            "nikkei_return_5d"
-        ]
-    ],
-    how="left"
-)
-
-# 日経225先物特徴量を結合
-df = df.join(
-    futures[
-        [
-            "future_return",
-            "future_ma5",
-            "future_rsi",
-            "future_gap"
-        ]
-    ],
-    how="left"
-)
+                # 日経平均特徴量を結合
+        df = df.join(
+            nikkei[
+            [
+                "nikkei_kairi25",
+                "nikkei_rsi",
+                "nikkei_macd",
+                "nikkei_return_5d"
+            ]
+            ],
+            how="left"
+        )
+        
+        # 日経225先物特徴量を結合
+        df = df.join(
+            futures[
+            [
+                "future_return",
+                "future_ma5",
+                "future_rsi",
+                "future_gap"
+            ]
+            ],
+            how="left"
+        )
 
 
         
