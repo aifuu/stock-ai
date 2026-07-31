@@ -52,48 +52,34 @@ def check_prediction_history():
 
 
                 # 翌日から3日間確認
-                for day in range(1,4):
+                for day in range(1, 4):
 
-                    high = float(
-                        df["High"].squeeze().iloc[day]
-                    )
+    high = float(df["High"].squeeze().iloc[day])
+    low = float(df["Low"].squeeze().iloc[day])
 
-                    low = float(
-                        df["Low"].squeeze().iloc[day]
-                    )
+    # 利確
+    if high >= take_profit:
+        result = 1
+        sell_price = take_profit
+        hold_days = day
+        break
 
+    # 損切
+    if low <= stop_loss:
+        result = 0
+        sell_price = stop_loss
+        hold_days = day
+        break
 
+# ここから下はforの外
+if result == "":
+    sell_price = float(df["Close"].squeeze().iloc[3])
+    hold_days = 3
 
-                    # 利確
-                    if high >= take_profit:
-                        result = 1
-                        sell_price = take_profit
-                        hold_days = day
-                        break
-
-
-        
-                    # 損切
-                    if low <= stop_loss:
-
-                        result = 0
-                        sell_price = stop_loss
-                        hold_days = day
-                        break
-
-                    # 3日以内に到達しない場合
-                    if result == "":
-
-                        sell_price = float(
-                        df["Close"].squeeze().iloc[3]
-                        )
-                        hold_days = 3
-
-                    if sell_price > float(row["price"]):
-                        result = 1
-                    else:
-                        result = 0
-
+    if sell_price > float(row["price"]):
+        result = 1
+    else:
+        result = 0
                 history.loc[i, "result"] = result
 
                 history.loc[i, "return"] = round(
