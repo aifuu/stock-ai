@@ -245,8 +245,7 @@ def calc_adx(df, period=14):
 
 def calc_score(df, close, prob):
 
-    price = float(close.iloc[-1])
-
+    price = float(close.dropna().iloc[-1])
     rsi = float(df["rsi"].iloc[-1])
     macd = float(df["macd"].iloc[-1])
     signal = float(df["signal"].iloc[-1])
