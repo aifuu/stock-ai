@@ -37,7 +37,6 @@ def check_prediction_history():
                     auto_adjust=True
                 )
 
-
                 if len(df) < 4:
                     continue
 
@@ -51,54 +50,69 @@ def check_prediction_history():
                 hold_days = 0
 
 
-              # 翌日から3日間確認
-        for day in range(1, 4):
-            high = float(df["High"].squeeze().iloc[day])
-            low = float(df["Low"].squeeze().iloc[day])
-        
+                # 翌日から3日間確認
+                for day in range(1,4):
 
-             # 利確
-        if high >= take_profit:
-            result = 1
-            sell_price = take_profit
-            hold_days = day
-            break
-            
+                    high = float(
+                        df["High"].squeeze().iloc[day]
+                    )
 
-           # 損切
-        if low <= stop_loss:
-            result = 0
-            sell_price = stop_loss
-            hold_days = day
-            break
+                    low = float(
+                        df["Low"].squeeze().iloc[day]
+                    )
 
 
-           # 3日以内に到達しない場合
-        if result == "":
-            sell_price = float(df["Close"].squeeze().iloc[3])
-            hold_days = 3
-            if sell_price > float(row["price"]):
-                result = 1
-            else:
-                result = 0
+                    if high >= take_profit:
+                        result = "success"
+                        sell_price = take_profit
+                        hold_days = day
+                        break
+
+
+                    if low <= stop_loss:
+                        result = "fail"
+                        sell_price = stop_loss
+                        hold_days = day
+                        break
+
+
+                # 3日以内に決着しない場合
+                if result == "":
+
+                    sell_price = float(
+                        df["Close"].squeeze().iloc[3]
+                    )
+
+                    hold_days = 3
+
+                    if sell_price > float(row["price"]):
+                        result = "success"
+                    else:
+                        result = "fail"
+
+
+                history.loc[i, "result"] = result
+
                 history.loc[i, "return"] = round(
                     (sell_price / float(row["price"]) - 1) * 100,
                     2
                 )
+
                 history.loc[i, "hold_days"] = hold_days
 
-        except Exception as e:
+
+            except Exception as e:
+
                 print(
-                    
                     "履歴チェックエラー:",
                     e
                 )
-                
-                h
-            except Exception as e:
-                print("履歴チェックエラー:", e)
 
-    history.to_csv(file, index=False)
+
+    history.to_csv(
+        file,
+        index=False
+    )
 import pandas as pd
 import numpy as np
 import requests
