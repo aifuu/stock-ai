@@ -95,17 +95,7 @@ if result == "":
                     e
                 )
                 
-                history.to_csv(
-                    file,
-                    index=False
-                )
-
-                
-                history.loc[i, "return"] = round(
-                    (now_price / row["price"] - 1) * 100,
-                    2
-                )
-
+                h
             except Exception as e:
                 print("履歴チェックエラー:", e)
 
