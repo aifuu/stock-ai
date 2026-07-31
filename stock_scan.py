@@ -74,7 +74,7 @@ def check_prediction_history():
                     # 損切
                     if low <= stop_loss:
 
-                        result = "fail"
+                        result = 0
                         sell_price = stop_loss
                         hold_days = day
                         break
