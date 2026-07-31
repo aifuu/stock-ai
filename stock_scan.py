@@ -63,14 +63,16 @@ def check_prediction_history():
                     )
 
 
-                                        # 利確
-                    if high >= take_profit:
 
-                        result = "success"
+                    # 利確
+                    if high >= take_profit:
+                        result = 1
                         sell_price = take_profit
                         hold_days = day
                         break
 
+
+        
                     # 損切
                     if low <= stop_loss:
 
@@ -79,14 +81,13 @@ def check_prediction_history():
                         hold_days = day
                         break
 
-                # 3日以内に到達しない場合
-                if result == "":
+                    # 3日以内に到達しない場合
+                    if result == "":
 
-                    sell_price = float(
+                        sell_price = float(
                         df["Close"].squeeze().iloc[3]
-                    )
-
-                    hold_days = 3
+                        )
+                        hold_days = 3
 
                     if sell_price > float(row["price"]):
                         result = 1
