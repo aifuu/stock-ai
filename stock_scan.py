@@ -53,8 +53,8 @@ def check_prediction_history():
 
               # 翌日から3日間確認
         for day in range(1, 4):
-        high = float(df["High"].squeeze().iloc[day])
-        low = float(df["Low"].squeeze().iloc[day])
+            high = float(df["High"].squeeze().iloc[day])
+            low = float(df["Low"].squeeze().iloc[day])
         
 
              # 利確
