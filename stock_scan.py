@@ -52,7 +52,7 @@ def check_prediction_history():
 
 
               # 翌日から3日間確認
-    for day in range(1, 4):
+        for day in range(1, 4):
         high = float(df["High"].squeeze().iloc[day])
         low = float(df["Low"].squeeze().iloc[day])
         
@@ -87,7 +87,7 @@ def check_prediction_history():
                 )
                 history.loc[i, "hold_days"] = hold_days
 
-except Exception as e:
+        except Exception as e:
                 print(
                     
                     "履歴チェックエラー:",
