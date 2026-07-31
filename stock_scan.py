@@ -63,14 +63,13 @@ def check_prediction_history():
                     )
 
 
-                    # 利確
+                                        # 利確
                     if high >= take_profit:
 
                         result = "success"
                         sell_price = take_profit
                         hold_days = day
                         break
-
 
                     # 損切
                     if low <= stop_loss:
@@ -80,29 +79,29 @@ def check_prediction_history():
                         hold_days = day
                         break
 
-
                 # 3日以内に到達しない場合
-if result == "":
+                if result == "":
 
-    sell_price = float(
-        df["Close"].squeeze().iloc[3]
-    )
+                    sell_price = float(
+                        df["Close"].squeeze().iloc[3]
+                    )
 
-    hold_days = 3
+                    hold_days = 3
 
-    if sell_price > float(row["price"]):
-        result = 1
-    else:
-        result = 0
+                    if sell_price > float(row["price"]):
+                        result = 1
+                    else:
+                        result = 0
 
-    history.loc[i, "result"] = result
+                history.loc[i, "result"] = result
 
-    history.loc[i, "return"] = round(
-        (sell_price / float(row["price"]) - 1) * 100,
-        2
-    )
+                history.loc[i, "return"] = round(
+                    (sell_price / float(row["price"]) - 1) * 100,
+                    2
+                )
 
-    history.loc[i, "hold_days"] = hold_days
+                history.loc[i, "hold_days"] = hold_days
+
             except Exception as e:
                 print(
                     "履歴チェックエラー:",
