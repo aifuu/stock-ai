@@ -491,6 +491,9 @@ for ticker in TICKERS:
         
         df = df.dropna()
 
+        print(ticker, "dropna後データ数", len(df))
+        
+        
         df["target"] = (df["Close"].shift(-3) > df["Close"]).astype(int)
 
 
@@ -525,6 +528,10 @@ for ticker in TICKERS:
         y = df["target"]
         if len(X) < 100:
             continue
+
+        print(ticker, "学習データ数=", len(X))
+
+        
         split = int(len(X) * 0.8)
         train_X = X.iloc[:split]
         train_y = y.iloc[:split]
@@ -538,6 +545,8 @@ for ticker in TICKERS:
             "close": close,
             "df": df.copy()
         })
+
+        print("保存:", ticker)
         
         continue
 
