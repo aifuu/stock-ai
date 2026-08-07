@@ -23,12 +23,12 @@ def check_prediction_history():
         return
 
     history = pd.read_csv(file)
-
-for i, row in history.iterrows():
-
-    try:
-
-        print(row["ticker"], row["date"])
+    
+    for i, row in history.iterrows():
+        
+        try:
+            
+            print(row["ticker"], row["date"])
 
         df = yf.download(
             row["ticker"],
