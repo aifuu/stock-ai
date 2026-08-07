@@ -105,6 +105,50 @@ def check_prediction_history():
                 e
             )
             
+            print("📊 TOP3順位別勝率")
+            
+# rank列がある場合のみ集計
+    
+    if "rank" in history.columns:
+        
+        for r in [1, 2, 3]:
+            data = history[
+            history["rank"] == r
+            ]
+            
+        # 判定済みだけ対象
+            data = data[
+            data["result"].isin(
+                ["success", "fail"]
+            )
+            ]
+            
+            if len(data) > 0:
+                
+                win = len(
+                    data[
+                    data["result"] == "success"
+                    ]
+                )
+                rate = round(
+                    win / len(data) * 100,
+                    1
+                )
+                print(
+                    f"🥇順位{r}位 勝率 {rate}% ({win}/{len(data)})"
+                )
+            else:
+                print(
+                    f"順位{r}位 データなし"
+                )
+            
+    else:
+        
+        print("rank列なし")
+
+
+
+            
             history.to_csv(
                 file,
                 index=False
