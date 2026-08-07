@@ -100,16 +100,17 @@ def check_prediction_history():
             "保有日数:",
             hold_days
         )
+        
+        history.loc[i, "result"] = result
+        history.loc[i, "return"] = round(
+            (sell_price / float(row["price"]) - 1) * 100,
+            2
+        )
+        
+        history.loc[i, "hold_days"] = hold_days
 
 
-                history.loc[i, "result"] = result
-
-                history.loc[i, "return"] = round(
-                    (sell_price / float(row["price"]) - 1) * 100,
-                    2
-                )
-
-                history.loc[i, "hold_days"] = hold_days
+               
 
 
             except Exception as e:
