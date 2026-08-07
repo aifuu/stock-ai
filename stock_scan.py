@@ -40,83 +40,75 @@ def check_prediction_history():
             if len(df) < 4:
                 print("データ不足")
                 continue
-
-
-        take_profit = float(row["take_profit"])
-        stop_loss = float(row["stop_loss"])
-
-
-        result = ""
-        sell_price = None
-        hold_days = 0
-
-
-        for day in range(1, 4):
-
-            high = float(df["High"].squeeze().iloc[day])
-            low = float(df["Low"].squeeze().iloc[day])
-
-
-            if high >= take_profit:
-                result = "success"
-                sell_price = take_profit
-                hold_days = day
-                break
-
-
-            if low <= stop_loss:
-                result = "fail"
-                sell_price = stop_loss
-                hold_days = day
-                break
-
-
-        if result == "":
-
-            sell_price = float(
-                df["Close"].squeeze().iloc[3]
+                
+                take_profit = float(row["take_profit"])
+                stop_loss = float(row["stop_loss"])
+                
+                result = ""
+                sell_price = None
+                hold_days = 0
+                
+                for day in range(1, 4):
+                    
+                    high = float(df["High"].squeeze().iloc[day])
+                    
+                    low = float(df["Low"].squeeze().iloc[day])
+                    
+                    if high >= take_profit:
+                        
+                        result = "success"
+                        sell_price = take_profit
+                        hold_days = day
+                        
+                        break
+                        
+                        if low <= stop_loss:
+                            result = "fail"
+                            sell_price = stop_loss
+                            hold_days = day
+                            
+                            break
+                            
+                            if result == "":
+                                
+                                sell_price = float(
+                                    df["Close"].squeeze().iloc[3]
+                                )
+                                
+                                hold_days = 3
+                                
+                                if sell_price > float(row["price"]):
+                                    result = "success"
+                                else:
+                                    result = "fail"
+                                    
+                                    print(
+                                        "結果:",
+                                        row["ticker"],
+                                        result,
+                                        "保有日数:",
+                                        
+                                        hold_days
+                                    )
+                                    
+                                    history.loc[i, "result"] = result
+                                    history.loc[i, "return"] = round(
+                                        (sell_price / float(row["price"]) - 1) * 100,
+                                        2
+                                    )
+                                    
+                                    history.loc[i, "hold_days"] = hold_days
+        
+        except Exception as e:
+            print(
+                "履歴チェックエラー:",
+                e
             )
-
-            hold_days = 3
-
-
-            if sell_price > float(row["price"]):
-                result = "success"
-            else:
-                result = "fail"
-
-
-        print(
-            "結果:",
-            row["ticker"],
-            result,
-            "保有日数:",
-            hold_days
-        )
-
-
-        history.loc[i, "result"] = result
-
-        history.loc[i, "return"] = round(
-            (sell_price / float(row["price"]) - 1) * 100,
-            2
-        )
-
-        history.loc[i, "hold_days"] = hold_days
-
-
-    except Exception as e:
-
-        print(
-            "履歴チェックエラー:",
-            e
-        )
-
-
-history.to_csv(
-    file,
-    index=False
-)
+            
+            history.to_csv(
+                file,
+                index=False
+            )
 
 
 import pandas as pd
