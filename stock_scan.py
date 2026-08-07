@@ -17,19 +17,6 @@ from sklearn.ensemble import RandomForestClassifier
 # =====================
 def check_prediction_history():
 
-
-    print(row["ticker"], row["date"])
-    
-    df = yf.download(
-        row["ticker"],
-        period="10d",
-        interval="1d",
-        auto_adjust=True
-    )
-    print("取得本数 =", len(df))
-
-    
-
     file = "prediction_history.csv"
 
     if not os.path.exists(file):
@@ -37,72 +24,82 @@ def check_prediction_history():
 
     history = pd.read_csv(file)
 
-for i, row in history.iterrows():
+    for i, row in history.iterrows():
 
-    print(row["ticker"], row["date"])
+        print(row["ticker"], row["date"])
 
-    df = yf.download(
-        row["ticker"],
-        period="10d",
-        interval="1d",
-        auto_adjust=True
-    )
+        df = yf.download(
+            row["ticker"],
+            period="10d",
+            interval="1d",
+            auto_adjust=True
+        )
 
-    print("取得本数 =", len(df))
+        print("取得本数 =", len(df))
 
-    if len(df) < 4:
-        print("データ不足")
-        continue
-
-
-                take_profit = float(row["take_profit"])
-                stop_loss = float(row["stop_loss"])
+        if len(df) < 4:
+            print("データ不足")
+            continue
 
 
-                result = ""
-                sell_price = None
-                hold_days = 0
+        take_profit = float(row["take_profit"])
+        stop_loss = float(row["stop_loss"])
 
 
-                # 翌日から3日間確認
-                for day in range(1,4):
-
-                    high = float(
-                        df["High"].squeeze().iloc[day]
-                    )
-
-                    low = float(
-                        df["Low"].squeeze().iloc[day]
-                    )
+        result = ""
+        sell_price = None
+        hold_days = 0
 
 
-                    if high >= take_profit:
-                        result = "success"
-                        sell_price = take_profit
-                        hold_days = day
-                        break
+        # 翌日から3日間確認
+        for day in range(1, 4):
+
+            high = float(
+                df["High"].squeeze().iloc[day]
+            )
+
+            low = float(
+                df["Low"].squeeze().iloc[day]
+            )
 
 
-                    if low <= stop_loss:
-                        result = "fail"
-                        sell_price = stop_loss
-                        hold_days = day
-                        break
+            if high >= take_profit:
+                result = "success"
+                sell_price = take_profit
+                hold_days = day
+                break
 
 
-                # 3日以内に決着しない場合
-                if result == "":
+            if low <= stop_loss:
+                result = "fail"
+                sell_price = stop_loss
+                hold_days = day
+                break
 
-                    sell_price = float(
-                        df["Close"].squeeze().iloc[3]
-                    )
 
-                    hold_days = 3
+        # 3日以内に決着しない場合
+        if result == "":
 
-                    if sell_price > float(row["price"]):
-                        result = "success"
-                    else:
-                        result = "fail"
+            sell_price = float(
+                df["Close"].squeeze().iloc[3]
+            )
+
+            hold_days = 3
+
+
+            if sell_price > float(row["price"]):
+                result = "success"
+            else:
+                result = "fail"
+
+
+        print(
+            "結果:",
+            row["ticker"],
+            result,
+            "保有日数:",
+            hold_days
+        )
 
 
                 history.loc[i, "result"] = result
