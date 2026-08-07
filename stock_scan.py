@@ -29,17 +29,17 @@ def check_prediction_history():
         try:
             
             print(row["ticker"], row["date"])
-
-        df = yf.download(
-            row["ticker"],
-            period="10d",
-            interval="1d",
-            auto_adjust=True
-        )
-
-        if len(df) < 4:
-            print("データ不足")
-            continue
+            
+            df = yf.download(
+                row["ticker"],
+                period="10d",
+                interval="1d",
+                auto_adjust=True
+            )
+            
+            if len(df) < 4:
+                print("データ不足")
+                continue
 
 
         take_profit = float(row["take_profit"])
