@@ -145,14 +145,11 @@ def check_prediction_history():
     else:
         
         print("rank列なし")
-
-
-
-            
-            history.to_csv(
-                file,
-                index=False
-            )
+        
+history.to_csv(
+    file,
+    index=False
+)
 
 
 import pandas as pd
