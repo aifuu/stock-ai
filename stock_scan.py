@@ -24,7 +24,9 @@ def check_prediction_history():
 
     history = pd.read_csv(file)
 
-    for i, row in history.iterrows():
+for i, row in history.iterrows():
+
+    try:
 
         print(row["ticker"], row["date"])
 
@@ -34,8 +36,6 @@ def check_prediction_history():
             interval="1d",
             auto_adjust=True
         )
-
-        print("取得本数 =", len(df))
 
         if len(df) < 4:
             print("データ不足")
@@ -51,16 +51,10 @@ def check_prediction_history():
         hold_days = 0
 
 
-        # 翌日から3日間確認
         for day in range(1, 4):
 
-            high = float(
-                df["High"].squeeze().iloc[day]
-            )
-
-            low = float(
-                df["Low"].squeeze().iloc[day]
-            )
+            high = float(df["High"].squeeze().iloc[day])
+            low = float(df["Low"].squeeze().iloc[day])
 
 
             if high >= take_profit:
@@ -77,7 +71,6 @@ def check_prediction_history():
                 break
 
 
-        # 3日以内に決着しない場合
         if result == "":
 
             sell_price = float(
@@ -100,7 +93,8 @@ def check_prediction_history():
             "保有日数:",
             hold_days
         )
-        
+
+
         history.loc[i, "result"] = result
 
         history.loc[i, "return"] = round(
@@ -123,8 +117,8 @@ history.to_csv(
     file,
     index=False
 )
-        
-        
+
+
 import pandas as pd
 import numpy as np
 import requests
