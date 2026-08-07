@@ -17,6 +17,20 @@ from sklearn.ensemble import RandomForestClassifier
 # =====================
 def check_prediction_history():
 
+
+    print(row["ticker"], row["date"])
+    
+    df = yf.download(
+        row["ticker"],
+        period="10d",
+        interval="1d",
+        auto_adjust=True
+    )
+    
+    print("取得本数 =", len(df))
+
+    
+
     file = "prediction_history.csv"
 
     if not os.path.exists(file):
@@ -37,8 +51,9 @@ def check_prediction_history():
                     auto_adjust=True
                 )
 
-                if len(df) < 4:
-                    continue
+               if len(df) < 4:
+                   print("データ不足")
+                   continue
 
 
                 take_profit = float(row["take_profit"])
