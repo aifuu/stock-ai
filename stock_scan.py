@@ -736,10 +736,11 @@ history_file = "prediction_history.csv"
 
 save_rows = []
 
-for r in top:
+for rank, r in enumerate(top, start=1):
     save_rows.append({
     "date": datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d"),
     "ticker": r["ticker"],
+    "rank": rank,
     "score": r["score"],
     "probability": r["prob"],
     "price": r["price"],
