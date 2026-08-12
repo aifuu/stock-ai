@@ -342,6 +342,206 @@ def create_features(df):
         
         return df
 
+# =========================
+# 過去予測の3日以内結果判定
+# =========================
+def update_prediction_results():
+
+    file = "prediction_history.csv"
+
+    if not os.path.exists(file):
+        print("prediction_history.csv がありません")
+        return
+
+    history = pd.read_csv(file)
+
+    required_columns = [
+        "date",
+        "ticker",
+        "price",
+        "take_profit",
+        "stop_loss",
+        "result",
+        "return",
+        "hold_days",
+        "rank"
+    ]
+
+    for col in required_columns:
+        if col not in history.columns:
+            print(f"必要な列がありません: {col}")
+            return
+
+    today = pd.Timestamp.now().normalize()
+
+    for i, row in history.iterrows():
+
+        # すでに判定済みならスキップ
+        if pd.notna(row["result"]) and str(row["result"]).strip() != "":
+            continue
+
+        try:
+            prediction_date = pd.to_datetime(row["date"]).normalize()
+            ticker = str(row["ticker"])
+
+            entry_price = float(row["price"])
+            take_profit = float(row["take_profit"])
+            stop_loss = float(row["stop_loss"])
+
+        except Exception as e:
+            print(f"履歴データ読み込みエラー: {e}")
+            continue
+
+        # 予測日の翌営業日から3営業日
+        business_days = pd.bdate_range(
+            start=prediction_date + pd.Timedelta(days=1),
+            periods=3
+        )
+
+        # まだ3営業日経過していなければ判定しない
+        if business_days[-1] > today:
+            continue
+
+        start_date = business_days[0]
+        end_date = business_days[-1] + pd.Timedelta(days=1)
+
+        try:
+
+            data = yf.download(
+                ticker,
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d"),
+                auto_adjust=False,
+                progress=False
+            )
+
+        except Exception as e:
+
+            print(
+                f"{ticker} 株価取得失敗: {e}"
+            )
+
+            continue
+
+        if data.empty:
+            print(
+                f"{ticker} 株価データなし"
+            )
+            continue
+
+        # yfinanceのMultiIndex対策
+        if isinstance(data.columns, pd.MultiIndex):
+
+            data.columns = data.columns.get_level_values(0)
+
+        result = None
+        return_rate = None
+        hold_days = None
+
+        check_days = min(3, len(data))
+
+        for day_index in range(check_days):
+
+            day = data.iloc[day_index]
+
+            try:
+                high = float(day["High"])
+                low = float(day["Low"])
+
+            except Exception:
+                continue
+
+            # =========================
+            # 利確
+            # =========================
+            if high >= take_profit:
+
+                result = "WIN"
+
+                return_rate = (
+                    (take_profit - entry_price)
+                    / entry_price
+                    * 100
+                )
+
+                hold_days = day_index + 1
+
+                break
+
+            # =========================
+            # 損切り
+            # =========================
+            if low <= stop_loss:
+
+                result = "LOSS"
+
+                return_rate = (
+                    (stop_loss - entry_price)
+                    / entry_price
+                    * 100
+                )
+
+                hold_days = day_index + 1
+
+                break
+
+        # =========================
+        # 3日経過しても
+        # TP / SL に届かなかった
+        # =========================
+        if result is None:
+
+            try:
+
+                close_price = float(
+                    data.iloc[check_days - 1]["Close"]
+                )
+
+            except Exception:
+                continue
+
+            result = "HOLD"
+
+            return_rate = (
+                (close_price - entry_price)
+                / entry_price
+                * 100
+            )
+
+            hold_days = check_days
+
+        # =========================
+        # CSVへ結果を書き込む
+        # =========================
+        history.at[i, "result"] = result
+
+        history.at[i, "return"] = round(
+            return_rate,
+            2
+        )
+
+        history.at[i, "hold_days"] = hold_days
+
+        print(
+            f"判定: "
+            f"{prediction_date.date()} "
+            f"{ticker} "
+            f"{result} "
+            f"{return_rate:.2f}% "
+            f"{hold_days}日"
+        )
+
+    # =========================
+    # CSV保存
+    # =========================
+    history.to_csv(
+        file,
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    print("過去予測の結果判定完了")
+
 # =====================
 # 日経平均
 # =====================
