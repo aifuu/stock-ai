@@ -891,25 +891,24 @@ save_rows = []
 
 for rank, r in enumerate(top, start=1):
 
+    save_rows.append({
+        "date": datetime.now(
+            ZoneInfo("Asia/Tokyo")
+        ).strftime("%Y-%m-%d"),
 
-save_rows.append({
-    "date": datetime.now(
-        ZoneInfo("Asia/Tokyo")
-    ).strftime("%Y-%m-%d"),
+        "ticker": r["ticker"],
+        "rank": rank,
+        "score": r["score"],
+        "probability": r["prob"],
+        "price": r["price"],
+        "take_profit": r["take_profit"],
+        "stop_loss": r["stop_loss"],
 
-    "ticker": r["ticker"],
-    "rank": rank,
-    "score": r["score"],
-    "probability": r["prob"],
-    "price": r["price"],
-    "take_profit": r["take_profit"],
-    "stop_loss": r["stop_loss"],
+        "result": "",
+        "return": np.nan,
+        "hold_days": np.nan
+    })
 
-    "result": "",
-    "return": np.nan,
-    "hold_days": np.nan,
-})
-    
 
 # =====================
 # 予測履歴保存（重複防止）
@@ -919,6 +918,7 @@ history_file = "prediction_history.csv"
 new_df = pd.DataFrame(save_rows)
 
 if os.path.exists(history_file):
+
     old_df = pd.read_csv(history_file)
 
     df_all = pd.concat(
@@ -932,11 +932,13 @@ if os.path.exists(history_file):
     )
 
 else:
+
     df_all = new_df
 
 df_all.to_csv(
     history_file,
-    index=False
+    index=False,
+    encoding="utf-8-sig"
 )
 
 # =====================
