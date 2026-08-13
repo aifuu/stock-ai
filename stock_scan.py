@@ -974,7 +974,6 @@ def show_ai_performance():
 """
 
 
-check_prediction_history()
 
 performance = show_ai_performance()
 
