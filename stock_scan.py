@@ -210,7 +210,11 @@ def update_prediction_results():
         return
 
     history = pd.read_csv(file)
+    # 結果・リターン・保有日数を文字列として扱う
 
+    history["result"] = history["result"].fillna("").astype(str)
+    history["return"] = history["return"].fillna("").astype(str)
+    history["hold_days"] = history["hold_days"].fillna("").astype(str)
     required_columns = [
         "date",
         "ticker",
@@ -227,6 +231,11 @@ def update_prediction_results():
         if col not in history.columns:
             print(f"必要な列がありません: {col}")
             return
+
+    # ここから型を直す
+    history["result"] = history["result"].fillna("").astype(str)
+    history["return"] = history["return"].fillna("").astype(str)
+    history["hold_days"] = history["hold_days"].fillna("").astype(str)
 
     today = pd.Timestamp.now().normalize()
 
