@@ -98,18 +98,28 @@ def calc_rsi(close, period=14):
     avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
 
-    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rs = avg_gain / avg_loss
+
     rsi = 100 - (100 / (1 + rs))
+
+    # 下落がない場合はRSI=100
+    rsi = rsi.where(avg_loss != 0, 100)
 
     return rsi
 
-    def calc_adx(df, period=14):
+
+# =====================
+# ADX
+# =====================
+
+def calc_adx(df, period=14):
     high = df["High"].squeeze()
     low = df["Low"].squeeze()
     close = df["Close"].squeeze()
 
     # True Range
     prev_close = close.shift(1)
+
     tr = pd.concat([
         (high - low),
         (high - prev_close).abs(),
@@ -120,26 +130,57 @@ def calc_rsi(close, period=14):
     up_move = high.diff()
     down_move = -low.diff()
 
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    plus_dm = np.where(
+        (up_move > down_move) & (up_move > 0),
+        up_move,
+        0.0
+    )
+
+    minus_dm = np.where(
+        (down_move > up_move) & (down_move > 0),
+        down_move,
+        0.0
+    )
 
     plus_dm = pd.Series(plus_dm, index=high.index)
     minus_dm = pd.Series(minus_dm, index=high.index)
 
     # Wilder smoothing for ATR and DM
-    atr = tr.ewm(alpha=1/period, adjust=False).mean()
-    plus_dm_sm = plus_dm.ewm(alpha=1/period, adjust=False).mean()
-    minus_dm_sm = minus_dm.ewm(alpha=1/period, adjust=False).mean()
+    atr = tr.ewm(
+        alpha=1/period,
+        adjust=False
+    ).mean()
 
-    plus_di = 100 * (plus_dm_sm / atr.replace(0, np.nan))
-    minus_di = 100 * (minus_dm_sm / atr.replace(0, np.nan))
+    plus_dm_sm = plus_dm.ewm(
+        alpha=1/period,
+        adjust=False
+    ).mean()
+
+    minus_dm_sm = minus_dm.ewm(
+        alpha=1/period,
+        adjust=False
+    ).mean()
+
+    plus_di = 100 * (
+        plus_dm_sm / atr.replace(0, np.nan)
+    )
+
+    minus_di = 100 * (
+        minus_dm_sm / atr.replace(0, np.nan)
+    )
 
     # DX and ADX
-    dx = ( (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan) ) * 100
-    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+    dx = (
+        (plus_di - minus_di).abs()
+        / (plus_di + minus_di).replace(0, np.nan)
+    ) * 100
+
+    adx = dx.ewm(
+        alpha=1/period,
+        adjust=False
+    ).mean()
 
     return adx
-
 
 def calc_score(df, close, prob):
 
