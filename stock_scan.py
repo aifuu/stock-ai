@@ -849,7 +849,7 @@ for rank, r in enumerate(top, start=1):
     "stop_loss": r["stop_loss"],
     "result": "",
     "return": "",
-    "hold_days": "",
+    "hold_days": ""
         
 })
 
