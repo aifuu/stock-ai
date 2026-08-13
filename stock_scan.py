@@ -86,15 +86,22 @@ MODEL_FILE = "model.pkl"
 # =====================
 # RSI
 # =====================
+
 def calc_rsi(close, period=14):
+    close = close.squeeze()
+
     delta = close.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, 0.0001)
-    return 100 - (100 / (1 + rs))
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
 
+    # Wilder's smoothing (RMA)
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
 
-def calc_adx(df, period=14):
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
 
     high = df["High"].squeeze()
     low = df["Low"].squeeze()
