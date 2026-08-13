@@ -209,18 +209,23 @@ def update_prediction_results():
         print("prediction_history.csv がありません")
         return
 
-        history = pd.read_csv(file)
+    # まずCSVを読み込む
+    history = pd.read_csv(file)
 
+    # =========================
     # CSVの型を統一
+    # =========================
     history["result"] = history["result"].astype("object")
+
     history["return"] = pd.to_numeric(
         history["return"],
         errors="coerce"
-    ).astype(float)
+    )
+
     history["hold_days"] = pd.to_numeric(
         history["hold_days"],
         errors="coerce"
-    ).astype(float)
+    )
 
     required_columns = [
         "date",
@@ -239,11 +244,6 @@ def update_prediction_results():
             print(f"必要な列がありません: {col}")
             return
 
-    # ここから型を直す
-    history["result"] = history["result"].fillna("").astype(str)
-    history["return"] = history["return"].fillna("").astype(str)
-    history["hold_days"] = history["hold_days"].fillna("").astype(str)
-
     today = pd.Timestamp.now().normalize()
 
     for i, row in history.iterrows():
@@ -253,7 +253,10 @@ def update_prediction_results():
             continue
 
         try:
-            prediction_date = pd.to_datetime(row["date"]).normalize()
+            prediction_date = pd.to_datetime(
+                row["date"]
+            ).normalize()
+
             ticker = str(row["ticker"])
 
             entry_price = float(row["price"])
@@ -261,21 +264,29 @@ def update_prediction_results():
             stop_loss = float(row["stop_loss"])
 
         except Exception as e:
-            print(f"履歴データ読み込みエラー: {e}")
+            print(
+                f"履歴データ読み込みエラー: {e}"
+            )
             continue
 
+        # =========================
         # 予測日の翌営業日から3営業日
+        # =========================
         business_days = pd.bdate_range(
             start=prediction_date + pd.Timedelta(days=1),
             periods=3
         )
 
-        # まだ3営業日経過していなければ判定しない
+        # まだ3営業日経過していない
         if business_days[-1] > today:
             continue
 
         start_date = business_days[0]
-        end_date = business_days[-1] + pd.Timedelta(days=1)
+
+        end_date = (
+            business_days[-1]
+            + pd.Timedelta(days=1)
+        )
 
         try:
 
@@ -301,26 +312,42 @@ def update_prediction_results():
             )
             continue
 
-        # yfinanceのMultiIndex対策
-        if isinstance(data.columns, pd.MultiIndex):
+        # =========================
+        # yfinance MultiIndex対策
+        # =========================
+        if isinstance(
+            data.columns,
+            pd.MultiIndex
+        ):
 
-            data.columns = data.columns.get_level_values(0)
+            data.columns = (
+                data.columns
+                .get_level_values(0)
+            )
 
         result = None
         return_rate = None
         hold_days = None
 
-        check_days = min(3, len(data))
+        check_days = min(
+            3,
+            len(data)
+        )
 
+        # =========================
+        # 3営業日チェック
+        # =========================
         for day_index in range(check_days):
 
             day = data.iloc[day_index]
 
             try:
+
                 high = float(day["High"])
                 low = float(day["Low"])
 
             except Exception:
+
                 continue
 
             # =========================
@@ -358,18 +385,20 @@ def update_prediction_results():
                 break
 
         # =========================
-        # 3日経過しても
-        # TP / SL に届かなかった
+        # TP / SLに届かなかった
         # =========================
         if result is None:
 
             try:
 
                 close_price = float(
-                    data.iloc[check_days - 1]["Close"]
+                    data.iloc[
+                        check_days - 1
+                    ]["Close"]
                 )
 
             except Exception:
+
                 continue
 
             result = "HOLD"
@@ -385,14 +414,22 @@ def update_prediction_results():
         # =========================
         # CSVへ結果を書き込む
         # =========================
-        history.at[i, "result"] = result
+        history.at[
+            i,
+            "result"
+        ] = result
 
-        history.at[i, "return"] = round(
-            return_rate,
-            2
+        history.at[
+            i,
+            "return"
+        ] = float(
+            round(return_rate, 2)
         )
 
-        history.at[i, "hold_days"] = hold_days
+        history.at[
+            i,
+            "hold_days"
+        ] = float(hold_days)
 
         print(
             f"判定: "
@@ -413,7 +450,6 @@ def update_prediction_results():
     )
 
     print("過去予測の結果判定完了")
-
 
 
 update_prediction_results()
@@ -854,8 +890,13 @@ history_file = "prediction_history.csv"
 save_rows = []
 
 for rank, r in enumerate(top, start=1):
-    save_rows.append({
-    "date": datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d"),
+
+
+save_rows.append({
+    "date": datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).strftime("%Y-%m-%d"),
+
     "ticker": r["ticker"],
     "rank": rank,
     "score": r["score"],
@@ -863,11 +904,12 @@ for rank, r in enumerate(top, start=1):
     "price": r["price"],
     "take_profit": r["take_profit"],
     "stop_loss": r["stop_loss"],
+
     "result": "",
-    "return": "",
-    "hold_days": ""
-        
+    "return": np.nan,
+    "hold_days": np.nan,
 })
+    
 
 # =====================
 # 予測履歴保存（重複防止）
