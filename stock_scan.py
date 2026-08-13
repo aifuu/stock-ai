@@ -209,12 +209,19 @@ def update_prediction_results():
         print("prediction_history.csv がありません")
         return
 
-    history = pd.read_csv(file)
-    # 結果・リターン・保有日数を文字列として扱う
+        history = pd.read_csv(file)
 
-    history["result"] = history["result"].fillna("").astype(str)
-    history["return"] = history["return"].fillna("").astype(str)
-    history["hold_days"] = history["hold_days"].fillna("").astype(str)
+    # CSVの型を統一
+    history["result"] = history["result"].astype("object")
+    history["return"] = pd.to_numeric(
+        history["return"],
+        errors="coerce"
+    ).astype(float)
+    history["hold_days"] = pd.to_numeric(
+        history["hold_days"],
+        errors="coerce"
+    ).astype(float)
+
     required_columns = [
         "date",
         "ticker",
