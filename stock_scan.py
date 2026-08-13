@@ -941,8 +941,9 @@ df_all.to_csv(
     encoding="utf-8-sig"
 )
 
+
 # =====================
-# AI成績評価（TOP3・3日以内利確型）
+# AI成績評価（全体＋TOP3順位別）
 # =====================
 def show_ai_performance():
 
@@ -962,16 +963,33 @@ def show_ai_performance():
     ].copy()
 
     if len(result_df) == 0:
-
         return """
-📊 AI実績（TOP3・3日以内利確型）
+📊 AI実績
 
 まだ判定データなし
 """
 
+    # 数値化
+    result_df["return"] = pd.to_numeric(
+        result_df["return"],
+        errors="coerce"
+    )
+
+    result_df["hold_days"] = pd.to_numeric(
+        result_df["hold_days"],
+        errors="coerce"
+    )
+
+    result_df["rank"] = pd.to_numeric(
+        result_df["rank"],
+        errors="coerce"
+    )
+
     # =====================
-    # WIN / LOSS / HOLD
+    # 全体集計
     # =====================
+    total = len(result_df)
+
     wins = (
         result_df["result"] == "WIN"
     ).sum()
@@ -984,12 +1002,6 @@ def show_ai_performance():
         result_df["result"] == "HOLD"
     ).sum()
 
-    total = len(result_df)
-
-    # =====================
-    # 全体勝率
-    # HOLDは勝ち負けに入れない
-    # =====================
     decided = wins + losses
 
     if decided > 0:
@@ -997,58 +1009,46 @@ def show_ai_performance():
     else:
         win_rate = 0
 
-    # =====================
-    # リターン
-    # =====================
-    returns = pd.to_numeric(
-        result_df["return"],
-        errors="coerce"
-    ).dropna()
+    returns = result_df["return"].dropna()
 
     if len(returns) > 0:
-
         avg_return = returns.mean()
         best = returns.max()
         worst = returns.min()
-
     else:
-
         avg_return = 0
         best = 0
         worst = 0
 
-    # =====================
-    # 平均保有日数
-    # =====================
-    if "hold_days" in result_df.columns:
+    days = result_df["hold_days"].dropna()
 
-        days = pd.to_numeric(
-            result_df["hold_days"],
-            errors="coerce"
-        ).dropna()
-
-        if len(days) > 0:
-            avg_days = days.mean()
-        else:
-            avg_days = 0
-
+    if len(days) > 0:
+        avg_days = days.mean()
     else:
-
         avg_days = 0
 
-    # =================================================
-    # TOP3順位別勝率
-    # =================================================
+    # =====================
+    # TOP3順位別集計
+    # =====================
     rank_text = ""
 
     for rank in [1, 2, 3]:
 
         rank_df = result_df[
-            pd.to_numeric(
-                result_df["rank"],
-                errors="coerce"
-            ) == rank
+            result_df["rank"] == rank
         ]
+
+        rank_total = len(rank_df)
+
+        if rank_total == 0:
+
+            rank_text += f"""
+#{rank}位
+
+データなし
+"""
+
+            continue
 
         rank_wins = (
             rank_df["result"] == "WIN"
@@ -1058,36 +1058,89 @@ def show_ai_performance():
             rank_df["result"] == "LOSS"
         ).sum()
 
+        rank_holds = (
+            rank_df["result"] == "HOLD"
+        ).sum()
+
         rank_decided = rank_wins + rank_losses
 
         if rank_decided > 0:
 
-            rank_rate = (
+            rank_win_rate = (
                 rank_wins
                 / rank_decided
                 * 100
             )
 
-            rank_text += (
-                f"#{rank}位 勝率: "
-                f"{rank_rate:.1f}% "
-                f"({rank_wins}勝/"
-                f"{rank_losses}敗/"
-                f"{len(rank_df)}件)\n"
+        else:
+
+            rank_win_rate = 0
+
+        rank_returns = (
+            rank_df["return"]
+            .dropna()
+        )
+
+        if len(rank_returns) > 0:
+
+            rank_avg_return = (
+                rank_returns.mean()
+            )
+
+            rank_best = (
+                rank_returns.max()
+            )
+
+            rank_worst = (
+                rank_returns.min()
             )
 
         else:
 
-            rank_text += (
-                f"#{rank}位 勝率: "
-                f"データなし\n"
+            rank_avg_return = 0
+            rank_best = 0
+            rank_worst = 0
+
+        rank_days = (
+            rank_df["hold_days"]
+            .dropna()
+        )
+
+        if len(rank_days) > 0:
+
+            rank_avg_days = (
+                rank_days.mean()
             )
 
+        else:
+
+            rank_avg_days = 0
+
+        rank_text += f"""
+#{rank}位
+
+勝率: {rank_win_rate:.1f}%
+WIN: {rank_wins}件
+LOSS: {rank_losses}件
+HOLD: {rank_holds}件
+判定数: {rank_total}件
+
+平均利益率: {rank_avg_return:.2f}%
+平均保有日数: {rank_avg_days:.1f}日
+最高利益: {rank_best:+.2f}%
+最大損失: {rank_worst:.2f}%
+"""
+
     # =====================
-    # 結果
+    # Discord表示
     # =====================
     return f"""
-📊 AI実績（TOP3・3日以内利確型）
+━━━━━━━━━━━━━━
+📊 AI実績
+（TOP3・3日以内利確型）
+━━━━━━━━━━━━━━
+
+【全体】
 
 判定数: {total}件
 
@@ -1095,23 +1148,21 @@ def show_ai_performance():
 負け: {losses}件
 HOLD: {holds}件
 
-全体勝率: {win_rate:.1f}%
-
-━━━━━━━━━━━━━━
-🏆 TOP3順位別勝率
-
-{rank_text.rstrip()}
-
-━━━━━━━━━━━━━━
+勝率: {win_rate:.1f}%
 
 平均利益率: {avg_return:.2f}%
-
 平均保有日数: {avg_days:.1f}日
 
-最高利益: +{best:.2f}%
-
+最高利益: {best:+.2f}%
 最大損失: {worst:.2f}%
+
+━━━━━━━━━━━━━━
+🏆 TOP3順位別
+━━━━━━━━━━━━━━
+{rank_text}
+━━━━━━━━━━━━━━
 """
+
 
 
 performance = show_ai_performance()
