@@ -103,33 +103,40 @@ def calc_rsi(close, period=14):
 
     return rsi
 
+    def calc_adx(df, period=14):
     high = df["High"].squeeze()
     low = df["Low"].squeeze()
     close = df["Close"].squeeze()
 
-    plus_dm = high.diff()
-    minus_dm = -low.diff()
-
-    plus_dm = plus_dm.where(plus_dm > 0, 0)
-    minus_dm = minus_dm.where(minus_dm > 0, 0)
-
+    # True Range
+    prev_close = close.shift(1)
     tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
+        (high - low),
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
     ], axis=1).max(axis=1)
 
-    atr = tr.rolling(period).mean()
+    # Directional Movement
+    up_move = high.diff()
+    down_move = -low.diff()
 
-    plus_di = 100 * plus_dm.rolling(period).mean() / atr
-    minus_di = 100 * minus_dm.rolling(period).mean() / atr
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
 
-    dx = (
-        (plus_di - minus_di).abs()
-        / (plus_di + minus_di).replace(0, np.nan)
-    ) * 100
+    plus_dm = pd.Series(plus_dm, index=high.index)
+    minus_dm = pd.Series(minus_dm, index=high.index)
 
-    adx = dx.rolling(period).mean()
+    # Wilder smoothing for ATR and DM
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    plus_dm_sm = plus_dm.ewm(alpha=1/period, adjust=False).mean()
+    minus_dm_sm = minus_dm.ewm(alpha=1/period, adjust=False).mean()
+
+    plus_di = 100 * (plus_dm_sm / atr.replace(0, np.nan))
+    minus_di = 100 * (minus_dm_sm / atr.replace(0, np.nan))
+
+    # DX and ADX
+    dx = ( (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan) ) * 100
+    adx = dx.ewm(alpha=1/period, adjust=False).mean()
 
     return adx
 
