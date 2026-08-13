@@ -953,7 +953,9 @@ def show_ai_performance():
 
     df = pd.read_csv(file)
 
+    # =====================
     # 判定済みだけ
+    # =====================
     result_df = df[
         df["result"].notna() &
         (df["result"].astype(str).str.strip() != "")
@@ -967,7 +969,9 @@ def show_ai_performance():
 まだ判定データなし
 """
 
+    # =====================
     # WIN / LOSS / HOLD
+    # =====================
     wins = (
         result_df["result"] == "WIN"
     ).sum()
@@ -982,8 +986,10 @@ def show_ai_performance():
 
     total = len(result_df)
 
-    # 勝率
+    # =====================
+    # 全体勝率
     # HOLDは勝ち負けに入れない
+    # =====================
     decided = wins + losses
 
     if decided > 0:
@@ -991,7 +997,9 @@ def show_ai_performance():
     else:
         win_rate = 0
 
+    # =====================
     # リターン
+    # =====================
     returns = pd.to_numeric(
         result_df["return"],
         errors="coerce"
@@ -1009,7 +1017,9 @@ def show_ai_performance():
         best = 0
         worst = 0
 
+    # =====================
     # 平均保有日数
+    # =====================
     if "hold_days" in result_df.columns:
 
         days = pd.to_numeric(
@@ -1026,6 +1036,56 @@ def show_ai_performance():
 
         avg_days = 0
 
+    # =================================================
+    # TOP3順位別勝率
+    # =================================================
+    rank_text = ""
+
+    for rank in [1, 2, 3]:
+
+        rank_df = result_df[
+            pd.to_numeric(
+                result_df["rank"],
+                errors="coerce"
+            ) == rank
+        ]
+
+        rank_wins = (
+            rank_df["result"] == "WIN"
+        ).sum()
+
+        rank_losses = (
+            rank_df["result"] == "LOSS"
+        ).sum()
+
+        rank_decided = rank_wins + rank_losses
+
+        if rank_decided > 0:
+
+            rank_rate = (
+                rank_wins
+                / rank_decided
+                * 100
+            )
+
+            rank_text += (
+                f"#{rank}位 勝率: "
+                f"{rank_rate:.1f}% "
+                f"({rank_wins}勝/"
+                f"{rank_losses}敗/"
+                f"{len(rank_df)}件)\n"
+            )
+
+        else:
+
+            rank_text += (
+                f"#{rank}位 勝率: "
+                f"データなし\n"
+            )
+
+    # =====================
+    # 結果
+    # =====================
     return f"""
 📊 AI実績（TOP3・3日以内利確型）
 
@@ -1035,7 +1095,14 @@ def show_ai_performance():
 負け: {losses}件
 HOLD: {holds}件
 
-勝率: {win_rate:.1f}%
+全体勝率: {win_rate:.1f}%
+
+━━━━━━━━━━━━━━
+🏆 TOP3順位別勝率
+
+{rank_text.rstrip()}
+
+━━━━━━━━━━━━━━
 
 平均利益率: {avg_return:.2f}%
 
@@ -1050,7 +1117,6 @@ HOLD: {holds}件
 performance = show_ai_performance()
 
 msg += performance
-
 
 print(msg)
 send(msg)
