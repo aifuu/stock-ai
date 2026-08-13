@@ -849,6 +849,8 @@ for rank, r in enumerate(top, start=1):
     "stop_loss": r["stop_loss"],
     "result": "",
     "return": ""
+    "hold_days": ""
+        
 })
 
 # =====================
@@ -891,12 +893,11 @@ def show_ai_performance():
 
     df = pd.read_csv(file)
 
-
+    # 判定済みだけ
     result_df = df[
         df["result"].notna() &
-        (df["result"] != "")
-    ]
-
+        (df["result"].astype(str).str.strip() != "")
+    ].copy()
 
     if len(result_df) == 0:
 
@@ -906,53 +907,64 @@ def show_ai_performance():
 まだ判定データなし
 """
 
-
-    total = len(result_df)
-
+    # WIN / LOSS / HOLD
     wins = (
-        result_df["result"] == "success"
+        result_df["result"] == "WIN"
     ).sum()
 
     losses = (
-        result_df["result"] == "fail"
+        result_df["result"] == "LOSS"
     ).sum()
 
+    holds = (
+        result_df["result"] == "HOLD"
+    ).sum()
 
-    win_rate = wins / total * 100
+    total = len(result_df)
 
+    # 勝率
+    # HOLDは勝ち負けに入れない
+    decided = wins + losses
 
-    avg_return = (
-        result_df["return"]
-        .astype(float)
-        .mean()
-    )
+    if decided > 0:
+        win_rate = wins / decided * 100
+    else:
+        win_rate = 0
 
+    # リターン
+    returns = pd.to_numeric(
+        result_df["return"],
+        errors="coerce"
+    ).dropna()
 
-    avg_days = 0
+    if len(returns) > 0:
 
+        avg_return = returns.mean()
+        best = returns.max()
+        worst = returns.min()
+
+    else:
+
+        avg_return = 0
+        best = 0
+        worst = 0
+
+    # 平均保有日数
     if "hold_days" in result_df.columns:
 
-        avg_days = (
-            result_df["hold_days"]
-            .dropna()
-            .astype(float)
-            .mean()
-        )
+        days = pd.to_numeric(
+            result_df["hold_days"],
+            errors="coerce"
+        ).dropna()
 
+        if len(days) > 0:
+            avg_days = days.mean()
+        else:
+            avg_days = 0
 
-    best = (
-        result_df["return"]
-        .astype(float)
-        .max()
-    )
+    else:
 
-
-    worst = (
-        result_df["return"]
-        .astype(float)
-        .min()
-    )
-
+        avg_days = 0
 
     return f"""
 📊 AI実績（TOP3・3日以内利確型）
@@ -961,6 +973,7 @@ def show_ai_performance():
 
 勝ち: {wins}件
 負け: {losses}件
+HOLD: {holds}件
 
 勝率: {win_rate:.1f}%
 
@@ -972,7 +985,6 @@ def show_ai_performance():
 
 最大損失: {worst:.2f}%
 """
-
 
 
 performance = show_ai_performance()
