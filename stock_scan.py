@@ -176,27 +176,27 @@ def calc_score(df, close, prob):
         "stop_loss": round(price * 0.95, 0),
     }
 def create_features(df):
-        close = df["Close"].squeeze()
-        volume = df["Volume"].squeeze()
-        df["ret1"] = close.pct_change()
-        df["ma25"] = close.rolling(25).mean()
-        df["ma75"] = close.rolling(75).mean()
-        df["vol_ratio"] = volume / volume.rolling(20).mean()
-        df["rsi"] = calc_rsi(close)
-        df["adx"] = calc_adx(df)  
-        
-        ema12 = close.ewm(span=12).mean()
-        ema26 = close.ewm(span=26).mean()
-        df["macd"] = ema12 - ema26
-        df["signal"] = df["macd"].ewm(span=9).mean()
-        
-        df["high252"] = close.rolling(252).max()
-        df["low252"] = close.rolling(252).min()
-        
-        df["from_high"] = (close / df["high252"] - 1) * 100
-        df["from_low"] = (close / df["low252"] - 1) * 100
-        
-        return df
+    close = df["Close"].squeeze()
+    volume = df["Volume"].squeeze()
+    df["ret1"] = close.pct_change()
+    df["ma25"] = close.rolling(25).mean()
+    df["ma75"] = close.rolling(75).mean()
+    df["vol_ratio"] = volume / volume.rolling(20).mean()
+    df["rsi"] = calc_rsi(close)
+    df["adx"] = calc_adx(df)
+    
+    ema12 = close.ewm(span=12).mean()
+    ema26 = close.ewm(span=26).mean()
+    df["macd"] = ema12 - ema26
+    df["signal"] = df["macd"].ewm(span=9).mean()
+    
+    df["high252"] = close.rolling(252).max()
+    df["low252"] = close.rolling(252).min()
+    
+    df["from_high"] = (close / df["high252"] - 1) * 100
+    df["from_low"] = (close / df["low252"] - 1) * 100
+    
+    return df
 
 # =========================
 # 過去予測の3日以内結果判定
