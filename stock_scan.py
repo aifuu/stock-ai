@@ -542,6 +542,10 @@ def update_prediction_results():
 
     print("過去予測の結果判定完了")
 
+
+
+update_prediction_results()
+
 # =====================
 # 日経平均
 # =====================
