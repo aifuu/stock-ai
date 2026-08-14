@@ -590,27 +590,16 @@ futures["future_gap"] = (
 # =====================
 # 学習データ読み込み
 # =====================
-def load_training_data():    
+def load_training_data():
     if not os.path.exists(TRAIN_FILE):
         return None, None
 
     df = pd.read_csv(TRAIN_FILE).dropna()
 
-    X = df[[
-    "rsi",
-    "macd",
-    "signal",
-    "ma25",
-    "ma75",
-    "vol_ratio",
-    "from_high",
-    "from_low",
-    "nikkei_kairi25",
-    "nikkei_rsi",
-    "nikkei_macd",
-    "nikkei_return_5d"
-]]
+    if len(df) == 0:
+        return None, None
 
+    X = df[FEATURES]
     y = df["target"]
 
     return X, y
@@ -619,26 +608,54 @@ def load_training_data():
 # =====================
 # 学習データ保存
 # =====================
-def save_training_data(row):
+def save_training_data(new_df):
+    """date, ticker, FEATURES, target を含むDataFrame"""
 
-    file_exists = os.path.exists(TRAIN_FILE)
+    # 保存する列を統一
+    columns = [
+        "date",
+        "ticker",
+        *FEATURES,
+        "target"
+    ]
 
-    with open(
-        TRAIN_FILE,
-        "a",
-        newline="",
-        encoding="utf-8"
-    ) as f:
+    # 必要な列だけ残す
+    new_df = new_df[columns].copy()
 
-        writer = csv.DictWriter(
-            f,
-            fieldnames=row.keys()
+    if os.path.exists(TRAIN_FILE):
+
+        old_df = pd.read_csv(TRAIN_FILE)
+
+        # 古いCSVも必要な列だけに統一
+        old_df = old_df[
+            [col for col in columns if col in old_df.columns]
+        ]
+
+        df_all = pd.concat(
+            [old_df, new_df],
+            ignore_index=True
         )
 
-        if not file_exists:
-            writer.writeheader()
+    else:
 
-        writer.writerow(row)
+        df_all = new_df
+
+    # 同じ日・同じ銘柄は最新データを残す
+    df_all = df_all.drop_duplicates(
+        subset=["date", "ticker"],
+        keep="last"
+    )
+
+    df_all.to_csv(
+        TRAIN_FILE,
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    print(
+        f"✅ train_data.csv 更新: "
+        f"{len(df_all)}件"
+    )
 
 
 # =====================
