@@ -640,9 +640,13 @@ model = RandomForestClassifier(
     random_state=42
 )
 
-print("🆕 新規LightGBMモデル")
+model_ready = False  # このあと学習 or 前回モデル読込に成功したらTrue
 
 results = []
+all_data = []
+
+# 今回実行分の学習データ（あとでtrain_data.csvに保存する）
+all_train_rows = []
 
 # =====================
 # 全銘柄学習用
@@ -716,61 +720,19 @@ for ticker in TICKERS:
         print(ticker, "dropna後データ数", len(df))
         
         
-        df["target"] = (df["Close"].shift(-3) > df["Close"]).astype(int)
+model = RandomForestClassifier(
+    n_estimators=300,
+    max_depth=7,
+    random_state=42
+)
 
+model_ready = False  # このあと学習 or 前回モデル読込に成功したらTrue
 
-        features = [
-    "ret1",
-    "ma25",
-    "ma75",
-    "vol_ratio",
-    "rsi",
-    "adx",
-    "macd",
-    "signal",
-    "from_high",
-    "from_low",
-    "nikkei_kairi25",
-    "nikkei_rsi",
-    "nikkei_macd",
-    "nikkei_return_5d",
+results = []
+all_data = []
 
-    # 日経225先物
-    "future_return",
-    "future_ma5",
-    "future_rsi",
-    "future_gap",
-]
-
-
-
-
-
-        X = df[features]
-        y = df["target"]
-        if len(X) < 100:
-            continue
-
-        print(ticker, "学習データ数=", len(X))
-
-        
-        split = int(len(X) * 0.8)
-        train_X = X.iloc[:split]
-        train_y = y.iloc[:split]
-        
-        all_features.append(train_X)
-        all_targets.append(train_y)
-
-        all_data.append({
-            "ticker": ticker,
-            "latest": X.iloc[-1:].copy(),
-            "close": close,
-            "df": df.copy()
-        })
-
-        print("保存:", ticker)
-        
-        continue
+# 今回実行分の学習データ（あとでtrain_data.csvに保存する）
+all_train_rows = []
 
         
 
