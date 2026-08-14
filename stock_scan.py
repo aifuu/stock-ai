@@ -632,7 +632,7 @@ def save_training_data(new_df):
 
 
 # =====================
-# モデル（LightGBM）
+# モデル（RandomForest）
 # =====================
 model = RandomForestClassifier(
     n_estimators=300,
@@ -647,58 +647,6 @@ all_data = []
 
 # 今回実行分の学習データ（あとでtrain_data.csvに保存する）
 all_train_rows = []
-
-# =====================
-# 全銘柄学習用
-# =====================
-all_data = []
-
-# 全銘柄特徴量
-all_features = []
-
-# 全銘柄教師データ
-all_targets = []
-
-
-df["target"] = df["Close"].shift(-3) > df["Close"]
-
-# 末尾3行は3日後の株価がないため除外
-df = df.dropna(subset=["target"])
-df["target"] = df["target"].astype(int)
-X = df[FEATURES]
-y = df["target"]
-
-if len(X) < 100:
-    continue
-    
-    print(ticker, "学習データ数=", len(X))
-    
-    split = int(len(X) * 0.8)
-    
-    train_X = X.iloc[:split]
-    train_y = y.iloc[:split]
-    
-    # 今回分をtrain_data.csv保存用に整形
-    train_rows = train_X.copy()
-    train_rows["target"] = train_y.values
-    train_rows["date"] = train_X.index.strftime("%Y-%m-%d")
-    train_rows["ticker"] = ticker
-    
-    all_train_rows.append(train_rows)
-    
-    all_data.append({
-        "ticker": ticker,
-        "latest": X.iloc[-1:].copy(),
-        "close": close,
-        "df": df.copy()
-    })
-    
-    print("保存:", ticker)
-    
-    continue
-
-
-
 
 
 # =====================
@@ -720,127 +668,145 @@ for ticker in TICKERS:
             continue
 
         df = create_features(df)
-        
+
         close = df["Close"].squeeze()
         volume = df["Volume"].squeeze()
 
-            
-
-
-                # 日経平均特徴量を結合
+        # 日経平均特徴量を結合
         df = df.join(
-            nikkei[
-            [
+            nikkei[[
                 "nikkei_kairi25",
                 "nikkei_rsi",
                 "nikkei_macd",
                 "nikkei_return_5d"
-            ]
-            ],
+            ]],
             how="left"
         )
-        
+
         # 日経225先物特徴量を結合
         df = df.join(
-            futures[
-            [
+            futures[[
                 "future_return",
                 "future_ma5",
                 "future_rsi",
                 "future_gap"
-            ]
-            ],
+            ]],
             how="left"
         )
 
-
-        
         df = df.dropna()
-
         print(ticker, "dropna後データ数", len(df))
-        
-        
-model = RandomForestClassifier(
-    n_estimators=300,
-    max_depth=7,
-    random_state=42
-)
 
-model_ready = False  # このあと学習 or 前回モデル読込に成功したらTrue
+        # 3日後の株価で教師データ作成
+        df["target"] = df["Close"].shift(-3) > df["Close"]
 
-results = []
-all_data = []
+        # 未来データがない末尾3行を除外
+        df = df.dropna(subset=["target"])
+        df["target"] = df["target"].astype(int)
 
-# 今回実行分の学習データ（あとでtrain_data.csvに保存する）
-all_train_rows = []
+        X = df[FEATURES]
+        y = df["target"]
 
-        
+        if len(X) < 100:
+            continue
 
+        print(ticker, "学習データ数=", len(X))
 
-        
+        split = int(len(X) * 0.8)
+        train_X = X.iloc[:split]
+        train_y = y.iloc[:split]
 
+        # 今回分をtrain_data.csv保存用に整形
+        train_rows = train_X.copy()
+        train_rows["target"] = train_y.values
+        train_rows["date"] = train_X.index.strftime("%Y-%m-%d")
+        train_rows["ticker"] = ticker
+
+        all_train_rows.append(train_rows)
+
+        all_data.append({
+            "ticker": ticker,
+            "latest": X.iloc[-1:].copy(),
+            "close": close,
+            "df": df.copy()
+        })
+
+        print("保存:", ticker)
 
     except Exception as e:
         print(ticker, "エラー:", e)
-
+    
+    continue
 
 
 # =====================
-# CSV全履歴学習
+# 今回分の学習データをtrain_data.csvへ保存
 # =====================
-try:
-    X_all, y_all = load_training_data()
-
-    if X_all is not None and len(X_all) > 200:
-        model.fit(X_all, y_all)
-        joblib.dump(model, MODEL_FILE)
-        print("✅ CSV全履歴で再学習完了")
-
-except Exception as e:
-    print("CSV学習スキップ:", e)
+if all_train_rows:
+    new_train_df = pd.concat(all_train_rows, ignore_index=True)
+    save_training_data(new_train_df)
 
 # =====================
-# 全銘柄まとめて学習
+# train_data.csv（累積データ）で学習
 # =====================
-if len(all_features) > 0:
+X_all, y_all = load_training_data()
 
-    X_train = pd.concat(all_features, ignore_index=True)
-    y_train = pd.concat(all_targets, ignore_index=True)
+if X_all is not None and len(X_all) >= 100 and y_all.nunique() >= 2:
 
-    model.fit(X_train, y_train)
+    model.fit(X_all, y_all)
     joblib.dump(model, MODEL_FILE)
+    model_ready = True
 
-    print("✅ 全銘柄まとめ学習完了")
+    print(f"✅ train_data.csv（{len(X_all)}件）で学習完了")
 
+elif os.path.exists(MODEL_FILE):
+
+    try:
+        model = joblib.load(MODEL_FILE)
+        model_ready = True
+        print("⚠ 新規学習条件を満たさないため、前回のモデルを使用")
+    except Exception as e:
+        print("❌ 前回モデル読み込み失敗:", e)
+
+else:
+    print("❌ 学習データ・モデルともになし。今回は予測をスキップ")
 
 
 # =====================
 # 一括予測
 # =====================
-for item in all_data:
+if model_ready:
 
-    latest = item["latest"]
-    df = item["df"]
-    close = item["close"]
-    ticker = item["ticker"]
+    for item in all_data:
 
-    prob = model.predict_proba(latest)[0][1]
+        latest = item["latest"]
+        df = item["df"]
+        close = item["close"]
+        ticker = item["ticker"]
 
-    data = calc_score(df, close, prob)
-    results.append({
-        "ticker": ticker,
-        "score": data["score"],
-        "prob": round(prob * 100, 1),
-        "price": data["price"],
-        "rsi": data["rsi"],
-        "vol": data["vol"],
-        "take_profit": data["take_profit"],
-        "stop_loss": data["stop_loss"]
-    })
+        try:
+            class_index = list(model.classes_).index(1)
+            prob = model.predict_proba(latest)[0][class_index]
+        except (ValueError, IndexError) as e:
+            print(f"{ticker} predict_proba失敗: {e}")
+            continue
+
+        data = calc_score(df, close, prob)
+        results.append({
+            "ticker": ticker,
+            "score": data["score"],
+            "prob": round(prob * 100, 1),
+            "price": data["price"],
+            "rsi": data["rsi"],
+            "vol": data["vol"],
+            "take_profit": data["take_profit"],
+            "stop_loss": data["stop_loss"]
+        })
+
+        print(f"{ticker} score={data['score']} prob={prob*100:.1f}")
 
 
-    
-    print(f"{ticker} score={data['score']} prob={prob*100:.1f}")
+
 
 
 
