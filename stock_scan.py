@@ -697,9 +697,9 @@ for ticker in TICKERS:
         df = df.dropna()
         print(ticker, "dropna後データ数", len(df))
 
-        # 3日後の株価で教師データ作成
-        df["target"] = df["Close"].shift(-3) > df["Close"]
-
+        # 3日後の株価で教師データ作成        
+        df["target"] = close.shift(-3) > close
+        
         # 未来データがない末尾3行を除外
         df = df.dropna(subset=["target"])
         df["target"] = df["target"].astype(int)
@@ -770,6 +770,27 @@ elif os.path.exists(MODEL_FILE):
 
 else:
     print("❌ 学習データ・モデルともになし。今回は予測をスキップ")
+
+def load_training_data():
+    if not os.path.exists(TRAIN_FILE):
+        return None, None
+
+    df = pd.read_csv(TRAIN_FILE).dropna()
+
+    if len(df) == 0:
+        return None, None
+
+    required_cols = FEATURES + ["target"]
+    missing = [c for c in required_cols if c not in df.columns]
+
+    if missing:
+        print(f"⚠ train_data.csv のスキーマが古いため無視します。不足列: {missing}")
+        return None, None
+
+    X = df[FEATURES]
+    y = df["target"]
+
+    return X, y
 
 
 # =====================
