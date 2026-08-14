@@ -609,38 +609,14 @@ def load_training_data():
 # 学習データ保存
 # =====================
 def save_training_data(new_df):
-    """date, ticker, FEATURES, target を含むDataFrame"""
-
-    # 保存する列を統一
-    columns = [
-        "date",
-        "ticker",
-        *FEATURES,
-        "target"
-    ]
-
-    # 必要な列だけ残す
-    new_df = new_df[columns].copy()
+    """new_df: date, ticker, FEATURES..., target を含むDataFrame"""
 
     if os.path.exists(TRAIN_FILE):
-
         old_df = pd.read_csv(TRAIN_FILE)
-
-        # 古いCSVも必要な列だけに統一
-        old_df = old_df[
-            [col for col in columns if col in old_df.columns]
-        ]
-
-        df_all = pd.concat(
-            [old_df, new_df],
-            ignore_index=True
-        )
-
+        df_all = pd.concat([old_df, new_df], ignore_index=True)
     else:
-
         df_all = new_df
 
-    # 同じ日・同じ銘柄は最新データを残す
     df_all = df_all.drop_duplicates(
         subset=["date", "ticker"],
         keep="last"
@@ -652,10 +628,7 @@ def save_training_data(new_df):
         encoding="utf-8-sig"
     )
 
-    print(
-        f"✅ train_data.csv 更新: "
-        f"{len(df_all)}件"
-    )
+    print(f"✅ train_data.csv 更新: {len(df_all)}件")
 
 
 # =====================
