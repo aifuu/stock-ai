@@ -85,9 +85,6 @@ MODEL_FILE = "model.pkl"
 
 
 
-TRAIN_FILE = "train_data.csv"
-MODEL_FILE = "model.pkl"
-
 # =====================
 # 学習・予測で使う特徴量（両方で必ず同じものを使う）
 # =====================
