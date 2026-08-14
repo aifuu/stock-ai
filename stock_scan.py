@@ -535,6 +535,7 @@ def update_prediction_results():
 
 update_prediction_results()
 
+
 # =====================
 # 日経平均
 # =====================
@@ -545,8 +546,11 @@ nikkei = yf.download(
     auto_adjust=True
 )
 
-nikkei_close = nikkei["Close"].squeeze()
+# yfinance MultiIndex対策
+if isinstance(nikkei.columns, pd.MultiIndex):
+    nikkei.columns = nikkei.columns.get_level_values(0)
 
+nikkei_close = nikkei["Close"].squeeze()
 nikkei["nikkei_ma25"] = nikkei_close.rolling(25).mean()
 nikkei["nikkei_kairi25"] = (
     (nikkei_close - nikkei["nikkei_ma25"])
@@ -574,6 +578,10 @@ futures = yf.download(
     interval="1d",
     auto_adjust=True
 )
+
+# yfinance MultiIndex対策
+if isinstance(futures.columns, pd.MultiIndex):
+    futures.columns = futures.columns.get_level_values(0)
 
 future_close = futures["Close"].squeeze()
 
@@ -663,7 +671,7 @@ for ticker in TICKERS:
 
     try:
         print("解析中:", ticker)
-
+        
         df = yf.download(
             ticker,
             period="3y",
@@ -674,10 +682,22 @@ for ticker in TICKERS:
         if df is None or len(df) < 150:
             continue
 
+        # yfinance MultiIndex対策
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df = create_features(df)
+
+
+        # yfinance MultiIndex対策
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
         df = create_features(df)
 
         close = df["Close"].squeeze()
         volume = df["Volume"].squeeze()
+
 
         # 日経平均特徴量を結合
         df = df.join(
