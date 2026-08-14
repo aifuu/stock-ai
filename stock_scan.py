@@ -660,7 +660,12 @@ all_features = []
 all_targets = []
 
 
-df["target"] = (df["Close"].shift(-3) > df["Close"]).astype(int)
+        df["target"] = df["Close"].shift(-3) > df["Close"]
+
+        # 末尾3行は3日後の株価がないため除外
+        df = df.dropna(subset=["target"])
+
+        df["target"] = df["target"].astype(int)
 
         X = df[FEATURES]
         y = df["target"]
@@ -671,10 +676,11 @@ df["target"] = (df["Close"].shift(-3) > df["Close"]).astype(int)
         print(ticker, "学習データ数=", len(X))
 
         split = int(len(X) * 0.8)
+
         train_X = X.iloc[:split]
         train_y = y.iloc[:split]
 
-        # 今回分をtrain_data.csv保存用に整形（date, ticker, targetを付与）
+        # 今回分をtrain_data.csv保存用に整形
         train_rows = train_X.copy()
         train_rows["target"] = train_y.values
         train_rows["date"] = train_X.index.strftime("%Y-%m-%d")
@@ -692,6 +698,8 @@ df["target"] = (df["Close"].shift(-3) > df["Close"]).astype(int)
         print("保存:", ticker)
 
         continue
+
+
 
 
 
