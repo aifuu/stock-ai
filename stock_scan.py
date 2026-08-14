@@ -83,6 +83,35 @@ TRAIN_FILE = "train_data.csv"
 MODEL_FILE = "model.pkl"
 
 
+
+
+TRAIN_FILE = "train_data.csv"
+MODEL_FILE = "model.pkl"
+
+# =====================
+# 学習・予測で使う特徴量（両方で必ず同じものを使う）
+# =====================
+FEATURES = [
+    "ret1",
+    "ma25",
+    "ma75",
+    "vol_ratio",
+    "rsi",
+    "adx",
+    "macd",
+    "signal",
+    "from_high",
+    "from_low",
+    "nikkei_kairi25",
+    "nikkei_rsi",
+    "nikkei_macd",
+    "nikkei_return_5d",
+    "future_return",
+    "future_ma5",
+    "future_rsi",
+    "future_gap",
+]
+
 # =====================
 # RSI
 # =====================
