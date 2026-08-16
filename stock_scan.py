@@ -109,6 +109,28 @@ FEATURES = [
     "future_gap",
 ]
 
+import time
+
+# =====================
+# ダウンロード失敗時のリトライ
+# =====================
+def safe_download(ticker, retries=3, wait_sec=3, **kwargs):
+    for attempt in range(1, retries + 1):
+        try:
+            df = yf.download(ticker, **kwargs)
+            if df is not None and not df.empty:
+                return df
+            print(f"{ticker} 空データ (試行{attempt}/{retries})")
+        except Exception as e:
+            print(f"{ticker} 取得失敗 (試行{attempt}/{retries}): {e}")
+
+        if attempt < retries:
+            time.sleep(wait_sec)
+
+    print(f"❌ {ticker} リトライ{retries}回失敗")
+    return None
+
+
 # =====================
 # RSI
 # =====================
