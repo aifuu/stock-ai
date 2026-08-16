@@ -442,59 +442,55 @@ def update_prediction_results():
         )
 
         # =========================
-        # 3営業日チェック
-        # =========================
-        for day_index in range(check_days):
+# 3営業日チェック
+# =========================
+for day_index in range(check_days):
 
-            day = data.iloc[day_index]
+    day = data.iloc[day_index]
 
-            try:
+    try:
+        high = float(day["High"])
+        low = float(day["Low"])
+    except Exception:
+        continue
 
-                high = float(day["High"])
-                low = float(day["Low"])
+    # =========================
+    # 利確
+    # =========================
+    if high >= take_profit:
 
-            except Exception:
+        result = "WIN"
 
-                continue
+        return_rate = (
+            (take_profit - entry_price)
+            / entry_price
+            * 100
+        )
 
-            # =========================
-            # 利確
-            # =========================
-            if high >= take_profit:
+        hold_days = day_index + 1
 
-                result = "WIN"
+        break
 
-                return_rate = (
-                    (take_profit - entry_price)
-                    / entry_price
-                    * 100
-                )
+    # =========================
+    # 損切り
+    # =========================
+    if low <= stop_loss:
 
-                hold_days = day_index + 1
+        result = "LOSS"
 
-                break
+        return_rate = (
+            (stop_loss - entry_price)
+            / entry_price
+            * 100
+        )
 
-            # =========================
-            # 損切り
-            # =========================
-            if low <= stop_loss:
+        hold_days = day_index + 1
 
-                result = "LOSS"
+        break
 
-                return_rate = (
-                    (stop_loss - entry_price)
-                    / entry_price
-                    * 100
-                )
-
-                hold_days = day_index + 1
-
-                break
-
-        # =========================
-        # TP / SLに届かなかった
-        # =========================
-        # 変更後
+# =========================
+# TP / SLに届かなかった
+# =========================
 if result is None:
 
     try:
@@ -512,13 +508,9 @@ if result is None:
 
     hold_days = check_days
 
+    # =========================
     # 5営業日経過し、まだマイナスなら強制決済
-    if hold_days >= 5 and return_rate < 0:
-        result = "TIMEOUT_LOSS"
-    else:
-        result = "HOLD"
-
-    # 5営業日経過し、まだマイナスなら強制決済
+    # =========================
     if hold_days >= 5 and return_rate < 0:
         result = "TIMEOUT_LOSS"
     else:
