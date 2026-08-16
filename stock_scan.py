@@ -392,14 +392,18 @@ def update_prediction_results():
         )
 
         try:
-
-            data = yf.download(
+            
+            # 変更後
+            data = safe_download(
                 ticker,
                 start=start_date.strftime("%Y-%m-%d"),
                 end=end_date.strftime("%Y-%m-%d"),
                 auto_adjust=False,
                 progress=False
             )
+            
+            if data is None:
+                continue
 
         except Exception as e:
 
