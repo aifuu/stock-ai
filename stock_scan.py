@@ -437,40 +437,39 @@ def update_prediction_results():
         hold_days = None
 
         check_days = min(
-            3,
+            5,
             len(data)
         )
 
+        # =========================
+        # 5営業日チェック
+        # =========================
+        for day_index in range(check_days):
 
-# =========================
-# 3営業日チェック
-# =========================
-for day_index in range(check_days):
+            day = data.iloc[day_index]
 
-    day = data.iloc[day_index]
+            try:
+                high = float(day["High"])
+                low = float(day["Low"])
+            except Exception:
+                continue
 
-    try:
-        high = float(day["High"])
-        low = float(day["Low"])
-    except Exception:
-        continue
+            # =========================
+            # 利確
+            # =========================
+            if high >= take_profit:
 
-    # =========================
-    # 利確
-    # =========================
-    if high >= take_profit:
+                result = "WIN"
 
-        result = "WIN"
+                return_rate = (
+                    (take_profit - entry_price)
+                    / entry_price
+                    * 100
+                )
 
-        return_rate = (
-            (take_profit - entry_price)
-            / entry_price
-            * 100
-        )
+                hold_days = day_index + 1
 
-        hold_days = day_index + 1
-
-        break
+                break
 
     # =========================
     # 損切り
