@@ -736,18 +736,14 @@ for ticker in TICKERS:
             continue
 
         print(ticker, "学習データ数=", len(X))
+        
+# 今回取得した全データを学習用CSVに保存
+train_rows = X.copy()
+train_rows["target"] = y.values
+train_rows["date"] = X.index.strftime("%Y-%m-%d")
+train_rows["ticker"] = ticker
 
-        split = int(len(X) * 0.8)
-        train_X = X.iloc[:split]
-        train_y = y.iloc[:split]
-
-        # 今回分をtrain_data.csv保存用に整形
-        train_rows = train_X.copy()
-        train_rows["target"] = train_y.values
-        train_rows["date"] = train_X.index.strftime("%Y-%m-%d")
-        train_rows["ticker"] = ticker
-
-        all_train_rows.append(train_rows)
+all_train_rows.append(train_rows)
 
         all_data.append({
             "ticker": ticker,
@@ -831,77 +827,6 @@ if model_ready:
         print(f"{ticker} score={data['score']} prob={prob*100:.1f}")
 
 
-
-
-
-
-# =====================
-# 実戦ルールバックテスト
-# =====================
-def backtest(df, capital=500000):
-
-    wins = 0
-    loses = 0
-    trades = 0
-
-    total_money = capital
-
-    close = df["Close"].squeeze()
-
-    for i in range(100, len(df)-20):
-
-        price = float(close.iloc[i])
-
-        # 20日後までチェック
-        future = close.iloc[i+1:i+21]
-
-        take_profit = price * 1.08
-        stop_loss = price * 0.95
-
-        result = None
-
-        for p in future:
-
-            p = float(p)
-
-            if p >= take_profit:
-                result = "win"
-                break
-
-            if p <= stop_loss:
-                result = "lose"
-                break
-
-        if result == "win":
-            wins += 1
-            total_money *= 1.08
-            trades += 1
-
-        elif result == "lose":
-            loses += 1
-            total_money *= 0.95
-            trades += 1
-
-
-    if trades == 0:
-        return None
-
-
-    win_rate = wins / trades * 100
-
-
-    return {
-        "trades": trades,
-        "wins": wins,
-        "loses": loses,
-        "win_rate": round(win_rate,1),
-        "money": round(total_money,0),
-        "return": round((total_money / capital - 1)*100,1)
-    }
-
-
-
-
 # =====================
 # 結果
 # =====================
@@ -977,8 +902,6 @@ for rank, r in enumerate(top, start=1):
 # =====================
 # 予測履歴保存（重複防止）
 # =====================
-history_file = "prediction_history.csv"
-
 new_df = pd.DataFrame(save_rows)
 
 if os.path.exists(history_file):
