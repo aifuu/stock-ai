@@ -692,9 +692,7 @@ for ticker in TICKERS:
         # yfinance MultiIndex対策
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-
-        df = create_features(df)
-
+        
         close = df["Close"].squeeze()
         volume = df["Volume"].squeeze()
 
