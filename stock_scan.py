@@ -1,4 +1,3 @@
-import csv
 import os
 import time
 from datetime import datetime
@@ -105,6 +104,9 @@ FEATURES = [
     "future_rsi",
     "future_gap",
 ]
+
+# target定義に使う閾値（3日後リターン±この%を境に3クラス分類）
+TARGET_THRESHOLD = 1.5
 
 
 # =====================
@@ -236,6 +238,7 @@ def calc_score(df, close, prob):
     if float(df["nikkei_return_5d"].iloc[-1]) > 0:
         score += 5
 
+    # prob = 「3日後+1.5%以上、上昇クラスである確率」
     score += prob * 50
 
     return {
@@ -506,7 +509,7 @@ def save_training_data(new_df):
 
 
 # =====================
-# モデル（RandomForest）
+# モデル（RandomForest / 3クラス分類）
 # =====================
 model = RandomForestClassifier(
     n_estimators=300,
@@ -558,7 +561,26 @@ for ticker in TICKERS:
         df = df.dropna()
         print(ticker, "dropna後データ数", len(df))
 
-        df["target"] = df["Close"].shift(-3) > df["Close"]
+        # =====================
+        # target作成（3クラス: 0=下落 / 1=横ばい / 2=上昇）
+        # =====================
+        future_return_3d = (
+            df["Close"].shift(-3) / df["Close"] - 1
+        ) * 100
+
+        def classify_target(r):
+            if pd.isna(r):
+                return np.nan
+            if r > TARGET_THRESHOLD:
+                return 2
+            elif r < -TARGET_THRESHOLD:
+                return 0
+            else:
+                return 1
+
+        df["target"] = future_return_3d.apply(classify_target)
+
+        # 3日後のデータが存在しない末尾3行を除外
         df = df.dropna(subset=["target"])
         df["target"] = df["target"].astype(int)
 
@@ -566,6 +588,11 @@ for ticker in TICKERS:
         y = df["target"]
 
         if len(X) < 100:
+            continue
+
+        # 3クラスすべて含まれているか確認（1クラスしかないと学習できないため）
+        if y.nunique() < 2:
+            print(ticker, "targetのクラスが偏っているためスキップ")
             continue
 
         print(ticker, "学習データ数=", len(X))
@@ -587,8 +614,6 @@ for ticker in TICKERS:
 
     except Exception as e:
         print(ticker, "エラー:", e)
-
-    continue
 
 
 if all_train_rows:
@@ -628,7 +653,8 @@ if model_ready:
         ticker = item["ticker"]
 
         try:
-            class_index = list(model.classes_).index(1)
+            # クラス2 = 「3日後+1.5%以上の上昇」の確率を使う
+            class_index = list(model.classes_).index(2)
             prob = model.predict_proba(latest)[0][class_index]
         except (ValueError, IndexError) as e:
             print(f"{ticker} predict_proba失敗: {e}")
