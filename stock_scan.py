@@ -17,6 +17,7 @@ from sklearn.ensemble import RandomForestClassifier
 # =====================
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 
+
 def send(msg):
     if not WEBHOOK_URL:
         print("❌ Webhookなし")
@@ -60,6 +61,7 @@ TICKERS = [
     "6613.T"
 ]
 
+
 COMPANY_NAMES = {
     "7203.T": "トヨタ自動車",
     "7269.T": "スズキ",
@@ -77,12 +79,21 @@ COMPANY_NAMES = {
     "6613.T": "QDレーザ",
 }
 
+
 TRAIN_FILE = "train_data.csv"
 MODEL_FILE = "model.pkl"
 
 
 # =====================
-# 学習・予測で使う特徴量（両方で必ず同じものを使う）
+# 3クラス分類設定
+# =====================
+DOWN_THRESHOLD = -1.5
+UP_THRESHOLD = 1.5
+FORWARD_DAYS = 3
+
+
+# =====================
+# 学習・予測で使う特徴量
 # =====================
 FEATURES = [
     "ret1",
@@ -105,27 +116,43 @@ FEATURES = [
     "future_gap",
 ]
 
-# target定義に使う閾値（3日後リターン±この%を境に3クラス分類）
-TARGET_THRESHOLD = 1.5
-
 
 # =====================
 # ダウンロード失敗時のリトライ
 # =====================
 def safe_download(ticker, retries=3, wait_sec=3, **kwargs):
+
     for attempt in range(1, retries + 1):
+
         try:
-            df = yf.download(ticker, **kwargs)
+            df = yf.download(
+                ticker,
+                **kwargs
+            )
+
             if df is not None and not df.empty:
                 return df
-            print(f"{ticker} 空データ (試行{attempt}/{retries})")
+
+            print(
+                f"{ticker} 空データ "
+                f"(試行{attempt}/{retries})"
+            )
+
         except Exception as e:
-            print(f"{ticker} 取得失敗 (試行{attempt}/{retries}): {e}")
+
+            print(
+                f"{ticker} 取得失敗 "
+                f"(試行{attempt}/{retries}): {e}"
+            )
 
         if attempt < retries:
             time.sleep(wait_sec)
 
-    print(f"❌ {ticker} リトライ{retries}回失敗")
+    print(
+        f"❌ {ticker} "
+        f"リトライ{retries}回失敗"
+    )
+
     return None
 
 
@@ -133,18 +160,34 @@ def safe_download(ticker, retries=3, wait_sec=3, **kwargs):
 # RSI
 # =====================
 def calc_rsi(close, period=14):
+
     close = close.squeeze()
 
     delta = close.diff()
+
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
 
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    avg_gain = gain.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
+
+    avg_loss = loss.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
 
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.where(avg_loss != 0, 100)
+
+    rsi = 100 - (
+        100 / (1 + rs)
+    )
+
+    rsi = rsi.where(
+        avg_loss != 0,
+        100
+    )
 
     return rsi
 
@@ -153,126 +196,307 @@ def calc_rsi(close, period=14):
 # ADX
 # =====================
 def calc_adx(df, period=14):
+
     high = df["High"].squeeze()
     low = df["Low"].squeeze()
     close = df["Close"].squeeze()
 
     prev_close = close.shift(1)
 
-    tr = pd.concat([
-        (high - low),
-        (high - prev_close).abs(),
-        (low - prev_close).abs()
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ],
+        axis=1
+    ).max(axis=1)
 
     up_move = high.diff()
     down_move = -low.diff()
 
     plus_dm = np.where(
-        (up_move > down_move) & (up_move > 0),
+        (up_move > down_move) &
+        (up_move > 0),
         up_move,
         0.0
     )
 
     minus_dm = np.where(
-        (down_move > up_move) & (down_move > 0),
+        (down_move > up_move) &
+        (down_move > 0),
         down_move,
         0.0
     )
 
-    plus_dm = pd.Series(plus_dm, index=high.index)
-    minus_dm = pd.Series(minus_dm, index=high.index)
+    plus_dm = pd.Series(
+        plus_dm,
+        index=high.index
+    )
 
-    atr = tr.ewm(alpha=1/period, adjust=False).mean()
-    plus_dm_sm = plus_dm.ewm(alpha=1/period, adjust=False).mean()
-    minus_dm_sm = minus_dm.ewm(alpha=1/period, adjust=False).mean()
+    minus_dm = pd.Series(
+        minus_dm,
+        index=high.index
+    )
 
-    plus_di = 100 * (plus_dm_sm / atr.replace(0, np.nan))
-    minus_di = 100 * (minus_dm_sm / atr.replace(0, np.nan))
+    atr = tr.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
+
+    plus_dm_sm = plus_dm.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
+
+    minus_dm_sm = minus_dm.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
+
+    plus_di = (
+        100 *
+        plus_dm_sm /
+        atr.replace(0, np.nan)
+    )
+
+    minus_di = (
+        100 *
+        minus_dm_sm /
+        atr.replace(0, np.nan)
+    )
 
     dx = (
         (plus_di - minus_di).abs()
-        / (plus_di + minus_di).replace(0, np.nan)
+        /
+        (plus_di + minus_di).replace(
+            0,
+            np.nan
+        )
     ) * 100
 
-    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+    adx = dx.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
 
     return adx
 
 
-def calc_score(df, close, prob):
+# =====================
+# 特徴量作成
+# =====================
+def create_features(df):
 
-    price = float(close.dropna().iloc[-1])
-    rsi = float(df["rsi"].iloc[-1])
-    macd = float(df["macd"].iloc[-1])
-    signal = float(df["signal"].iloc[-1])
-    ma25 = float(df["ma25"].iloc[-1])
-    ma75 = float(df["ma75"].iloc[-1])
-    vol_ratio = float(df["vol_ratio"].iloc[-1])
+    close = df["Close"].squeeze()
+    volume = df["Volume"].squeeze()
 
-    high52 = float(close.rolling(252).max().iloc[-1])
-    distance = (price / high52 - 1) * 100
+    df["ret1"] = close.pct_change()
+
+    df["ma25"] = (
+        close.rolling(25).mean()
+    )
+
+    df["ma75"] = (
+        close.rolling(75).mean()
+    )
+
+    df["vol_ratio"] = (
+        volume /
+        volume.rolling(20).mean()
+    )
+
+    df["rsi"] = calc_rsi(close)
+
+    df["adx"] = calc_adx(df)
+
+    ema12 = close.ewm(
+        span=12,
+        adjust=False
+    ).mean()
+
+    ema26 = close.ewm(
+        span=26,
+        adjust=False
+    ).mean()
+
+    df["macd"] = ema12 - ema26
+
+    df["signal"] = (
+        df["macd"]
+        .ewm(
+            span=9,
+            adjust=False
+        )
+        .mean()
+    )
+
+    df["high252"] = (
+        close.rolling(252).max()
+    )
+
+    df["low252"] = (
+        close.rolling(252).min()
+    )
+
+    df["from_high"] = (
+        close /
+        df["high252"] -
+        1
+    ) * 100
+
+    df["from_low"] = (
+        close /
+        df["low252"] -
+        1
+    ) * 100
+
+    return df
+
+
+# =====================
+# AIスコア
+# =====================
+def calc_score(
+    df,
+    close,
+    up_prob,
+    down_prob,
+    flat_prob
+):
+
+    price = float(
+        close.dropna().iloc[-1]
+    )
+
+    rsi = float(
+        df["rsi"].iloc[-1]
+    )
+
+    macd = float(
+        df["macd"].iloc[-1]
+    )
+
+    signal = float(
+        df["signal"].iloc[-1]
+    )
+
+    ma25 = float(
+        df["ma25"].iloc[-1]
+    )
+
+    ma75 = float(
+        df["ma75"].iloc[-1]
+    )
+
+    vol_ratio = float(
+        df["vol_ratio"].iloc[-1]
+    )
+
+    high52 = float(
+        close.rolling(252).max().iloc[-1]
+    )
+
+    distance = (
+        price / high52 - 1
+    ) * 100
 
     score = 0
 
+    # RSI
     if rsi < 35:
         score += 25
 
+    # MACD
     if macd > signal:
         score += 25
 
+    # MA
     if ma25 > ma75:
         score += 20
 
+    # 出来高
     if vol_ratio > 1.5:
         score += 20
 
+    # 52週高値からの距離
     if distance > -10:
         score += 15
+
     elif distance > -20:
         score += 8
 
-    if float(df["nikkei_rsi"].iloc[-1]) > 50:
+    # 日経RSI
+    if float(
+        df["nikkei_rsi"].iloc[-1]
+    ) > 50:
         score += 5
 
-    if float(df["nikkei_return_5d"].iloc[-1]) > 0:
+    # 日経5日リターン
+    if float(
+        df["nikkei_return_5d"].iloc[-1]
+    ) > 0:
         score += 5
 
-    # prob = 「3日後+1.5%以上、上昇クラスである確率」
-    score += prob * 50
+    # =====================
+    # 上昇確率を加点
+    # =====================
+    score += up_prob * 50
+
+    # =====================
+    # 利確 / 損切
+    # =====================
+    take_profit = round(
+        price * 1.08,
+        0
+    )
+
+    stop_loss = round(
+        price * 0.96,
+        0
+    )
 
     return {
-        "score": round(score, 1),
-        "price": round(price, 0),
-        "rsi": round(rsi, 1),
-        "vol": round(vol_ratio, 2),
-        "take_profit": round(price * 1.08, 0),
-        "stop_loss": round(price * 0.96, 0),
+
+        "score": round(
+            score,
+            1
+        ),
+
+        "price": round(
+            price,
+            0
+        ),
+
+        "rsi": round(
+            rsi,
+            1
+        ),
+
+        "vol": round(
+            vol_ratio,
+            2
+        ),
+
+        "take_profit": take_profit,
+
+        "stop_loss": stop_loss,
+
+        "up_prob": round(
+            up_prob * 100,
+            1
+        ),
+
+        "flat_prob": round(
+            flat_prob * 100,
+            1
+        ),
+
+        "down_prob": round(
+            down_prob * 100,
+            1
+        )
     }
-
-
-def create_features(df):
-    close = df["Close"].squeeze()
-    volume = df["Volume"].squeeze()
-    df["ret1"] = close.pct_change()
-    df["ma25"] = close.rolling(25).mean()
-    df["ma75"] = close.rolling(75).mean()
-    df["vol_ratio"] = volume / volume.rolling(20).mean()
-    df["rsi"] = calc_rsi(close)
-    df["adx"] = calc_adx(df)
-
-    ema12 = close.ewm(span=12).mean()
-    ema26 = close.ewm(span=26).mean()
-    df["macd"] = ema12 - ema26
-    df["signal"] = df["macd"].ewm(span=9).mean()
-
-    df["high252"] = close.rolling(252).max()
-    df["low252"] = close.rolling(252).min()
-
-    df["from_high"] = (close / df["high252"] - 1) * 100
-    df["from_low"] = (close / df["low252"] - 1) * 100
-
-    return df
 
 
 # =========================
@@ -283,47 +507,106 @@ def update_prediction_results():
     file = "prediction_history.csv"
 
     if not os.path.exists(file):
-        print("prediction_history.csv がありません")
+
+        print(
+            "prediction_history.csv がありません"
+        )
+
         return
 
     history = pd.read_csv(file)
 
-    history["result"] = history["result"].astype("object")
-    history["return"] = pd.to_numeric(history["return"], errors="coerce")
-    history["hold_days"] = pd.to_numeric(history["hold_days"], errors="coerce")
+    history["result"] = (
+        history["result"]
+        .astype("object")
+    )
+
+    history["return"] = pd.to_numeric(
+        history["return"],
+        errors="coerce"
+    )
+
+    history["hold_days"] = pd.to_numeric(
+        history["hold_days"],
+        errors="coerce"
+    )
 
     required_columns = [
-        "date", "ticker", "price", "take_profit",
-        "stop_loss", "result", "return", "hold_days", "rank"
+        "date",
+        "ticker",
+        "price",
+        "take_profit",
+        "stop_loss",
+        "result",
+        "return",
+        "hold_days",
+        "rank"
     ]
 
     for col in required_columns:
+
         if col not in history.columns:
-            print(f"必要な列がありません: {col}")
+
+            print(
+                f"必要な列がありません: {col}"
+            )
+
             return
 
     today = pd.Timestamp.now().normalize()
 
+    # =========================
+    # 過去予測を1件ずつ判定
+    # =========================
     for i, row in history.iterrows():
 
-        if pd.notna(row["result"]) and str(row["result"]).strip() != "":
+        if (
+            pd.notna(row["result"])
+            and
+            str(row["result"]).strip() != ""
+        ):
             continue
 
         try:
-            prediction_date = pd.to_datetime(row["date"]).normalize()
-            ticker = str(row["ticker"])
-            entry_price = float(row["price"])
-            take_profit = float(row["take_profit"])
-            stop_loss = float(row["stop_loss"])
+
+            prediction_date = (
+                pd.to_datetime(
+                    row["date"]
+                ).normalize()
+            )
+
+            ticker = str(
+                row["ticker"]
+            )
+
+            entry_price = float(
+                row["price"]
+            )
+
+            take_profit = float(
+                row["take_profit"]
+            )
+
+            stop_loss = float(
+                row["stop_loss"]
+            )
+
         except Exception as e:
-            print(f"履歴データ読み込みエラー: {e}")
+
+            print(
+                f"履歴データ読み込みエラー: {e}"
+            )
+
             continue
 
         # =========================
         # 予測日の翌営業日から5営業日
         # =========================
         business_days = pd.bdate_range(
-            start=prediction_date + pd.Timedelta(days=1),
+            start=(
+                prediction_date
+                + pd.Timedelta(days=1)
+            ),
             periods=5
         )
 
@@ -331,54 +614,118 @@ def update_prediction_results():
             continue
 
         start_date = business_days[0]
-        end_date = business_days[-1] + pd.Timedelta(days=1)
+
+        end_date = (
+            business_days[-1]
+            + pd.Timedelta(days=1)
+        )
 
         data = safe_download(
             ticker,
-            start=start_date.strftime("%Y-%m-%d"),
-            end=end_date.strftime("%Y-%m-%d"),
+            start=start_date.strftime(
+                "%Y-%m-%d"
+            ),
+            end=end_date.strftime(
+                "%Y-%m-%d"
+            ),
             auto_adjust=False,
             progress=False
         )
 
         if data is None or data.empty:
-            print(f"{ticker} 株価データなし")
+
+            print(
+                f"{ticker} 株価データなし"
+            )
+
             continue
 
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+        if isinstance(
+            data.columns,
+            pd.MultiIndex
+        ):
+
+            data.columns = (
+                data.columns
+                .get_level_values(0)
+            )
 
         result = None
         return_rate = None
         hold_days = None
 
-        check_days = min(5, len(data))
+        check_days = min(
+            5,
+            len(data)
+        )
 
         # =========================
         # 5営業日チェック
         # =========================
-        for day_index in range(check_days):
+        for day_index in range(
+            check_days
+        ):
 
-            day = data.iloc[day_index]
+            day = data.iloc[
+                day_index
+            ]
 
             try:
-                high = float(day["High"])
-                low = float(day["Low"])
+
+                high = float(
+                    day["High"]
+                )
+
+                low = float(
+                    day["Low"]
+                )
+
             except Exception:
+
                 continue
 
+            # =========================
             # 利確
+            # =========================
             if high >= take_profit:
+
                 result = "WIN"
-                return_rate = (take_profit - entry_price) / entry_price * 100
-                hold_days = day_index + 1
+
+                return_rate = (
+                    (
+                        take_profit
+                        - entry_price
+                    )
+                    / entry_price
+                    * 100
+                )
+
+                hold_days = (
+                    day_index + 1
+                )
+
                 break
 
-            # 損切り
+            # =========================
+            # 損切
+            # =========================
             if low <= stop_loss:
+
                 result = "LOSS"
-                return_rate = (stop_loss - entry_price) / entry_price * 100
-                hold_days = day_index + 1
+
+                return_rate = (
+                    (
+                        stop_loss
+                        - entry_price
+                    )
+                    / entry_price
+                    * 100
+                )
+
+                hold_days = (
+                    day_index + 1
+                )
+
                 break
 
         # =========================
@@ -387,107 +734,338 @@ def update_prediction_results():
         if result is None:
 
             try:
-                close_price = float(data.iloc[check_days - 1]["Close"])
+
+                close_price = float(
+                    data.iloc[
+                        check_days - 1
+                    ]["Close"]
+                )
+
             except Exception:
+
                 continue
 
-            return_rate = (close_price - entry_price) / entry_price * 100
+            return_rate = (
+                (
+                    close_price
+                    - entry_price
+                )
+                / entry_price
+                * 100
+            )
+
             hold_days = check_days
 
-            # 5営業日経過し、まだマイナスなら強制決済
-            if hold_days >= 5 and return_rate < 0:
+            # =========================
+            # 5営業日経過＋マイナス
+            # =========================
+            if (
+                hold_days >= 5
+                and return_rate < 0
+            ):
+
                 result = "TIMEOUT_LOSS"
+
             else:
+
                 result = "HOLD"
 
-        history.at[i, "result"] = result
-        history.at[i, "return"] = float(round(return_rate, 2))
-        history.at[i, "hold_days"] = float(hold_days)
+        history.at[
+            i,
+            "result"
+        ] = result
 
-        print(
-            f"判定: {prediction_date.date()} {ticker} "
-            f"{result} {return_rate:.2f}% {hold_days}日"
+        history.at[
+            i,
+            "return"
+        ] = float(
+            round(
+                return_rate,
+                2
+            )
         )
 
-    history.to_csv(file, index=False, encoding="utf-8-sig")
-    print("過去予測の結果判定完了")
+        history.at[
+            i,
+            "hold_days"
+        ] = float(
+            hold_days
+        )
+
+        print(
+            f"判定: "
+            f"{prediction_date.date()} "
+            f"{ticker} "
+            f"{result} "
+            f"{return_rate:.2f}% "
+            f"{hold_days}日"
+        )
+
+    history.to_csv(
+        file,
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    print(
+        "過去予測の結果判定完了"
+    )
 
 
+# =========================
+# 過去予測結果更新
+# =========================
 update_prediction_results()
 
 
 # =====================
 # 日経平均
 # =====================
-nikkei = safe_download("^N225", period="3y", interval="1d", auto_adjust=True)
+nikkei = safe_download(
+    "^N225",
+    period="3y",
+    interval="1d",
+    auto_adjust=True
+)
+
 if nikkei is None:
-    send("❌ 日経平均データ取得失敗のため処理中断")
+
+    send(
+        "❌ 日経平均データ取得失敗"
+        "のため処理中断"
+    )
+
     exit()
 
-if isinstance(nikkei.columns, pd.MultiIndex):
-    nikkei.columns = nikkei.columns.get_level_values(0)
+if isinstance(
+    nikkei.columns,
+    pd.MultiIndex
+):
 
-nikkei_close = nikkei["Close"].squeeze()
-nikkei["nikkei_ma25"] = nikkei_close.rolling(25).mean()
-nikkei["nikkei_kairi25"] = (
-    (nikkei_close - nikkei["nikkei_ma25"]) / nikkei["nikkei_ma25"] * 100
+    nikkei.columns = (
+        nikkei.columns
+        .get_level_values(0)
+    )
+
+nikkei_close = (
+    nikkei["Close"]
+    .squeeze()
 )
-nikkei["nikkei_rsi"] = calc_rsi(nikkei_close)
 
-ema12_n = nikkei_close.ewm(span=12).mean()
-ema26_n = nikkei_close.ewm(span=26).mean()
-nikkei["nikkei_macd"] = ema12_n - ema26_n
-nikkei["nikkei_return_5d"] = nikkei_close.pct_change(5) * 100
+nikkei["nikkei_ma25"] = (
+    nikkei_close
+    .rolling(25)
+    .mean()
+)
+
+nikkei["nikkei_kairi25"] = (
+    (
+        nikkei_close
+        - nikkei["nikkei_ma25"]
+    )
+    / nikkei["nikkei_ma25"]
+    * 100
+)
+
+nikkei["nikkei_rsi"] = (
+    calc_rsi(nikkei_close)
+)
+
+ema12_n = (
+    nikkei_close
+    .ewm(
+        span=12,
+        adjust=False
+    )
+    .mean()
+)
+
+ema26_n = (
+    nikkei_close
+    .ewm(
+        span=26,
+        adjust=False
+    )
+    .mean()
+)
+
+nikkei["nikkei_macd"] = (
+    ema12_n - ema26_n
+)
+
+nikkei["nikkei_return_5d"] = (
+    nikkei_close.pct_change(5)
+    * 100
+)
 
 
 # =====================
 # 日経225先物
 # =====================
-futures = safe_download("NIY=F", period="3y", interval="1d", auto_adjust=True)
+futures = safe_download(
+    "NIY=F",
+    period="3y",
+    interval="1d",
+    auto_adjust=True
+)
+
 if futures is None:
-    send("❌ 先物データ取得失敗のため処理中断")
+
+    send(
+        "❌ 先物データ取得失敗"
+        "のため処理中断"
+    )
+
     exit()
 
-if isinstance(futures.columns, pd.MultiIndex):
-    futures.columns = futures.columns.get_level_values(0)
+if isinstance(
+    futures.columns,
+    pd.MultiIndex
+):
 
-future_close = futures["Close"].squeeze()
+    futures.columns = (
+        futures.columns
+        .get_level_values(0)
+    )
 
-futures["future_return"] = future_close.pct_change()
-futures["future_ma5"] = future_close.rolling(5).mean()
-futures["future_rsi"] = calc_rsi(future_close)
+future_close = (
+    futures["Close"]
+    .squeeze()
+)
+
+futures["future_return"] = (
+    future_close.pct_change()
+)
+
+futures["future_ma5"] = (
+    future_close
+    .rolling(5)
+    .mean()
+)
+
+futures["future_rsi"] = (
+    calc_rsi(future_close)
+)
+
 futures["future_gap"] = (
-    future_close - future_close.shift(1)
-) / future_close.shift(1)
+    (
+        future_close
+        - future_close.shift(1)
+    )
+    /
+    future_close.shift(1)
+)
 
-# 先物は取引時間が日本株とズレるためリーク防止で1日ラグ
-futures["future_return"] = futures["future_return"].shift(1)
-futures["future_ma5"] = futures["future_ma5"].shift(1)
-futures["future_rsi"] = futures["future_rsi"].shift(1)
-futures["future_gap"] = futures["future_gap"].shift(1)
+# =====================
+# 先物は1日ラグ
+# =====================
+futures[
+    "future_return"
+] = futures[
+    "future_return"
+].shift(1)
+
+futures[
+    "future_ma5"
+] = futures[
+    "future_ma5"
+].shift(1)
+
+futures[
+    "future_rsi"
+] = futures[
+    "future_rsi"
+].shift(1)
+
+futures[
+    "future_gap"
+] = futures[
+    "future_gap"
+].shift(1)
 
 
 # =====================
 # 学習データ読み込み
 # =====================
 def load_training_data():
-    if not os.path.exists(TRAIN_FILE):
+
+    if not os.path.exists(
+        TRAIN_FILE
+    ):
+
         return None, None
 
-    df = pd.read_csv(TRAIN_FILE).dropna()
+    df = pd.read_csv(
+        TRAIN_FILE
+    )
 
     if len(df) == 0:
+
         return None, None
 
-    required_cols = FEATURES + ["target"]
-    missing = [c for c in required_cols if c not in df.columns]
+    required_cols = (
+        FEATURES + ["target"]
+    )
+
+    missing = [
+        c
+        for c in required_cols
+        if c not in df.columns
+    ]
 
     if missing:
-        print(f"⚠ train_data.csv のスキーマが古いため無視します。不足列: {missing}")
+
+        print(
+            "⚠ train_data.csvの"
+            "スキーマが古いため無視します"
+        )
+
+        print(
+            f"不足列: {missing}"
+        )
+
+        return None, None
+
+    df = df.dropna()
+
+    if len(df) == 0:
+
+        return None, None
+
+    # =====================
+    # 3クラス専用
+    # =====================
+    df["target"] = pd.to_numeric(
+        df["target"],
+        errors="coerce"
+    )
+
+    df = df[
+        df["target"].isin(
+            [0, 1, 2]
+        )
+    ].copy()
+
+    if len(df) == 0:
+
         return None, None
 
     X = df[FEATURES]
-    y = df["target"]
+
+    y = df["target"].astype(int)
+
+    # =====================
+    # 3クラス揃っているか確認
+    # =====================
+    if y.nunique() < 3:
+
+        print(
+            "⚠ 3クラス "
+            "(0/1/2) が揃っていないため、"
+            "既存学習データは使用しません"
+        )
+
+        return None, None
 
     return X, y
 
@@ -496,25 +1074,79 @@ def load_training_data():
 # 学習データ保存
 # =====================
 def save_training_data(new_df):
-    if os.path.exists(TRAIN_FILE):
-        old_df = pd.read_csv(TRAIN_FILE)
-        df_all = pd.concat([old_df, new_df], ignore_index=True)
+
+    if os.path.exists(
+        TRAIN_FILE
+    ):
+
+        old_df = pd.read_csv(
+            TRAIN_FILE
+        )
+
+        # =====================
+        # 旧2クラスデータを混ぜない
+        # =====================
+        if (
+            "target" in old_df.columns
+            and
+            set(
+                pd.to_numeric(
+                    old_df["target"],
+                    errors="coerce"
+                )
+                .dropna()
+                .unique()
+            )
+            - {0, 1, 2}
+        ):
+
+            print(
+                "⚠ 旧形式の学習データを"
+                "破棄して3クラス用に再構築します"
+            )
+
+            old_df = pd.DataFrame()
+
+        df_all = pd.concat(
+            [
+                old_df,
+                new_df
+            ],
+            ignore_index=True
+        )
+
     else:
+
         df_all = new_df
 
-    df_all = df_all.drop_duplicates(subset=["date", "ticker"], keep="last")
+    df_all = df_all.drop_duplicates(
+        subset=[
+            "date",
+            "ticker"
+        ],
+        keep="last"
+    )
 
-    df_all.to_csv(TRAIN_FILE, index=False, encoding="utf-8-sig")
-    print(f"✅ train_data.csv 更新: {len(df_all)}件")
+    df_all.to_csv(
+        TRAIN_FILE,
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    print(
+        f"✅ train_data.csv 更新: "
+        f"{len(df_all)}件"
+    )
 
 
 # =====================
-# モデル（RandomForest / 3クラス分類）
+# モデル
 # =====================
 model = RandomForestClassifier(
     n_estimators=300,
     max_depth=7,
-    random_state=42
+    random_state=42,
+    class_weight="balanced"
 )
 
 model_ready = False
@@ -530,114 +1162,374 @@ all_train_rows = []
 for ticker in TICKERS:
 
     try:
-        print("解析中:", ticker)
 
-        df = safe_download(ticker, period="3y", interval="1d", auto_adjust=True)
+        print(
+            "解析中:",
+            ticker
+        )
 
-        if df is None or len(df) < 150:
+        df = safe_download(
+            ticker,
+            period="3y",
+            interval="1d",
+            auto_adjust=True
+        )
+
+        if (
+            df is None
+            or
+            len(df) < 150
+        ):
+
             continue
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        if isinstance(
+            df.columns,
+            pd.MultiIndex
+        ):
+
+            df.columns = (
+                df.columns
+                .get_level_values(0)
+            )
 
         df = create_features(df)
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        if isinstance(
+            df.columns,
+            pd.MultiIndex
+        ):
 
-        close = df["Close"].squeeze()
-        volume = df["Volume"].squeeze()
+            df.columns = (
+                df.columns
+                .get_level_values(0)
+            )
 
+        close = (
+            df["Close"]
+            .squeeze()
+        )
+
+        volume = (
+            df["Volume"]
+            .squeeze()
+        )
+
+        # =====================
+        # 日経特徴量
+        # =====================
         df = df.join(
-            nikkei[["nikkei_kairi25", "nikkei_rsi", "nikkei_macd", "nikkei_return_5d"]],
+            nikkei[
+                [
+                    "nikkei_kairi25",
+                    "nikkei_rsi",
+                    "nikkei_macd",
+                    "nikkei_return_5d"
+                ]
+            ],
             how="left"
         )
 
+        # =====================
+        # 先物特徴量
+        # =====================
         df = df.join(
-            futures[["future_return", "future_ma5", "future_rsi", "future_gap"]],
+            futures[
+                [
+                    "future_return",
+                    "future_ma5",
+                    "future_rsi",
+                    "future_gap"
+                ]
+            ],
             how="left"
         )
 
         df = df.dropna()
-        print(ticker, "dropna後データ数", len(df))
+
+        print(
+            ticker,
+            "dropna後データ数",
+            len(df)
+        )
 
         # =====================
-        # target作成（3クラス: 0=下落 / 1=横ばい / 2=上昇）
+        # 3営業日後の騰落率
         # =====================
-        future_return_3d = (
-            df["Close"].shift(-3) / df["Close"] - 1
-        ) * 100
+        future_price = (
+            df["Close"]
+            .shift(-FORWARD_DAYS)
+        )
 
-        def classify_target(r):
-            if pd.isna(r):
-                return np.nan
-            if r > TARGET_THRESHOLD:
-                return 2
-            elif r < -TARGET_THRESHOLD:
-                return 0
-            else:
-                return 1
+        future_return = (
+            (
+                future_price
+                /
+                df["Close"]
+                - 1
+            )
+            * 100
+        )
 
-        df["target"] = future_return_3d.apply(classify_target)
+        # =====================
+        # 3クラス分類
+        #
+        # 0 = 下落
+        # 1 = 横ばい
+        # 2 = 上昇
+        # =====================
+        df["target"] = np.select(
+            [
+                future_return
+                <= DOWN_THRESHOLD,
 
-        # 3日後のデータが存在しない末尾3行を除外
-        df = df.dropna(subset=["target"])
-        df["target"] = df["target"].astype(int)
+                future_return
+                >= UP_THRESHOLD
+            ],
+            [
+                0,
+                2
+            ],
+            default=1
+        )
+
+        # =====================
+        # 最後の3日間は
+        # 将来価格が存在しないため除外
+        # =====================
+        df = df[
+            future_return.notna()
+        ].copy()
+
+        df["target"] = (
+            df["target"]
+            .astype(int)
+        )
+
+        if len(df) < 100:
+
+            print(
+                ticker,
+                "学習データ不足"
+            )
+
+            continue
+
+        print(
+            ticker,
+            "学習データ数=",
+            len(df)
+        )
+
+        # =====================
+        # クラス分布
+        # =====================
+        class_counts = (
+            df["target"]
+            .value_counts()
+            .sort_index()
+        )
+
+        print(
+            ticker,
+            "クラス分布:",
+            class_counts.to_dict()
+        )
+
+        # =====================
+        # 3クラス全部必要
+        # =====================
+        if df["target"].nunique() < 3:
+
+            print(
+                ticker,
+                "3クラス揃わないためスキップ"
+            )
+
+            continue
 
         X = df[FEATURES]
+
         y = df["target"]
 
-        if len(X) < 100:
-            continue
-
-        # 3クラスすべて含まれているか確認（1クラスしかないと学習できないため）
-        if y.nunique() < 2:
-            print(ticker, "targetのクラスが偏っているためスキップ")
-            continue
-
-        print(ticker, "学習データ数=", len(X))
-
         train_rows = X.copy()
-        train_rows["target"] = y.values
-        train_rows["date"] = X.index.strftime("%Y-%m-%d")
+
+        train_rows["target"] = (
+            y.values
+        )
+
+        train_rows["date"] = (
+            X.index.strftime(
+                "%Y-%m-%d"
+            )
+        )
+
         train_rows["ticker"] = ticker
-        all_train_rows.append(train_rows)
 
-        all_data.append({
-            "ticker": ticker,
-            "latest": X.iloc[-1:].copy(),
-            "close": close,
-            "df": df.copy()
-        })
+        all_train_rows.append(
+            train_rows
+        )
 
-        print("保存:", ticker)
+        # =====================
+        # 最新データ
+        # =====================
+        latest = X.iloc[
+            -1:
+        ].copy()
+
+        all_data.append(
+            {
+                "ticker": ticker,
+                "latest": latest,
+                "close": close,
+                "df": df.copy()
+            }
+        )
+
+        print(
+            "保存:",
+            ticker
+        )
 
     except Exception as e:
-        print(ticker, "エラー:", e)
+
+        print(
+            ticker,
+            "エラー:",
+            e
+        )
 
 
+# =====================
+# 学習データ保存
+# =====================
 if all_train_rows:
-    new_train_df = pd.concat(all_train_rows, ignore_index=True)
-    save_training_data(new_train_df)
 
-X_all, y_all = load_training_data()
+    new_train_df = pd.concat(
+        all_train_rows,
+        ignore_index=True
+    )
 
-if X_all is not None and len(X_all) >= 100 and y_all.nunique() >= 2:
-    model.fit(X_all, y_all)
-    joblib.dump(model, MODEL_FILE)
+    save_training_data(
+        new_train_df
+    )
+
+
+# =====================
+# 学習データ読み込み
+# =====================
+X_all, y_all = (
+    load_training_data()
+)
+
+
+# =====================
+# 3クラスモデル学習
+# =====================
+if (
+    X_all is not None
+    and
+    len(X_all) >= 100
+    and
+    y_all.nunique() == 3
+):
+
+    print(
+        "====================="
+    )
+
+    print(
+        "3クラス分類モデル学習開始"
+    )
+
+    print(
+        f"学習データ数: {len(X_all)}"
+    )
+
+    print(
+        "クラス分布:",
+        y_all.value_counts()
+        .sort_index()
+        .to_dict()
+    )
+
+    model.fit(
+        X_all,
+        y_all
+    )
+
+    joblib.dump(
+        model,
+        MODEL_FILE
+    )
+
     model_ready = True
-    print(f"✅ train_data.csv（{len(X_all)}件）で学習完了")
 
-elif os.path.exists(MODEL_FILE):
+    print(
+        "✅ 3クラス分類モデル学習完了"
+    )
+
+    print(
+        "model.classes_ =",
+        model.classes_
+    )
+
+elif os.path.exists(
+    MODEL_FILE
+):
+
     try:
-        model = joblib.load(MODEL_FILE)
-        model_ready = True
-        print("⚠ 新規学習条件を満たさないため、前回のモデルを使用")
+
+        model = joblib.load(
+            MODEL_FILE
+        )
+
+        # =====================
+        # 旧2クラスモデルを使用しない
+        # =====================
+        if not np.array_equal(
+            model.classes_,
+            np.array([0, 1, 2])
+        ):
+
+            print(
+                "❌ 既存model.pklが"
+                "3クラスモデルではありません"
+            )
+
+            print(
+                "classes =",
+                model.classes_
+            )
+
+            model_ready = False
+
+        else:
+
+            model_ready = True
+
+            print(
+                "⚠ 新規学習条件を満たさないため、"
+                "前回の3クラスモデルを使用"
+            )
+
     except Exception as e:
-        print("❌ 前回モデル読み込み失敗:", e)
+
+        print(
+            "❌ 前回モデル読み込み失敗:",
+            e
+        )
 
 else:
-    print("❌ 学習データ・モデルともになし。今回は予測をスキップ")
+
+    print(
+        "❌ 3クラス学習データ・"
+        "モデルともになし"
+    )
+
+    print(
+        "今回は予測をスキップ"
+    )
 
 
 # =====================
@@ -653,60 +1545,181 @@ if model_ready:
         ticker = item["ticker"]
 
         try:
-            # クラス2 = 「3日後+1.5%以上の上昇」の確率を使う
-            class_index = list(model.classes_).index(2)
-            prob = model.predict_proba(latest)[0][class_index]
-        except (ValueError, IndexError) as e:
-            print(f"{ticker} predict_proba失敗: {e}")
+
+            # =====================
+            # クラス別確率
+            # =====================
+            probabilities = (
+                model.predict_proba(
+                    latest
+                )[0]
+            )
+
+            classes = list(
+                model.classes_
+            )
+
+            # =====================
+            # 0 = 下落
+            # 1 = 横ばい
+            # 2 = 上昇
+            # =====================
+            down_index = classes.index(
+                0
+            )
+
+            flat_index = classes.index(
+                1
+            )
+
+            up_index = classes.index(
+                2
+            )
+
+            down_prob = (
+                probabilities[
+                    down_index
+                ]
+            )
+
+            flat_prob = (
+                probabilities[
+                    flat_index
+                ]
+            )
+
+            up_prob = (
+                probabilities[
+                    up_index
+                ]
+            )
+
+        except (
+            ValueError,
+            IndexError,
+            AttributeError
+        ) as e:
+
+            print(
+                f"{ticker} "
+                f"predict_proba失敗: {e}"
+            )
+
             continue
 
-        data = calc_score(df, close, prob)
-        results.append({
-            "ticker": ticker,
-            "score": data["score"],
-            "prob": round(prob * 100, 1),
-            "price": data["price"],
-            "rsi": data["rsi"],
-            "vol": data["vol"],
-            "take_profit": data["take_profit"],
-            "stop_loss": data["stop_loss"]
-        })
+        # =====================
+        # スコア計算
+        # =====================
+        data = calc_score(
+            df,
+            close,
+            up_prob,
+            down_prob,
+            flat_prob
+        )
 
-        print(f"{ticker} score={data['score']} prob={prob*100:.1f}")
+        results.append(
+            {
+                "ticker": ticker,
+
+                "score": data["score"],
+
+                "prob": data["up_prob"],
+
+                "up_prob": data["up_prob"],
+
+                "flat_prob": data["flat_prob"],
+
+                "down_prob": data["down_prob"],
+
+                "price": data["price"],
+
+                "rsi": data["rsi"],
+
+                "vol": data["vol"],
+
+                "take_profit":
+                    data["take_profit"],
+
+                "stop_loss":
+                    data["stop_loss"]
+            }
+        )
+
+        print(
+            f"{ticker} "
+            f"score={data['score']} "
+            f"下落={data['down_prob']:.1f}% "
+            f"横ばい={data['flat_prob']:.1f}% "
+            f"上昇={data['up_prob']:.1f}%"
+        )
 
 
 # =====================
 # 結果
 # =====================
 if not results:
-    send("⚪ データなし")
+
+    send(
+        "⚪ データなし"
+    )
+
     exit()
 
-results = sorted(results, key=lambda x: x["score"], reverse=True)
+
+results = sorted(
+    results,
+    key=lambda x: x["score"],
+    reverse=True
+)
+
 top = results[:3]
 
-msg = f"⏰ JST: {datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-msg += "📊 AI株スキャン結果\n\n"
+
+# =====================
+# Discordメッセージ
+# =====================
+msg = (
+    f"⏰ JST: "
+    f"{datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y-%m-%d %H:%M:%S')}"
+    "\n\n"
+)
+
+msg += (
+    "📊 AI株スキャン結果\n"
+    "【3クラス分類】\n\n"
+)
+
 
 for i, r in enumerate(top):
 
     if r["score"] >= 60:
+
         rank = "🔥 強い買い"
+
     elif r["score"] >= 45:
+
         rank = "🟢 買い候補"
+
     elif r["score"] >= 35:
+
         rank = "🟡 監視"
+
     else:
+
         continue
 
     msg += f"""
 ━━━━━━━━━━━━━━
-#{i+1} {r['ticker']} {COMPANY_NAMES.get(r['ticker'],'')}
+#{i+1} {r['ticker']} {COMPANY_NAMES.get(r['ticker'], '')}
 
 {rank}
 
 AIスコア: {r['score']}
-上昇確率: {r['prob']}%
+
+下落確率: {r['down_prob']}%
+横ばい確率: {r['flat_prob']}%
+上昇確率: {r['up_prob']}%
 
 買値: {r['price']}
 利確: {r['take_profit']}
@@ -721,120 +1734,338 @@ RSI: {r['rsi']}
 # =====================
 # 予測履歴保存
 # =====================
-history_file = "prediction_history.csv"
+history_file = (
+    "prediction_history.csv"
+)
 
 save_rows = []
 
-for rank, r in enumerate(top, start=1):
-    save_rows.append({
-        "date": datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d"),
-        "ticker": r["ticker"],
-        "rank": rank,
-        "score": r["score"],
-        "probability": r["prob"],
-        "price": r["price"],
-        "take_profit": r["take_profit"],
-        "stop_loss": r["stop_loss"],
-        "result": "",
-        "return": np.nan,
-        "hold_days": np.nan
-    })
+for rank, r in enumerate(
+    top,
+    start=1
+):
 
-new_df = pd.DataFrame(save_rows)
+    save_rows.append(
+        {
+            "date":
+                datetime.now(
+                    ZoneInfo("Asia/Tokyo")
+                ).strftime(
+                    "%Y-%m-%d"
+                ),
 
-if os.path.exists(history_file):
-    old_df = pd.read_csv(history_file)
-    df_all = pd.concat([old_df, new_df], ignore_index=True)
-    df_all = df_all.drop_duplicates(subset=["date", "ticker"], keep="last")
+            "ticker":
+                r["ticker"],
+
+            "rank":
+                rank,
+
+            "score":
+                r["score"],
+
+            "probability":
+                r["up_prob"],
+
+            "down_probability":
+                r["down_prob"],
+
+            "flat_probability":
+                r["flat_prob"],
+
+            "up_probability":
+                r["up_prob"],
+
+            "price":
+                r["price"],
+
+            "take_profit":
+                r["take_profit"],
+
+            "stop_loss":
+                r["stop_loss"],
+
+            "result":
+                "",
+
+            "return":
+                np.nan,
+
+            "hold_days":
+                np.nan
+        }
+    )
+
+
+new_df = pd.DataFrame(
+    save_rows
+)
+
+
+if os.path.exists(
+    history_file
+):
+
+    old_df = pd.read_csv(
+        history_file
+    )
+
+    df_all = pd.concat(
+        [
+            old_df,
+            new_df
+        ],
+        ignore_index=True
+    )
+
+    df_all = df_all.drop_duplicates(
+        subset=[
+            "date",
+            "ticker"
+        ],
+        keep="last"
+    )
+
 else:
+
     df_all = new_df
 
-df_all.to_csv(history_file, index=False, encoding="utf-8-sig")
+
+df_all.to_csv(
+    history_file,
+    index=False,
+    encoding="utf-8-sig"
+)
 
 
 # =====================
-# AI成績評価（全体＋TOP3順位別）
+# AI成績評価
 # =====================
 def show_ai_performance():
 
-    file = "prediction_history.csv"
+    file = (
+        "prediction_history.csv"
+    )
 
-    if not os.path.exists(file):
+    if not os.path.exists(
+        file
+    ):
+
         return ""
 
-    df = pd.read_csv(file)
+    df = pd.read_csv(
+        file
+    )
 
     result_df = df[
-        df["result"].notna() &
-        (df["result"].astype(str).str.strip() != "")
+        df["result"].notna()
+        &
+        (
+            df["result"]
+            .astype(str)
+            .str.strip()
+            != ""
+        )
     ].copy()
 
     if len(result_df) == 0:
+
         return """
 📊 AI実績
 
 まだ判定データなし
 """
 
-    result_df["return"] = pd.to_numeric(result_df["return"], errors="coerce")
-    result_df["hold_days"] = pd.to_numeric(result_df["hold_days"], errors="coerce")
-    result_df["rank"] = pd.to_numeric(result_df["rank"], errors="coerce")
 
-    total = len(result_df)
-    wins = (result_df["result"] == "WIN").sum()
-    losses = (result_df["result"].isin(["LOSS", "TIMEOUT_LOSS"])).sum()
-    holds = (result_df["result"] == "HOLD").sum()
+    result_df["return"] = (
+        pd.to_numeric(
+            result_df["return"],
+            errors="coerce"
+        )
+    )
 
-    decided = wins + losses
-    win_rate = wins / decided * 100 if decided > 0 else 0
+    result_df["hold_days"] = (
+        pd.to_numeric(
+            result_df["hold_days"],
+            errors="coerce"
+        )
+    )
 
-    returns = result_df["return"].dropna()
+    result_df["rank"] = (
+        pd.to_numeric(
+            result_df["rank"],
+            errors="coerce"
+        )
+    )
+
+    total = len(
+        result_df
+    )
+
+    wins = (
+        result_df["result"]
+        == "WIN"
+    ).sum()
+
+    losses = (
+        result_df["result"]
+        .isin(
+            [
+                "LOSS",
+                "TIMEOUT_LOSS"
+            ]
+        )
+    ).sum()
+
+    holds = (
+        result_df["result"]
+        == "HOLD"
+    ).sum()
+
+    decided = (
+        wins + losses
+    )
+
+    win_rate = (
+        wins / decided * 100
+        if decided > 0
+        else 0
+    )
+
+    returns = (
+        result_df["return"]
+        .dropna()
+    )
+
     if len(returns) > 0:
-        avg_return = returns.mean()
-        best = returns.max()
-        worst = returns.min()
+
+        avg_return = (
+            returns.mean()
+        )
+
+        best = (
+            returns.max()
+        )
+
+        worst = (
+            returns.min()
+        )
+
     else:
+
         avg_return = 0
         best = 0
         worst = 0
 
-    days = result_df["hold_days"].dropna()
-    avg_days = days.mean() if len(days) > 0 else 0
+
+    days = (
+        result_df["hold_days"]
+        .dropna()
+    )
+
+    avg_days = (
+        days.mean()
+        if len(days) > 0
+        else 0
+    )
+
 
     rank_text = ""
 
+
     for rank in [1, 2, 3]:
 
-        rank_df = result_df[result_df["rank"] == rank]
-        rank_total = len(rank_df)
+        rank_df = (
+            result_df[
+                result_df["rank"]
+                == rank
+            ]
+        )
+
+        rank_total = len(
+            rank_df
+        )
 
         if rank_total == 0:
+
             rank_text += f"""
 #{rank}位
 
 データなし
 """
+
             continue
 
-        rank_wins = (rank_df["result"] == "WIN").sum()
-        rank_losses = (rank_df["result"].isin(["LOSS", "TIMEOUT_LOSS"])).sum()
-        rank_holds = (rank_df["result"] == "HOLD").sum()
 
-        rank_decided = rank_wins + rank_losses
-        rank_win_rate = rank_wins / rank_decided * 100 if rank_decided > 0 else 0
+        rank_wins = (
+            rank_df["result"]
+            == "WIN"
+        ).sum()
 
-        rank_returns = rank_df["return"].dropna()
+        rank_losses = (
+            rank_df["result"]
+            .isin(
+                [
+                    "LOSS",
+                    "TIMEOUT_LOSS"
+                ]
+            )
+        ).sum()
+
+        rank_holds = (
+            rank_df["result"]
+            == "HOLD"
+        ).sum()
+
+        rank_decided = (
+            rank_wins
+            + rank_losses
+        )
+
+        rank_win_rate = (
+            rank_wins
+            / rank_decided
+            * 100
+            if rank_decided > 0
+            else 0
+        )
+
+        rank_returns = (
+            rank_df["return"]
+            .dropna()
+        )
+
         if len(rank_returns) > 0:
-            rank_avg_return = rank_returns.mean()
-            rank_best = rank_returns.max()
-            rank_worst = rank_returns.min()
+
+            rank_avg_return = (
+                rank_returns.mean()
+            )
+
+            rank_best = (
+                rank_returns.max()
+            )
+
+            rank_worst = (
+                rank_returns.min()
+            )
+
         else:
+
             rank_avg_return = 0
             rank_best = 0
             rank_worst = 0
 
-        rank_days = rank_df["hold_days"].dropna()
-        rank_avg_days = rank_days.mean() if len(rank_days) > 0 else 0
+
+        rank_days = (
+            rank_df["hold_days"]
+            .dropna()
+        )
+
+        rank_avg_days = (
+            rank_days.mean()
+            if len(rank_days) > 0
+            else 0
+        )
+
 
         rank_text += f"""
 #{rank}位
@@ -851,10 +2082,11 @@ HOLD: {rank_holds}件
 最大損失: {rank_worst:.2f}%
 """
 
+
     return f"""
 ━━━━━━━━━━━━━━
 📊 AI実績
-（TOP3・5営業日以内利確型）
+（3クラス分類・TOP3・5営業日判定）
 ━━━━━━━━━━━━━━
 
 【全体】
@@ -881,9 +2113,15 @@ HOLD: {holds}件
 """
 
 
-performance = show_ai_performance()
+# =====================
+# 最終表示・Discord送信
+# =====================
+performance = (
+    show_ai_performance()
+)
 
 msg += performance
 
 print(msg)
+
 send(msg)
