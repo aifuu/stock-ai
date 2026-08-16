@@ -595,6 +595,17 @@ futures["future_gap"] = (
 
 
 # =====================
+# 先物は取引時間が日本株とズレるためリーク防止で1日ラグ
+# =====================
+
+futures["future_return"] = futures["future_return"].shift(1)
+futures["future_ma5"] = futures["future_ma5"].shift(1)
+futures["future_rsi"] = futures["future_rsi"].shift(1)
+futures["future_gap"] = futures["future_gap"].shift(1)
+
+
+
+# =====================
 # 学習データ読み込み
 # =====================
 def load_training_data():
