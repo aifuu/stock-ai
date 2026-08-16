@@ -494,29 +494,35 @@ def update_prediction_results():
         # =========================
         # TP / SLに届かなかった
         # =========================
-        if result is None:
+        # 変更後
+if result is None:
 
-            try:
+    try:
+        close_price = float(
+            data.iloc[check_days - 1]["Close"]
+        )
+    except Exception:
+        continue
 
-                close_price = float(
-                    data.iloc[
-                        check_days - 1
-                    ]["Close"]
-                )
+    return_rate = (
+        (close_price - entry_price)
+        / entry_price
+        * 100
+    )
 
-            except Exception:
+    hold_days = check_days
 
-                continue
+    # 5営業日経過し、まだマイナスなら強制決済
+    if hold_days >= 5 and return_rate < 0:
+        result = "TIMEOUT_LOSS"
+    else:
+        result = "HOLD"
 
-            result = "HOLD"
-
-            return_rate = (
-                (close_price - entry_price)
-                / entry_price
-                * 100
-            )
-
-            hold_days = check_days
+    # 5営業日経過し、まだマイナスなら強制決済
+    if hold_days >= 5 and return_rate < 0:
+        result = "TIMEOUT_LOSS"
+    else:
+        result = "HOLD"
 
         # =========================
         # CSVへ結果を書き込む
@@ -565,12 +571,10 @@ update_prediction_results()
 # =====================
 # 日経平均
 # =====================
-nikkei = yf.download(
-    "^N225",
-    period="3y",
-    interval="1d",
-    auto_adjust=True
-)
+nikkei = safe_download("^N225", period="3y", interval="1d", auto_adjust=True)
+if nikkei is None:
+    send("❌ 日経平均データ取得失敗のため処理中断")
+    exit()
 
 # yfinance MultiIndex対策
 if isinstance(nikkei.columns, pd.MultiIndex):
@@ -598,12 +602,10 @@ nikkei["nikkei_return_5d"] = (
 # =====================
 # 日経225先物
 # =====================
-futures = yf.download(
-    "NIY=F",
-    period="3y",
-    interval="1d",
-    auto_adjust=True
-)
+futures = safe_download("NIY=F", period="3y", interval="1d", auto_adjust=True)
+if futures is None:
+    send("❌ 先物データ取得失敗のため処理中断")
+    exit()
 
 # yfinance MultiIndex対策
 if isinstance(futures.columns, pd.MultiIndex):
@@ -709,13 +711,8 @@ for ticker in TICKERS:
     try:
         print("解析中:", ticker)
         
-        df = yf.download(
-            ticker,
-            period="3y",
-            interval="1d",
-            auto_adjust=True
-        )
-
+        df = safe_download(ticker, period="3y", interval="1d", auto_adjust=True)
+        
         if df is None or len(df) < 150:
             continue
 
@@ -1039,7 +1036,7 @@ def show_ai_performance():
     ).sum()
 
     losses = (
-        result_df["result"] == "LOSS"
+        result_df["result"].isin(["LOSS", "TIMEOUT_LOSS"])
     ).sum()
 
     holds = (
@@ -1099,7 +1096,7 @@ def show_ai_performance():
         ).sum()
 
         rank_losses = (
-            rank_df["result"] == "LOSS"
+            result_df["result"].isin(["LOSS", "TIMEOUT_LOSS"])
         ).sum()
 
         rank_holds = (
