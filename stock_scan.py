@@ -722,12 +722,20 @@ for ticker in TICKERS:
         df = df.dropna()
         print(ticker, "dropna後データ数", len(df))
 
-        # 3日後の株価で教師データ作成        
-        df["target"] = close.shift(-3) > close
-        
-        # 未来データがない末尾3行を除外
-        df = df.dropna(subset=["target"])
-        df["target"] = df["target"].astype(int)
+        # 3日後の株価でtarget作成
+        # =====================
+        df["target"] = (
+            df["Close"].shift(-3) > df["Close"]
+        )
+
+        # 3日後のデータが存在しない末尾3行を除外
+        df = df.dropna(
+            subset=["target"]
+        )
+
+        df["target"] = (
+            df["target"].astype(int)
+        )
 
         X = df[FEATURES]
         y = df["target"]
@@ -735,15 +743,28 @@ for ticker in TICKERS:
         if len(X) < 100:
             continue
 
-        print(ticker, "学習データ数=", len(X))
-        
-# 今回取得した全データを学習用CSVに保存
-train_rows = X.copy()
-train_rows["target"] = y.values
-train_rows["date"] = X.index.strftime("%Y-%m-%d")
-train_rows["ticker"] = ticker
+        print(
+            ticker,
+            "学習データ数=",
+            len(X)
+        )
 
-all_train_rows.append(train_rows)
+        # =====================
+        # 今回取得した全データを保存
+        # =====================
+        train_rows = X.copy()
+
+        train_rows["target"] = y.values
+
+        train_rows["date"] = (
+            X.index.strftime("%Y-%m-%d")
+        )
+
+        train_rows["ticker"] = ticker
+
+        all_train_rows.append(
+            train_rows
+        )
 
         all_data.append({
             "ticker": ticker,
@@ -753,7 +774,6 @@ all_train_rows.append(train_rows)
         })
 
         print("保存:", ticker)
-
     except Exception as e:
         print(ticker, "エラー:", e)
     
