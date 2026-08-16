@@ -441,7 +441,8 @@ def update_prediction_results():
             len(data)
         )
 
-        # =========================
+
+# =========================
 # 3営業日チェック
 # =========================
 for day_index in range(check_days):
@@ -487,34 +488,35 @@ for day_index in range(check_days):
         hold_days = day_index + 1
 
         break
+        
+        
+        # =========================
+        # TP / SLに届かなかった
+        # =========================
+        if result is None:
 
-# =========================
-# TP / SLに届かなかった
-# =========================
-if result is None:
+            try:
+                close_price = float(
+                    data.iloc[check_days - 1]["Close"]
+                )
+            except Exception:
+                continue
 
-    try:
-        close_price = float(
-            data.iloc[check_days - 1]["Close"]
-        )
-    except Exception:
-        continue
+            return_rate = (
+                (close_price - entry_price)
+                / entry_price
+                * 100
+            )
 
-    return_rate = (
-        (close_price - entry_price)
-        / entry_price
-        * 100
-    )
+            hold_days = check_days
 
-    hold_days = check_days
-
-    # =========================
-    # 5営業日経過し、まだマイナスなら強制決済
-    # =========================
-    if hold_days >= 5 and return_rate < 0:
-        result = "TIMEOUT_LOSS"
-    else:
-        result = "HOLD"
+            # =========================
+            # 5営業日経過し、まだマイナスなら強制決済
+            # =========================
+            if hold_days >= 5 and return_rate < 0:
+                result = "TIMEOUT_LOSS"
+            else:
+                result = "HOLD"
 
         # =========================
         # CSVへ結果を書き込む
@@ -558,7 +560,6 @@ if result is None:
 
 
 update_prediction_results()
-
 
 # =====================
 # 日経平均
