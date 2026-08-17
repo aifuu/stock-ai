@@ -92,6 +92,13 @@ UP_THRESHOLD = 1.5
 FORWARD_DAYS = 3
  
 # =====================
+# ATRターゲット設定
+# 固定の±1.5%ではなく、銘柄ごとのATR比率を
+# 基準にして上昇/下落判定の閾値を動的に決める
+# =====================
+ATR_TARGET_MULTIPLIER = 1.0
+ 
+# =====================
 # 【新機能】TOP件数を環境変数で設定可能に
 # =====================
 TOP_N = int(os.getenv("TOP_N", "3"))
@@ -128,6 +135,9 @@ FEATURES = [
  
     # OBV
     "obv_change",
+ 
+    # ATR
+    "atr_ratio",
  
     # 日経平均
     "nikkei_kairi25",
@@ -328,6 +338,30 @@ def create_features(df):
         * 100
     )
  
+    # ==================================================
+    # 追加④ ATR（14日）
+    # ==================================================
+    high = df["High"].squeeze()
+    low = df["Low"].squeeze()
+ 
+    prev_close = close.shift(1)
+ 
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ],
+        axis=1
+    ).max(axis=1)
+ 
+    atr = tr.rolling(14).mean()
+ 
+    # 株価に対するATRの割合（銘柄ごとのボラティリティを正規化）
+    df["atr_ratio"] = (
+        atr / close * 100
+    )
+ 
     return df
  
  
@@ -446,10 +480,28 @@ def calc_score(df, close, up_prob, down_prob, flat_prob):
         final_signal = "🔴 買わない"
  
     # =====================
-    # 利確 / 損切
+    # ATRベース利確・損切
+    # 固定の+8%/-4%ではなく、銘柄ごとのボラティリティ
+    # (atr_ratio)に応じて利確・損切幅を変える。
     # =====================
-    take_profit = round(price * 1.08, 0)
-    stop_loss = round(price * 0.96, 0)
+    atr_ratio_value = float(df["atr_ratio"].iloc[-1])
+ 
+    ATR_TP_MULTIPLIER = 3.0
+    ATR_SL_MULTIPLIER = 1.5
+ 
+    take_profit = round(
+        price * (
+            1 + (atr_ratio_value / 100) * ATR_TP_MULTIPLIER
+        ),
+        0
+    )
+ 
+    stop_loss = round(
+        price * (
+            1 - (atr_ratio_value / 100) * ATR_SL_MULTIPLIER
+        ),
+        0
+    )
  
     return {
         "score": round(ai_score, 1),
@@ -717,6 +769,84 @@ def load_training_data():
  
  
 # =====================
+# 時系列ホールドアウト検証
+# 古い80%で学習し、新しい20%で検証する。
+# ランダムシャッフルは一切しない(時系列データのため)。
+# =====================
+def time_series_validation(X, y, test_ratio=0.20):
+ 
+    if X is None or y is None:
+        return None
+ 
+    if len(X) < 200:
+        print("⚠ 検証データ不足:", len(X))
+        return None
+ 
+    split = int(len(X) * (1 - test_ratio))
+ 
+    train_X = X.iloc[:split].copy()
+    train_y = y.iloc[:split].copy()
+ 
+    test_X = X.iloc[split:].copy()
+    test_y = y.iloc[split:].copy()
+ 
+    if train_y.nunique() < 3 or test_y.nunique() < 3:
+        print("⚠ 検証側で3クラスが揃っていません")
+        return None
+ 
+    validation_model = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=7,
+        random_state=42,
+        class_weight="balanced"
+    )
+ 
+    validation_model.fit(train_X, train_y)
+ 
+    predictions = validation_model.predict(test_X)
+ 
+    accuracy = (
+        (predictions == test_y.values).mean() * 100
+    )
+ 
+    print("")
+    print("=====================")
+    print("📊 時系列ホールドアウト検証")
+    print("=====================")
+    print(f"全データ: {len(X)}件")
+    print(f"学習: {len(train_X)}件")
+    print(f"検証: {len(test_X)}件")
+    print(f"Accuracy: {accuracy:.2f}%")
+ 
+    for cls in [0, 1, 2]:
+ 
+        actual = (test_y == cls)
+        predicted = (predictions == cls)
+ 
+        tp = (actual & predicted).sum()
+        fp = (~actual & predicted).sum()
+ 
+        precision = (
+            tp / (tp + fp) * 100
+            if (tp + fp) > 0
+            else 0
+        )
+ 
+        print(
+            f"クラス{cls} Precision: "
+            f"{precision:.2f}%"
+        )
+ 
+    validation_result = {
+        "accuracy": round(accuracy, 2),
+        "train_size": len(train_X),
+        "test_size": len(test_X)
+    }
+ 
+    return validation_result
+ 
+ 
+# =====================
 # 学習データ保存
 # =====================
 def save_training_data(new_df):
@@ -850,17 +980,53 @@ for ticker in TICKERS:
             stale_warnings.append(warn_text)
  
         # =====================
-        # 3営業日後の騰落率(学習データ作成専用)
+        # 流動性フィルター
+        # 出来高が薄い銘柄はスリッページの影響を受けやすいため
+        # 予測・学習の対象から除外する。
+        # ※ FEATURESには入れない(あくまでフィルタ用)。
+        # =====================
+        MIN_AVG_VOLUME = 300000
+ 
+        full_df["avg_volume20"] = (
+            full_df["Volume"].rolling(20).mean()
+        )
+ 
+        latest_avg_volume = full_df["avg_volume20"].iloc[-1]
+ 
+        if (
+            pd.isna(latest_avg_volume)
+            or latest_avg_volume < MIN_AVG_VOLUME
+        ):
+            print(
+                f"⚠ {ticker} 流動性不足 "
+                f"平均出来高={latest_avg_volume:.0f}"
+            )
+            continue
+ 
+        # =====================
+        # ATRベース3クラスtarget
+        # 固定の±1.5%ではなく、銘柄ごとのATR比率を
+        # 基準にして上昇/下落判定の閾値を動的に決める。
         # =====================
         future_price = full_df["Close"].shift(-FORWARD_DAYS)
  
         future_return = (future_price / full_df["Close"] - 1) * 100
  
+        # 3営業日先までのATR基準（時間の平方根でスケール）
+        atr_threshold = (
+            full_df["atr_ratio"]
+            * ATR_TARGET_MULTIPLIER
+            * np.sqrt(FORWARD_DAYS)
+        )
+ 
         train_df = full_df.copy()
  
         # 0 = 下落, 1 = 横ばい, 2 = 上昇
         train_df["target"] = np.select(
-            [future_return <= DOWN_THRESHOLD, future_return >= UP_THRESHOLD],
+            [
+                future_return <= -atr_threshold,
+                future_return >= atr_threshold
+            ],
             [0, 2],
             default=1
         )
@@ -924,6 +1090,20 @@ if all_train_rows:
 # 学習データ読み込み
 # =====================
 X_all, y_all = load_training_data()
+ 
+ 
+# =====================
+# 時系列ホールドアウト検証
+# =====================
+validation_result = None
+ 
+if X_all is not None and y_all is not None:
+ 
+    validation_result = time_series_validation(
+        X_all,
+        y_all,
+        test_ratio=0.20
+    )
  
  
 # =====================
