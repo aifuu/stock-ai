@@ -107,6 +107,7 @@ STALE_DATA_WARNING_DAYS = 7
 # 学習・予測で使う特徴量
 # =====================
 FEATURES = [
+    # 基本
     "ret1",
     "ma25",
     "ma75",
@@ -117,25 +118,28 @@ FEATURES = [
     "signal",
     "from_high",
     "from_low",
+ 
+    # 相対強度
+    "relative_strength",
+ 
+    # ボリンジャーバンド
+    "bb_position",
+    "bb_width",
+ 
+    # OBV
+    "obv_change",
+ 
+    # 日経平均
     "nikkei_kairi25",
     "nikkei_rsi",
     "nikkei_macd",
     "nikkei_return_5d",
+ 
+    # 日経225先物
     "future_return",
     "future_ma5",
     "future_rsi",
     "future_gap",
-    # =====================
-    # 追加特徴量
-    # =====================
-    "atr_ratio",
-    "rsi_change",
-    "macd_diff",
-    "macd_change",
-    "ret5",
-    "ret20",
-    "ma25_gap",
-    "ma75_gap",
 ]
  
  
@@ -269,55 +273,59 @@ def create_features(df):
     df["from_high"] = (close / df["high252"] - 1) * 100
     df["from_low"] = (close / df["low252"] - 1) * 100
  
-    # =====================
-    # 追加特徴量
-    # =====================
-    # ATR（14日）の価格比率
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [
-            df["High"] - df["Low"],
-            (df["High"] - prev_close).abs(),
-            (df["Low"] - prev_close).abs()
-        ],
-        axis=1
-    ).max(axis=1)
-    atr14 = tr.rolling(14).mean()
-    df["atr_ratio"] = (
-        atr14 / close * 100
+    # ==================================================
+    # 追加① 相対強度（中間列）
+    # ==================================================
+    # 個別株の5日リターン
+    # ※ この列自体はFEATURESに入れない。
+    #    日経とのJOIN後にrelative_strengthを作るための
+    #    中間列としてのみ使う。
+    stock_ret5 = (
+        close.pct_change(5)
     )
  
-    # RSIの3日変化
-    df["rsi_change"] = (
-        df["rsi"].diff(3)
+    df["_stock_ret5"] = stock_ret5
+ 
+    # ==================================================
+    # 追加② ボリンジャーバンド（20日・±2σ）
+    # ==================================================
+    bb_ma20 = close.rolling(20).mean()
+    bb_std20 = close.rolling(20).std()
+ 
+    bb_upper = bb_ma20 + (bb_std20 * 2)
+    bb_lower = bb_ma20 - (bb_std20 * 2)
+ 
+    # バンド内での位置（0=下限、1=上限）
+    df["bb_position"] = (
+        (close - bb_lower)
+        / (bb_upper - bb_lower)
     )
  
-    # MACDとシグナルの差
-    df["macd_diff"] = (
-        df["macd"] - df["signal"]
+    # バンドの広さ（%、ボラティリティの指標）
+    df["bb_width"] = (
+        (bb_upper - bb_lower)
+        / bb_ma20 * 100
     )
  
-    # MACDの3日変化
-    df["macd_change"] = (
-        df["macd"].diff(3)
+    # ==================================================
+    # 追加③ OBV（オンバランスボリューム）
+    # ==================================================
+    price_direction = np.sign(close.diff())
+ 
+    obv = (
+        (volume * price_direction)
+        .fillna(0)
+        .cumsum()
     )
  
-    # 5日・20日騰落率
-    df["ret5"] = (
-        close.pct_change(5) * 100
-    )
-    df["ret20"] = (
-        close.pct_change(20) * 100
-    )
+    df["obv"] = obv
  
-    # MA25・MA75からの乖離率
-    df["ma25_gap"] = (
-        (close - df["ma25"])
-        / df["ma25"] * 100
-    )
-    df["ma75_gap"] = (
-        (close - df["ma75"])
-        / df["ma75"] * 100
+    # OBVの5日変化（出来高規模で正規化して銘柄間の
+    # スケール差を吸収する）
+    df["obv_change"] = (
+        obv.diff(5)
+        / volume.rolling(5).sum()
+        * 100
     )
  
     return df
@@ -620,6 +628,11 @@ nikkei["nikkei_macd"] = ema12_n - ema26_n
  
 nikkei["nikkei_return_5d"] = nikkei_close.pct_change(5) * 100
  
+# =====================
+# 日経225：相対強度用（中間列、FEATURESには入れない）
+# =====================
+nikkei["nikkei_ret5_raw"] = nikkei_close.pct_change(5)
+ 
  
 # =====================
 # 日経225先物
@@ -765,7 +778,15 @@ for ticker in TICKERS:
  
         # 日経特徴量
         df = df.join(
-            nikkei[["nikkei_kairi25", "nikkei_rsi", "nikkei_macd", "nikkei_return_5d"]],
+            nikkei[
+                [
+                    "nikkei_kairi25",
+                    "nikkei_rsi",
+                    "nikkei_macd",
+                    "nikkei_return_5d",
+                    "nikkei_ret5_raw"
+                ]
+            ],
             how="left"
         )
  
@@ -773,6 +794,15 @@ for ticker in TICKERS:
         df = df.join(
             futures[["future_return", "future_ma5", "future_rsi", "future_gap"]],
             how="left"
+        )
+ 
+        # =====================
+        # 相対強度
+        # 個別株が日経225より強いか
+        # =====================
+        df["relative_strength"] = (
+            df["_stock_ret5"]
+            - df["nikkei_ret5_raw"]
         )
  
         df = df.dropna()
@@ -923,6 +953,50 @@ elif os.path.exists(MODEL_FILE):
 else:
     print("❌ 3クラス学習データ・モデルともになし")
     print("今回は予測をスキップ")
+ 
+ 
+# =====================
+# 特徴量重要度
+# =====================
+if model_ready:
+ 
+    importances = model.feature_importances_
+ 
+    importance_df = pd.DataFrame({
+        "feature": FEATURES,
+        "importance": importances
+    })
+ 
+    importance_df = (
+        importance_df
+        .sort_values(
+            "importance",
+            ascending=False
+        )
+        .reset_index(drop=True)
+    )
+ 
+    print("")
+    print("=====================")
+    print("📊 特徴量重要度")
+    print("=====================")
+ 
+    for _, row in importance_df.iterrows():
+ 
+        print(
+            f"{row['feature']:<25} "
+            f"{row['importance']:.6f}"
+        )
+ 
+    importance_df.to_csv(
+        "feature_importances.csv",
+        index=False,
+        encoding="utf-8-sig"
+    )
+ 
+    print(
+        "✅ feature_importances.csv 保存"
+    )
  
  
 # =====================
