@@ -684,7 +684,18 @@ def load_training_data():
         print(f"不足列: {missing}")
         return None, None
  
-    df = df.dropna()
+    # =====================
+    # 【修正・重要】
+    # df.dropna() だと、過去のスキーマ変更で残った
+    # 「今のFEATURESには使わない古い列」
+    # (例: 以前追加して今は削除したatr_ratioなど)が
+    # 新しい行でNaNになっているだけで、
+    # 学習に必要な行まで巻き込んで全消去されてしまう。
+    #
+    # 学習に必要なのは required_cols(現在のFEATURES+target)
+    # だけなので、その列だけを基準にdropnaする。
+    # =====================
+    df = df.dropna(subset=required_cols)
  
     if len(df) == 0:
         return None, None
@@ -962,41 +973,67 @@ if model_ready:
  
     importances = model.feature_importances_
  
-    importance_df = pd.DataFrame({
-        "feature": FEATURES,
-        "importance": importances
-    })
+    # =====================
+    # 【修正】
+    # model_readyがTrueでも、読み込んだmodel.pklが
+    # 旧FEATURES構成(項目数が異なる)で学習されたものだと
+    # importancesとFEATURESの長さが一致せず
+    # DataFrame作成時にValueErrorになる。
+    # 長さが一致する場合のみ重要度を出力する。
+    # =====================
+    if len(importances) != len(FEATURES):
  
-    importance_df = (
-        importance_df
-        .sort_values(
-            "importance",
-            ascending=False
+        print("")
+        print("=====================")
+        print("⚠ 特徴量重要度スキップ")
+        print("=====================")
+        print(
+            f"読み込んだモデルの特徴量数({len(importances)})と"
+            f"現在のFEATURES({len(FEATURES)})が一致しません。"
         )
-        .reset_index(drop=True)
-    )
+        print(
+            "旧FEATURES構成のmodel.pklが使われている可能性があります。"
+            "次回、新規学習条件(学習データ100件以上・3クラス揃う)を"
+            "満たすと自動的に再学習され、model.pklも更新されます。"
+        )
  
-    print("")
-    print("=====================")
-    print("📊 特徴量重要度")
-    print("=====================")
+    else:
  
-    for _, row in importance_df.iterrows():
+        importance_df = pd.DataFrame({
+            "feature": FEATURES,
+            "importance": importances
+        })
+ 
+        importance_df = (
+            importance_df
+            .sort_values(
+                "importance",
+                ascending=False
+            )
+            .reset_index(drop=True)
+        )
+ 
+        print("")
+        print("=====================")
+        print("📊 特徴量重要度")
+        print("=====================")
+ 
+        for _, row in importance_df.iterrows():
+ 
+            print(
+                f"{row['feature']:<25} "
+                f"{row['importance']:.6f}"
+            )
+ 
+        importance_df.to_csv(
+            "feature_importances.csv",
+            index=False,
+            encoding="utf-8-sig"
+        )
  
         print(
-            f"{row['feature']:<25} "
-            f"{row['importance']:.6f}"
+            "✅ feature_importances.csv 保存"
         )
- 
-    importance_df.to_csv(
-        "feature_importances.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
- 
-    print(
-        "✅ feature_importances.csv 保存"
-    )
  
  
 # =====================
