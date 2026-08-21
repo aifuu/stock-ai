@@ -6,12 +6,47 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_score
 
 
 warnings.filterwarnings("ignore")
+
+
+# =====================
+# Discord
+# =====================
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
+
+
+def send_discord(msg):
+
+    if not WEBHOOK_URL:
+        print("❌ Webhookなし(DISCORD_WEBHOOK未設定)")
+        return
+
+    if len(msg) > 1900:
+        msg = msg[:1900]
+
+    try:
+        r = requests.post(
+            WEBHOOK_URL,
+            json={"content": msg},
+            timeout=30
+        )
+
+        print("Discord status =", r.status_code)
+
+        if r.status_code == 204:
+            print("✅ Discord送信成功")
+        else:
+            print("❌ Discord送信失敗")
+            print(r.text)
+
+    except Exception as e:
+        print("❌ Discord送信エラー:", e)
 
 
 # =========================================================
@@ -656,13 +691,18 @@ def run_walk_forward(ticker, df):
 # 実際には複数銘柄を同時に保有している実態と食い違う。
 # ここではエントリー日ごとに、その日建てた全ポジションの
 # 平均リターンを求め、それを日次リターンとして複利計算する。
+#
+# 初日の値は必ず 1.0 付近(1 + 初日リターン%/100)から
+# 始まる。1.0から大きく外れた値でCSVが始まっている場合は、
+# 古いロジックで生成された別ファイルが残っている可能性が
+# あるため、このファイルの生成日時・中身を確認すること。
 # =========================================================
 
-def build_portfolio_equity_curve(result_df):
+def build_equity_curve(df, group_col="date"):
 
     daily = (
-        result_df
-        .groupby("date")["return"]
+        df
+        .groupby(group_col)["return"]
         .mean()
         .sort_index()
     )
@@ -675,6 +715,153 @@ def build_portfolio_equity_curve(result_df):
     max_drawdown = drawdown.min() * 100
 
     return equity, max_drawdown
+
+
+# =========================================================
+# 【新機能】詳細統計まとめ
+#
+# 勝率・トレード数・平均利益/損失・プロフィットファクター
+# などを1つの辞書にまとめる。全体成績、ランク1(その日
+# 最も上昇確率が高かった銘柄)成績、買い推奨
+# (prediction == 2 = 上昇予測)成績のそれぞれに使う。
+# =========================================================
+
+def compute_stats(df):
+
+    if len(df) == 0:
+        return None
+
+    total = len(df)
+
+    wins = (df["result"] == "WIN").sum()
+    losses = df["result"].isin(["LOSS", "TIMEOUT_LOSS"]).sum()
+    holds = (df["result"] == "HOLD").sum()
+
+    decided = wins + losses
+    win_rate = wins / decided * 100 if decided > 0 else 0
+
+    # 損益ベースの利益/損失トレード
+    # (WIN・HOLDは仕組み上リターン0以上、LOSS・TIMEOUT_LOSSは
+    #  仕組み上リターン0未満になるよう evaluate_trade で設計済み)
+    profit_returns = df.loc[df["return"] > 0, "return"]
+    loss_returns = df.loc[df["return"] < 0, "return"]
+
+    profit_trades = len(profit_returns)
+    loss_trades = len(loss_returns)
+
+    avg_profit = profit_returns.mean() if profit_trades > 0 else 0
+    avg_loss = loss_returns.mean() if loss_trades > 0 else 0
+
+    gross_profit = profit_returns.sum()
+    gross_loss = abs(loss_returns.sum())
+
+    profit_factor = (
+        gross_profit / gross_loss if gross_loss > 0 else np.nan
+    )
+
+    equity, max_drawdown = build_equity_curve(df)
+
+    if len(equity) > 0:
+        start_equity = 1.0
+        final_equity = equity.iloc[-1]
+        cumulative_return = (final_equity - 1) * 100
+    else:
+        start_equity = 1.0
+        final_equity = 1.0
+        cumulative_return = 0.0
+
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "holds": holds,
+        "win_rate": win_rate,
+        "profit_trades": profit_trades,
+        "loss_trades": loss_trades,
+        "avg_profit": avg_profit,
+        "avg_loss": avg_loss,
+        "profit_factor": profit_factor,
+        "max_drawdown": max_drawdown,
+        "start_equity": start_equity,
+        "final_equity": final_equity,
+        "cumulative_return": cumulative_return,
+        "equity_curve": equity,
+    }
+
+
+# =========================================================
+# 【新機能】Discord向けメッセージ組み立て
+# =========================================================
+
+def format_stats_block(title, stats):
+
+    if stats is None:
+        return f"\n{title}\nデータなし\n"
+
+    pf_text = (
+        f"{stats['profit_factor']:.2f}"
+        if not np.isnan(stats["profit_factor"])
+        else "―"
+    )
+
+    return f"""
+{title}
+勝率 {stats['win_rate']:.1f}%
+総トレード {stats['total']}回
+利益 {stats['profit_trades']}回 / 損失 {stats['loss_trades']}回
+平均利益 +{stats['avg_profit']:.2f}% / 平均損失 {stats['avg_loss']:.2f}%
+プロフィットファクター {pf_text}
+最大ドローダウン {stats['max_drawdown']:.1f}%
+累積 {stats['cumulative_return']:+.1f}%
+"""
+
+
+def build_discord_message(result_df, overall_stats, rank1_stats, buy_stats):
+
+    start_date = result_df["date"].min()
+    end_date = result_df["date"].max()
+
+    msg = "📊 AI WALK FORWARD BACKTEST\n"
+    msg += "━━━━━━━━━━━━━━━━\n"
+    msg += f"期間：{start_date} ～ {end_date}\n\n"
+
+    msg += (
+        f"💰 最終資産\n"
+        f"{overall_stats['start_equity']:.2f} → "
+        f"{overall_stats['final_equity']:.2f}\n\n"
+    )
+
+    msg += f"📈 累積リターン\n{overall_stats['cumulative_return']:+.1f}%\n\n"
+
+    msg += f"🎯 勝率\n{overall_stats['win_rate']:.1f}%\n\n"
+
+    msg += f"📊 総トレード\n{overall_stats['total']}回\n\n"
+
+    msg += f"✅ 利益\n{overall_stats['profit_trades']}回\n\n"
+
+    msg += f"❌ 損失\n{overall_stats['loss_trades']}回\n\n"
+
+    msg += f"📉 最大ドローダウン\n{overall_stats['max_drawdown']:.1f}%\n\n"
+
+    msg += f"💵 平均利益\n+{overall_stats['avg_profit']:.2f}%\n\n"
+
+    msg += f"💸 平均損失\n{overall_stats['avg_loss']:.2f}%\n\n"
+
+    pf_text = (
+        f"{overall_stats['profit_factor']:.2f}"
+        if not np.isnan(overall_stats["profit_factor"])
+        else "―"
+    )
+
+    msg += f"⚖️ プロフィットファクター\n{pf_text}\n"
+
+    msg += "━━━━━━━━━━━━━━━━\n"
+
+    msg += format_stats_block("🏆 ランク1(その日一番の上昇予測)", rank1_stats)
+
+    msg += format_stats_block("🟢 買い推奨(上昇予測のみ)", buy_stats)
+
+    return msg
 
 
 # =========================================================
@@ -830,26 +1017,26 @@ def main():
         precision = 0
 
     # =====================================================
-    # 売買結果
+    # 【新機能】詳細統計(全体 / ランク1 / 買い推奨)
     # =====================================================
 
-    wins = (result_df["result"] == "WIN").sum()
-    losses = result_df["result"].isin(["LOSS", "TIMEOUT_LOSS"]).sum()
-    holds = (result_df["result"] == "HOLD").sum()
+    overall_stats = compute_stats(result_df)
 
-    trades = wins + losses
-    win_rate = wins / trades * 100 if trades > 0 else 0
+    # ランク1 = 同じ日付の中で up_probability が最も高い銘柄
+    rank1_idx = (
+        result_df
+        .groupby("date")["up_probability"]
+        .idxmax()
+    )
+    rank1_df = result_df.loc[rank1_idx].copy()
+    rank1_stats = compute_stats(rank1_df)
 
-    avg_return = result_df["return"].mean()
-    total_return = result_df["return"].sum()
+    # 買い推奨 = モデルが「上昇(2)」と予測した行のみ
+    buy_df = result_df[result_df["prediction"] == 2].copy()
+    buy_stats = compute_stats(buy_df)
 
-    # =====================================================
-    # 【修正②】ポートフォリオ資産曲線(日次集計)
-    # =====================================================
-
-    equity, max_drawdown = build_portfolio_equity_curve(result_df)
-
-    portfolio_total_return = (equity.iloc[-1] - 1) * 100
+    equity = overall_stats["equity_curve"]
+    max_drawdown = overall_stats["max_drawdown"]
 
     # =====================================================
     # 結果表示
@@ -865,18 +1052,66 @@ def main():
     print(f"Precision      : {precision:.2f}%")
 
     print("")
-    print(f"WIN            : {wins}")
-    print(f"LOSS           : {losses}")
-    print(f"HOLD           : {holds}")
-    print(f"勝率           : {win_rate:.2f}%")
+    print(f"WIN            : {overall_stats['wins']}")
+    print(f"LOSS           : {overall_stats['losses']}")
+    print(f"HOLD           : {overall_stats['holds']}")
+    print(f"勝率(決着ベース) : {overall_stats['win_rate']:.2f}%")
 
     print("")
-    print(f"平均リターン(1トレードあたり) : {avg_return:.2f}%")
-    print(f"単純合計リターン(参考値)      : {total_return:.2f}%")
+    print(f"利益トレード数 : {overall_stats['profit_trades']}")
+    print(f"損失トレード数 : {overall_stats['loss_trades']}")
+    print(f"平均利益       : +{overall_stats['avg_profit']:.2f}%")
+    print(f"平均損失       : {overall_stats['avg_loss']:.2f}%")
+
+    pf_text = (
+        f"{overall_stats['profit_factor']:.2f}"
+        if not np.isnan(overall_stats["profit_factor"])
+        else "―"
+    )
+    print(f"プロフィットファクター : {pf_text}")
+
     print("")
     print("--- ポートフォリオ換算(日次・並行ポジション考慮) ---")
-    print(f"ポートフォリオ累計リターン    : {portfolio_total_return:+.2f}%")
+    print(f"開始資産(倍率基準)             : {overall_stats['start_equity']:.4f}")
+    print(f"最終資産(倍率基準)             : {overall_stats['final_equity']:.4f}")
+    print(f"ポートフォリオ累計リターン    : {overall_stats['cumulative_return']:+.2f}%")
     print(f"最大ドローダウン              : {max_drawdown:.2f}%")
+
+    if abs(equity.iloc[0] - 1.0) > 0.1:
+        print("")
+        print(
+            "⚠ 資産曲線の初日の値が1.0から大きく離れています。"
+            "生成ロジックを再確認してください。"
+        )
+
+    print("")
+
+    print("=" * 60)
+    print("🏆 ランク1(その日up_probability最高の銘柄)")
+    print("=" * 60)
+    if rank1_stats:
+        print(
+            f"件数={rank1_stats['total']} "
+            f"勝率={rank1_stats['win_rate']:.1f}% "
+            f"累積={rank1_stats['cumulative_return']:+.1f}% "
+            f"最大DD={rank1_stats['max_drawdown']:.1f}%"
+        )
+    else:
+        print("データなし")
+
+    print("")
+    print("=" * 60)
+    print("🟢 買い推奨(prediction == 2)")
+    print("=" * 60)
+    if buy_stats:
+        print(
+            f"件数={buy_stats['total']} "
+            f"勝率={buy_stats['win_rate']:.1f}% "
+            f"累積={buy_stats['cumulative_return']:+.1f}% "
+            f"最大DD={buy_stats['max_drawdown']:.1f}%"
+        )
+    else:
+        print("データなし")
 
     print("")
 
@@ -942,6 +1177,19 @@ def main():
     print("結果ファイル:")
     print("  walk_forward_results.csv     (取引ごとの明細)")
     print("  portfolio_equity_curve.csv   (日次資産曲線)")
+
+    # =====================================================
+    # 【新機能】Discord通知
+    # =====================================================
+
+    discord_msg = build_discord_message(
+        result_df,
+        overall_stats,
+        rank1_stats,
+        buy_stats
+    )
+
+    send_discord(discord_msg)
 
 
 # =========================================================
