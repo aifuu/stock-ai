@@ -1,50 +1,82 @@
 name: AI Stock Scan
+
 on:
   schedule:
-    - cron: '30 23 * * 1-5'      # 8:30 JST(この回だけバックテストも実行)
-    - cron: '0,30 0-4 * * 1-5'   # 9:00～13:30 JST(スキャンのみ)
+    - cron: '30 23 * * 1-5'      # 8:30 JST（この回だけバックテストも実行）
+    - cron: '0,30 0-4 * * 1-5'   # 9:00～13:30 JST（スキャンのみ）
+
   workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
     steps:
+
+      # ==============================
+      # Checkout
+      # ==============================
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: true
           fetch-depth: 0
 
+      # ==============================
+      # Python
+      # ==============================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # ==============================
+      # pip
+      # ==============================
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
 
+      # ==============================
+      # Packages
+      # ==============================
       - name: Install Packages
         run: |
           pip install yfinance pandas numpy requests scikit-learn
 
+      # ==============================
+      # AI Stock Scan
+      # ==============================
       - name: Run Stock Scan
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python stock_scan.py
 
+      # ==============================
+      # Walk Forward Backtest
+      # 8:30 JSTのみ実行
+      # 手動実行でも実行
+      # ==============================
       - name: Run Walk Forward Backtest
         if: github.event.schedule == '30 23 * * 1-5' || github.event_name == 'workflow_dispatch'
-        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python walk_forward.py
 
-      - name: Commit History
+      # ==============================
+      # Commit
+      # ==============================
+      - name: Commit AI data and backtest results
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
+
           git add train_data.csv || true
           git add model.pkl || true
           git add prediction_history.csv || true
           git add walk_forward_results.csv || true
           git add portfolio_equity_curve.csv || true
-          git commit -m "Update AI data" || echo "No changes"
+
+          git commit -m "Update AI scan and backtest results" || echo "No changes"
+
           git push
