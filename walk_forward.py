@@ -833,19 +833,23 @@ def compute_stats(df):
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.nan
 
     # =====================================================
-    # 【新機能】期待値(Expectancy)
+    # 期待値(Expectancy)
     #
     # 1トレードあたりの平均期待損益(%)。
-    # 勝率×平均利益 + 負け率×平均損失(平均損失は負値)。
-    # HOLD(未決着・含み益)は決着ベースの勝率計算からは
-    # 除外しているが、平均利益/平均損失自体はreturn>0/<0の
-    # 全トレード(HOLD・TIMEOUT_LOSS含む)から算出している。
+    #
+    # 【修正】以前は (win_rate × avg_profit) + (loss_rate ×
+    # avg_loss) としていたが、win_rate/loss_rateはHOLDを
+    # 除いた「決着(WIN+LOSS)のみ」を母数にした比率であり、
+    # 一方でavg_profitはHOLDを含む「return>0の全トレード」の
+    # 平均だった。母数が食い違ったまま掛け合わせていたため、
+    # 負け側の重みが実態より過大になり、期待値が不当に
+    # 悪く出るバグがあった。
+    #
+    # 正しくは「全トレード数に対する比率」で重み付けする。
+    # これは単純に return列の平均と等しい。
     # =====================================================
 
-    expectancy = (
-        (win_rate / 100) * avg_profit
-        + (loss_rate / 100) * avg_loss
-    )
+    expectancy = df["return"].mean()
 
     equity, max_drawdown = build_equity_curve(df)
 
