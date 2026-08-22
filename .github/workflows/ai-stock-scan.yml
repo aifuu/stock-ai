@@ -76,6 +76,7 @@ jobs:
           git add prediction_history.csv || true
           git add walk_forward_results.csv || true
           git add portfolio_equity_curve.csv || true
+          git add backtest_summary.csv || true
 
           git commit -m "Update AI scan and backtest results" || echo "No changes"
 
