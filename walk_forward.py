@@ -1,7 +1,5 @@
 import os
 import warnings
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import yfinance as yf
 import pandas as pd
@@ -10,7 +8,6 @@ import requests
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_score
-
 
 warnings.filterwarnings("ignore")
 
@@ -23,7 +20,6 @@ WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 
 
 def send_discord(msg):
-
     if not WEBHOOK_URL:
         print("❌ Webhookなし(DISCORD_WEBHOOK未設定)")
         return
@@ -32,13 +28,11 @@ def send_discord(msg):
         msg = msg[:1900] + "\n...(省略)"
 
     try:
-
         response = requests.post(
             WEBHOOK_URL,
             json={"content": msg},
             timeout=30
         )
-
         print("Discord status =", response.status_code)
 
         if response.status_code == 204:
@@ -48,7 +42,6 @@ def send_discord(msg):
             print(response.text)
 
     except Exception as e:
-
         print("❌ Discord送信エラー:", e)
 
 
@@ -57,22 +50,10 @@ def send_discord(msg):
 # =========================================================
 
 TICKERS = [
-    "7203.T",
-    "7269.T",
-    "285A.T",
-    "9984.T",
-    "4980.T",
-    "8031.T",
-    "8058.T",
-    "9509.T",
-    "9501.T",
-    "8362.T",
-    "8306.T",
-    "5803.T",
-    "6526.T",
-    "6613.T",
+    "7203.T", "7269.T", "285A.T", "9984.T", "4980.T",
+    "8031.T", "8058.T", "9509.T", "9501.T", "8362.T",
+    "8306.T", "5803.T", "6526.T", "6613.T",
 ]
-
 
 COMPANY_NAMES = {
     "7203.T": "トヨタ自動車",
@@ -91,46 +72,39 @@ COMPANY_NAMES = {
     "6613.T": "QDレーザ",
 }
 
-
-# =========================================================
-# バックテスト設定
-# =========================================================
-
 DATA_PERIOD = "5y"
 
 TRAIN_DAYS = 500
-
 RETRAIN_DAYS = 20
-
 FORWARD_DAYS = 3
-
 MAX_HOLD_DAYS = 5
 
 DOWN_THRESHOLD = -1.5
-
 UP_THRESHOLD = 1.5
 
 TAKE_PROFIT = 0.08
-
 STOP_LOSS = 0.04
 
 MIN_AVG_VOLUME = 100000
-
 MIN_DATA_REQUIRED = 600
 
-BUY_UP_PROB_MIN = 0.0
-
-
 # =========================================================
-# 【新機能】完全OOS設定
+# 【運用上の重要な注意】買い推奨のしきい値(基準)
 #
-# 各銘柄データの「直近 OOS_DAYS 営業日」を、
-# ロジック調整・パラメータ選定に一切使っていない
-# 完全なアウトオブサンプル期間として扱う。
-# 判定は run_walk_forward 内で、その予測が
-# 「データ全体の末尾から何営業日目か」だけを見て行う
-# (通常のウォークフォワードと学習/推論の仕組み自体は同じ)。
+# buy_signal = (prediction == 2) and (up_prob >= BUY_UP_PROB_MIN)
+#
+# この BUY_UP_PROB_MIN = 0.0 は、今回のフィルター比較
+# (PROBABILITY_THRESHOLDS)における「0% = 現状基準」の
+# 意味も兼ねている。つまりこの値自体は、フィルター比較の
+# 結果を見て直接書き換えるパラメータではない。
+#
+# 「実際にどのUP確率しきい値を使うべきか」は、
+# PROBABILITY_THRESHOLDS の比較結果(BACKTEST側のみ)を
+# 見たうえで、buy_signal の計算式を使う側(例:
+# stock_scan.py の買い推奨ロジック)で個別に決定すること。
 # =========================================================
+
+BUY_UP_PROB_MIN = 0.0
 
 # =========================================================
 # 【完全OOS 運用ルール】
@@ -146,14 +120,15 @@ BUY_UP_PROB_MIN = 0.0
 # ・RETRAIN_DAYS
 # ・FEATURES
 # ・BUY_UP_PROB_MIN
+# ・PROBABILITY_THRESHOLDS(今回の比較閾値そのもの)
 # ・モデル構造
 # ・その他売買ロジック
 #
 # これらをOOS結果を見ながら調整すると、
 # そのOOS期間は実質的に「検証済みデータ」になる。
 #
-# パラメータ調整はBACKTEST期間の結果だけを使う。
-# OOSは最終確認として使用する。
+# パラメータ調整・閾値選定はBACKTEST期間の結果だけを
+# 使う。OOSは最終確認として使用する。
 #
 # OOSを見て調整した場合、そのOOSは「消費済み」と考え、
 # 次に新しいデータが蓄積されるまで真のOOS評価は行わない。
@@ -164,27 +139,34 @@ BUY_UP_PROB_MIN = 0.0
 #   ③ OOSを見る
 #   ④ OOSが良ければ、初めて実戦投入を検討
 #
+# 本スクリプトは比較結果を表示するだけで、
+# 自動で最適な閾値を選択する処理は一切行わない。
 # =========================================================
 
 OOS_DAYS = 90
 
-
 # =========================================================
-# 【新機能】相場局面(レジーム)判定設定
+# 相場局面
 # =========================================================
 
 REGIME_MA_SHORT = 25
 REGIME_MA_LONG = 75
 REGIME_VOL_WINDOW = 20
 REGIME_HIGH_VOL_PERCENTILE = 0.85
-REGIME_TREND_BAND = 0.01  # MA同士のかい離がこの割合未満なら「レンジ」
-
+REGIME_TREND_BAND = 0.01
 
 # =========================================================
-# 【新機能】フォワードリターン確認用ホライズン(営業日)
+# フォワードリターン
 # =========================================================
 
 FORWARD_HORIZONS = (30, 60, 90)
+
+# =========================================================
+# 今回比較するUP確率閾値
+# 0% = 現状の基準(BUY_UP_PROB_MINと同じ意味)
+# =========================================================
+
+PROBABILITY_THRESHOLDS = [0, 40, 50, 60, 70]
 
 
 # =========================================================
@@ -192,7 +174,6 @@ FORWARD_HORIZONS = (30, 60, 90)
 # =========================================================
 
 FEATURES = [
-
     "ret1",
     "ma25",
     "ma75",
@@ -203,21 +184,15 @@ FEATURES = [
     "signal",
     "from_high",
     "from_low",
-
     "atr_ratio",
-
     "relative_strength",
-
     "bb_position",
     "bb_width",
-
     "obv_change",
-
     "nikkei_kairi25",
     "nikkei_rsi",
     "nikkei_macd",
     "nikkei_return_5d",
-
     "future_return",
     "future_ma5",
     "future_rsi",
@@ -230,34 +205,19 @@ FEATURES = [
 # =========================================================
 
 def safe_download(ticker, retries=3, **kwargs):
-
     for attempt in range(1, retries + 1):
-
         try:
-
-            df = yf.download(
-                ticker,
-                **kwargs
-            )
+            df = yf.download(ticker, **kwargs)
 
             if df is not None and not df.empty:
-
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
-
                 return df
 
-            print(
-                f"{ticker} 空データ "
-                f"(試行 {attempt}/{retries})"
-            )
+            print(f"{ticker} 空データ (試行 {attempt}/{retries})")
 
         except Exception as e:
-
-            print(
-                f"{ticker} 取得失敗 "
-                f"(試行 {attempt}/{retries}): {e}"
-            )
+            print(f"{ticker} 取得失敗 (試行 {attempt}/{retries}): {e}")
 
     return None
 
@@ -267,17 +227,13 @@ def safe_download(ticker, retries=3, **kwargs):
 # =========================================================
 
 def calc_rsi(close, period=14):
-
     close = close.squeeze()
-
     delta = close.diff()
 
     gain = delta.clip(lower=0)
-
     loss = (-delta).clip(lower=0)
 
     avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-
     avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
@@ -292,7 +248,6 @@ def calc_rsi(close, period=14):
 # =========================================================
 
 def calc_adx(df, period=14):
-
     high = df["High"].squeeze()
     low = df["Low"].squeeze()
     close = df["Close"].squeeze()
@@ -330,9 +285,7 @@ def calc_adx(df, period=14):
         / (plus_di + minus_di).replace(0, np.nan)
     ) * 100
 
-    adx = dx.ewm(alpha=1 / period, adjust=False).mean()
-
-    return adx
+    return dx.ewm(alpha=1 / period, adjust=False).mean()
 
 
 # =========================================================
@@ -340,7 +293,6 @@ def calc_adx(df, period=14):
 # =========================================================
 
 def calc_atr(df, period=14):
-
     high = df["High"].squeeze()
     low = df["Low"].squeeze()
     close = df["Close"].squeeze()
@@ -356,17 +308,14 @@ def calc_atr(df, period=14):
         axis=1
     ).max(axis=1)
 
-    atr = tr.ewm(alpha=1 / period, adjust=False).mean()
-
-    return atr
+    return tr.ewm(alpha=1 / period, adjust=False).mean()
 
 
 # =========================================================
-# 特徴量
+# 株価特徴量
 # =========================================================
 
 def create_features(df):
-
     df = df.copy()
 
     close = df["Close"].squeeze()
@@ -395,6 +344,7 @@ def create_features(df):
     df["from_low"] = (close / low252 - 1) * 100
 
     atr = calc_atr(df)
+
     df["atr_ratio"] = atr / close
 
     df["_stock_ret5"] = close.pct_change(5)
@@ -404,12 +354,14 @@ def create_features(df):
 
     bb_upper = bb_ma20 + bb_std20 * 2
     bb_lower = bb_ma20 - bb_std20 * 2
+
     band_width = bb_upper - bb_lower
 
     df["bb_position"] = (close - bb_lower) / band_width.replace(0, np.nan)
     df["bb_width"] = band_width / bb_ma20.replace(0, np.nan) * 100
 
     direction = np.sign(close.diff())
+
     obv = (volume * direction).fillna(0).cumsum()
 
     df["obv_change"] = obv.diff(5) / volume.rolling(5).sum() * 100
@@ -418,11 +370,10 @@ def create_features(df):
 
 
 # =========================================================
-# 日経平均特徴量
+# 日経特徴量
 # =========================================================
 
 def create_nikkei_features(nikkei):
-
     nikkei = nikkei.copy()
 
     close = nikkei["Close"].squeeze()
@@ -449,7 +400,6 @@ def create_nikkei_features(nikkei):
 # =========================================================
 
 def create_future_features(futures):
-
     futures = futures.copy()
 
     close = futures["Close"].squeeze()
@@ -460,24 +410,18 @@ def create_future_features(futures):
 
     futures["future_gap"] = (close - close.shift(1)) / close.shift(1)
 
-    futures["future_return"] = futures["future_return"].shift(1)
-    futures["future_ma5"] = futures["future_ma5"].shift(1)
-    futures["future_rsi"] = futures["future_rsi"].shift(1)
-    futures["future_gap"] = futures["future_gap"].shift(1)
+    # 翌日の予測時点で未来の情報にならないよう1日シフト
+    for col in ["future_return", "future_ma5", "future_rsi", "future_gap"]:
+        futures[col] = futures[col].shift(1)
 
     return futures
 
 
 # =========================================================
 # ターゲット
-#
-# 0 = 下落
-# 1 = 横ばい
-# 2 = 上昇
 # =========================================================
 
 def create_target(df):
-
     close = df["Close"].squeeze()
 
     future_price = close.shift(-FORWARD_DAYS)
@@ -497,51 +441,33 @@ def create_target(df):
 
 
 # =========================================================
-# 【新機能】複数ホライズンのフォワードリターン
-#
-# 実際の売買判定(TP/SL/タイムアウト)とは別に、
-# 「もし利確・損切を無視してN営業日そのまま
-#  持ち続けていたら何%になっていたか」を
-# 参考値として記録する。TAKE_PROFIT/STOP_LOSS
-# ロジックの妥当性を後から検証する材料になる。
+# 複数ホライズン
 # =========================================================
 
 def create_multi_horizon_returns(df, horizons=FORWARD_HORIZONS):
-
     close = df["Close"].squeeze()
 
     out = {}
 
     for h in horizons:
-
         future_price = close.shift(-h)
-
-        out[f"fwd_return_{h}d"] = (
-            (future_price / close - 1) * 100
-        )
+        out[f"fwd_return_{h}d"] = (future_price / close - 1) * 100
 
     return pd.DataFrame(out, index=df.index)
 
 
 # =========================================================
-# 【新機能】相場局面(レジーム)分類
+# 相場局面
 #
-# 日経平均のMA25/MA75トレンドと、20日ボラティリティの
-# 分位点をもとに、各日を以下の4区分に分類する。
-#
-#   急落・高ボラ : 直近ボラティリティが全期間の上位15%
-#   上昇         : MA25がMA75を一定以上上回る
-#   下落         : MA25がMA75を一定以上下回る
-#   レンジ       : 上記いずれにも該当しない
-#
-# ※ ボラティリティの分位点は全期間を通した順位づけの
-#   ため、あくまで「事後的な期間分類・集計用」であり、
-#   売買判定や学習の特徴量には使っていない
+# ※ ボラティリティ順位(vol_rank)は5年分全体を通した
+#   事後的な順位づけのため、「結果の分類・集計用」に
+#   限定して使う。学習特徴量・売買判定には一切使わない
 #   (取引ロジックへのリークではない)。
+#   リアルタイムの相場フィルターとして使う場合は、
+#   ローリング順位に作り直す必要がある。
 # =========================================================
 
 def classify_regime(nikkei):
-
     close = nikkei["Close"].squeeze()
 
     ma_short = close.rolling(REGIME_MA_SHORT).mean()
@@ -551,6 +477,7 @@ def classify_regime(nikkei):
 
     vol = daily_ret.rolling(REGIME_VOL_WINDOW).std() * 100
 
+    # 注: これは「結果の分類・集計用」。学習特徴量・予測値には使わない。
     vol_rank = vol.rank(pct=True)
 
     trend_diff = (ma_short - ma_long) / ma_long.replace(0, np.nan)
@@ -559,8 +486,6 @@ def classify_regime(nikkei):
 
     regime[trend_diff >= REGIME_TREND_BAND] = "上昇"
     regime[trend_diff <= -REGIME_TREND_BAND] = "下落"
-
-    # 高ボラは他の判定より優先
     regime[vol_rank >= REGIME_HIGH_VOL_PERCENTILE] = "急落・高ボラ"
 
     return regime
@@ -571,7 +496,6 @@ def classify_regime(nikkei):
 # =========================================================
 
 def liquidity_ok(df):
-
     volume = df["Volume"].squeeze()
     avg_volume = volume.tail(20).mean()
 
@@ -583,7 +507,6 @@ def liquidity_ok(df):
 # =========================================================
 
 def evaluate_trade(df, entry_index, entry_price):
-
     future = df.iloc[entry_index + 1: entry_index + 1 + MAX_HOLD_DAYS]
 
     if len(future) == 0:
@@ -593,10 +516,10 @@ def evaluate_trade(df, entry_index, entry_price):
     stop_loss = entry_price * (1 - STOP_LOSS)
 
     for day_number, (_, row) in enumerate(future.iterrows(), start=1):
-
         high = float(row["High"])
         low = float(row["Low"])
 
+        # 同日TP/SL両方に触れた場合は保守的にLOSS
         if low <= stop_loss and high >= take_profit:
             return {"result": "LOSS", "return": -STOP_LOSS * 100, "hold_days": day_number}
 
@@ -632,13 +555,7 @@ def run_walk_forward(ticker, df):
     df["target"] = target
     df["_future_return"] = future_return
 
-    # -------------------------------------------------
-    # 【新機能】複数ホライズンのフォワードリターンを付与
-    # -------------------------------------------------
-
-    multi_horizon = create_multi_horizon_returns(df)
-
-    df = df.join(multi_horizon)
+    df = df.join(create_multi_horizon_returns(df))
 
     if len(df) < MIN_DATA_REQUIRED:
         print(f"{ticker}: データ不足 {len(df)}日")
@@ -659,7 +576,6 @@ def run_walk_forward(ticker, df):
     last_valid_index = len(df) - FORWARD_DAYS - MAX_HOLD_DAYS
 
     prediction_count = 0
-
     current = start
 
     while current < last_valid_index:
@@ -670,9 +586,9 @@ def run_walk_forward(ticker, df):
         test_start = current
         test_end = min(current + RETRAIN_DAYS, last_valid_index)
 
-        # =================================================
-        # リーク対策
-        # =================================================
+        # -------------------------------------------------
+        # 未来のtargetを学習に混ぜない
+        # -------------------------------------------------
 
         safe_train_end = train_end - FORWARD_DAYS
 
@@ -706,10 +622,6 @@ def run_walk_forward(ticker, df):
             f"～ {df.index[test_end - 1].date()}"
         )
 
-        # =================================================
-        # 予測
-        # =================================================
-
         for i in range(test_start, test_end):
 
             row = df.iloc[i]
@@ -720,7 +632,6 @@ def run_walk_forward(ticker, df):
             X_test = row[FEATURES].to_frame().T
 
             try:
-
                 probabilities = model.predict_proba(X_test)[0]
                 classes = list(model.classes_)
 
@@ -743,26 +654,19 @@ def run_walk_forward(ticker, df):
             if trade is None:
                 continue
 
+            # 基準となる買いシグナル(0%なのでprediction==2なら対象)
             buy_signal = (
                 prediction == 2
                 and up_prob >= BUY_UP_PROB_MIN
             )
 
-            # =================================================
-            # 【新機能】完全OOS判定
-            #
-            # データ全体の末尾から OOS_DAYS 営業日以内なら
-            # 「完全OOS」、それより前なら「BACKTEST」。
-            # =================================================
+            # -------------------------------------------------
+            # OOS / BACKTEST
+            # -------------------------------------------------
 
-            phase = (
-                "OOS"
-                if i >= len(df) - OOS_DAYS
-                else "BACKTEST"
-            )
+            phase = "OOS" if i >= len(df) - OOS_DAYS else "BACKTEST"
 
             result_row = {
-
                 "date": df.index[i].strftime("%Y-%m-%d"),
                 "ticker": ticker,
                 "company": COMPANY_NAMES.get(ticker, ""),
@@ -788,20 +692,13 @@ def run_walk_forward(ticker, df):
                 "train_end": df.index[safe_train_end - 1].strftime("%Y-%m-%d"),
             }
 
-            # -------------------------------------------------
-            # 【新機能】フォワードリターン(30/60/90日)を追加
-            # -------------------------------------------------
-
             for h in FORWARD_HORIZONS:
-
                 val = df.iloc[i][f"fwd_return_{h}d"]
-
                 result_row[f"fwd_return_{h}d"] = (
                     round(float(val), 2) if pd.notna(val) else None
                 )
 
             results.append(result_row)
-
             prediction_count += 1
 
         current = test_end
@@ -816,7 +713,6 @@ def run_walk_forward(ticker, df):
 # =========================================================
 
 def build_equity_curve(df, group_col="date"):
-
     if df.empty:
         return pd.Series(dtype=float), 0.0
 
@@ -826,14 +722,13 @@ def build_equity_curve(df, group_col="date"):
 
     peak = equity.cummax()
     drawdown = equity / peak - 1
-
     max_drawdown = drawdown.min() * 100
 
     return equity, max_drawdown
 
 
 # =========================================================
-# 詳細統計(期待値を追加)
+# 統計
 # =========================================================
 
 def compute_stats(df):
@@ -848,41 +743,20 @@ def compute_stats(df):
     holds = (df["result"] == "HOLD").sum()
 
     decided = wins + losses
-
     win_rate = wins / decided * 100 if decided > 0 else 0
-    loss_rate = losses / decided * 100 if decided > 0 else 0
 
     profit_returns = df.loc[df["return"] > 0, "return"]
     loss_returns = df.loc[df["return"] < 0, "return"]
 
-    profit_trades = len(profit_returns)
-    loss_trades = len(loss_returns)
-
-    avg_profit = profit_returns.mean() if profit_trades > 0 else 0
-    avg_loss = loss_returns.mean() if loss_trades > 0 else 0
+    avg_profit = profit_returns.mean() if len(profit_returns) > 0 else 0
+    avg_loss = loss_returns.mean() if len(loss_returns) > 0 else 0
 
     gross_profit = profit_returns.sum()
     gross_loss = abs(loss_returns.sum())
 
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.nan
 
-    # =====================================================
-    # 期待値(Expectancy)
-    #
-    # 1トレードあたりの平均期待損益(%)。
-    #
-    # 【修正】以前は (win_rate × avg_profit) + (loss_rate ×
-    # avg_loss) としていたが、win_rate/loss_rateはHOLDを
-    # 除いた「決着(WIN+LOSS)のみ」を母数にした比率であり、
-    # 一方でavg_profitはHOLDを含む「return>0の全トレード」の
-    # 平均だった。母数が食い違ったまま掛け合わせていたため、
-    # 負け側の重みが実態より過大になり、期待値が不当に
-    # 悪く出るバグがあった。
-    #
-    # 正しくは「全トレード数に対する比率」で重み付けする。
-    # これは単純に return列の平均と等しい。
-    # =====================================================
-
+    # 期待値(1トレードあたりの平均損益%) = return列の単純平均
     expectancy = df["return"].mean()
 
     equity, max_drawdown = build_equity_curve(df)
@@ -900,14 +774,11 @@ def compute_stats(df):
         "losses": int(losses),
         "holds": int(holds),
         "win_rate": win_rate,
-        "profit_trades": profit_trades,
-        "loss_trades": loss_trades,
         "avg_profit": avg_profit,
         "avg_loss": avg_loss,
         "profit_factor": profit_factor,
         "expectancy": expectancy,
         "max_drawdown": max_drawdown,
-        "start_equity": 1.0,
         "final_equity": final_equity,
         "cumulative_return": cumulative_return,
         "equity_curve": equity,
@@ -915,7 +786,29 @@ def compute_stats(df):
 
 
 # =========================================================
-# 統計表示(コンソール・詳細版)
+# 1行統計
+# =========================================================
+
+def print_stats_oneline(label, stats):
+    if stats is None:
+        print(f"{label:30s} : データなし")
+        return
+
+    pf_text = "―" if np.isnan(stats["profit_factor"]) else f"{stats['profit_factor']:.2f}"
+
+    print(
+        f"{label:30s} : "
+        f"件数={stats['total']:4d} "
+        f"勝率={stats['win_rate']:5.1f}% "
+        f"期待値={stats['expectancy']:+.2f}% "
+        f"PF={pf_text:>5s} "
+        f"DD={stats['max_drawdown']:6.1f}% "
+        f"累積={stats['cumulative_return']:+7.1f}%"
+    )
+
+
+# =========================================================
+# 詳細統計
 # =========================================================
 
 def print_stats(title, stats):
@@ -938,208 +831,214 @@ def print_stats(title, stats):
     print(f"勝率               : {stats['win_rate']:.2f}%")
     print(f"平均利益           : +{stats['avg_profit']:.2f}%")
     print(f"平均損失           : {stats['avg_loss']:.2f}%")
-    print(f"期待値(1トレード) : {stats['expectancy']:+.2f}%")
-    print(f"プロフィットファクター : {pf_text}")
-    print(f"最大ドローダウン   : {stats['max_drawdown']:.2f}%")
+    print(f"期待値(1トレード)  : {stats['expectancy']:+.2f}%")
+    print(f"PF                 : {pf_text}")
+    print(f"最大DD             : {stats['max_drawdown']:.2f}%")
     print(f"累積リターン       : {stats['cumulative_return']:+.2f}%")
     print(f"最終資産倍率       : {stats['final_equity']:.4f}")
 
 
 # =========================================================
-# 統計表示(コンソール・1行版:相場局面/OOS比較用)
-# =========================================================
-
-def print_stats_oneline(label, stats):
-
-    if stats is None:
-        print(f"{label:12s} : データなし")
-        return
-
-    pf_text = "―" if np.isnan(stats["profit_factor"]) else f"{stats['profit_factor']:.2f}"
-
-    print(
-        f"{label:12s} : "
-        f"件数={stats['total']:4d} "
-        f"勝率={stats['win_rate']:5.1f}% "
-        f"期待値={stats['expectancy']:+.2f}% "
-        f"PF={pf_text:>5s} "
-        f"最大DD={stats['max_drawdown']:6.1f}% "
-        f"累積={stats['cumulative_return']:+7.1f}%"
-    )
-
-
-# =========================================================
-# 【新機能】グループ別統計をまとめて計算
-# (相場局面別・BT vs OOS など、group_colの値ごとに
-#  compute_statsを実行する汎用ヘルパー)
-# =========================================================
-
-def compute_group_stats(df, group_col, labels):
-
-    return {
-        label: compute_stats(df[df[group_col] == label])
-        for label in labels
-    }
-
-
-# =========================================================
-# Discord用:詳細ブロック(複数行)
-# =========================================================
-
-def format_stats_block(title, stats):
-
-    if stats is None:
-        return f"\n{title}\nデータなし\n"
-
-    pf_text = "―" if np.isnan(stats["profit_factor"]) else f"{stats['profit_factor']:.2f}"
-
-    return (
-        f"\n{title}\n"
-        f"勝率: {stats['win_rate']:.1f}%\n"
-        f"件数: {stats['total']}回\n"
-        f"WIN: {stats['wins']} LOSS: {stats['losses']} HOLD: {stats['holds']}\n"
-        f"平均利益: +{stats['avg_profit']:.2f}%\n"
-        f"平均損失: {stats['avg_loss']:.2f}%\n"
-        f"期待値: {stats['expectancy']:+.2f}%\n"
-        f"PF: {pf_text}\n"
-        f"最大DD: {stats['max_drawdown']:.1f}%\n"
-        f"累積: {stats['cumulative_return']:+.1f}%\n"
-    )
-
-
-# =========================================================
-# Discord用:1行ブロック(相場局面別・BT vs OOS用)
-# =========================================================
-
-def format_stats_oneline(label, stats):
-
-    if stats is None:
-        return f"{label}: データなし"
-
-    pf_text = "―" if np.isnan(stats["profit_factor"]) else f"{stats['profit_factor']:.2f}"
-
-    return (
-        f"{label}: 勝率{stats['win_rate']:.0f}% "
-        f"件数{stats['total']} "
-        f"期待値{stats['expectancy']:+.2f}% "
-        f"PF{pf_text} "
-        f"DD{stats['max_drawdown']:.0f}% "
-        f"累積{stats['cumulative_return']:+.0f}%"
-    )
-
-
-# =========================================================
-# 【新機能】フォワードリターン(30/60/90日)まとめ
-# =========================================================
-
-def format_forward_return_summary(df, horizons=FORWARD_HORIZONS):
-
-    subset = df[df["buy_signal"] == 1]
-
-    lines = ["\n📅 フォワードリターン(買い推奨・平均)"]
-
-    if len(subset) == 0:
-        lines.append("データなし")
-        return "\n".join(lines) + "\n"
-
-    for h in horizons:
-
-        col = f"fwd_return_{h}d"
-
-        if col not in subset.columns:
-            continue
-
-        vals = subset[col].dropna()
-
-        if len(vals) > 0:
-            lines.append(
-                f"{h}日: {vals.mean():+.2f}% (件数{len(vals)})"
-            )
-        else:
-            lines.append(f"{h}日: データ不足")
-
-    return "\n".join(lines) + "\n"
-
-
-# =========================================================
-# Discordメッセージ
-# =========================================================
-
-def build_discord_message(
-    result_df,
-    overall_stats,
-    rank1_stats,
-    buy_stats,
-    regime_stats,
-    phase_stats,
-    forward_summary_text
-):
-
-    start_date = result_df["date"].min()
-    end_date = result_df["date"].max()
-
-    pf_text = (
-        "―" if np.isnan(overall_stats["profit_factor"])
-        else f"{overall_stats['profit_factor']:.2f}"
-    )
-
-    msg = ""
-
-    msg += "📊 AI WALK FORWARD BACKTEST\n"
-    msg += "━━━━━━━━━━━━━━━━\n"
-    msg += f"期間: {start_date} ～ {end_date}\n\n"
-
-    msg += (
-        "💰 最終資産倍率\n"
-        f"{overall_stats['start_equity']:.4f} → "
-        f"{overall_stats['final_equity']:.4f}\n\n"
-    )
-
-    msg += f"📈 累積リターン\n{overall_stats['cumulative_return']:+.2f}%\n\n"
-    msg += f"🎯 勝率\n{overall_stats['win_rate']:.2f}%\n\n"
-    msg += f"📊 総件数\n{overall_stats['total']}件\n\n"
-    msg += f"✅ WIN\n{overall_stats['wins']}件\n\n"
-    msg += f"❌ LOSS\n{overall_stats['losses']}件\n\n"
-    msg += f"⏸ HOLD\n{overall_stats['holds']}件\n\n"
-    msg += f"💵 平均利益\n+{overall_stats['avg_profit']:.2f}%\n\n"
-    msg += f"💸 平均損失\n{overall_stats['avg_loss']:.2f}%\n\n"
-    msg += f"🧮 期待値(1トレード)\n{overall_stats['expectancy']:+.2f}%\n\n"
-    msg += f"⚖️ プロフィットファクター\n{pf_text}\n\n"
-    msg += f"📉 最大ドローダウン\n{overall_stats['max_drawdown']:.2f}%\n"
-
-    msg += "━━━━━━━━━━━━━━━━\n"
-    msg += "🧪 バックテスト vs 完全OOS\n"
-    msg += format_stats_oneline("BT", phase_stats.get("BACKTEST")) + "\n"
-    msg += format_stats_oneline("OOS", phase_stats.get("OOS")) + "\n"
-
-    msg += "━━━━━━━━━━━━━━━━\n"
-    msg += "🌦 相場局面別\n"
-    for label in ["上昇", "下落", "レンジ", "急落・高ボラ"]:
-        msg += format_stats_oneline(label, regime_stats.get(label)) + "\n"
-
-    msg += forward_summary_text
-
-    msg += "━━━━━━━━━━━━━━━━\n"
-
-    msg += format_stats_block("🏆 ランク1", rank1_stats)
-    msg += format_stats_block("🟢 買い推奨", buy_stats)
-
-    return msg
-
-
-# =========================================================
-# 【新機能】統計サマリーCSV保存
+# フィルター比較
 #
-# 全体・相場局面別・BT/OOS・ランク1・買い推奨の
-# 各統計を1つの表にまとめて保存する。
+# ここが今回の追加部分。
+#
+# 基準:
+#   prediction == 2
+#
+# 確率:
+#   up_probability >= 0/40/50/60/70
+#
+# 上昇相場フィルター:
+#   regime == "上昇"
+#
+# 自動最適化はしない。
+#
+# 【修正】「上昇相場のみ」はUP確率のしきい値に依存しない
+# 統計のため、しきい値のループの外で1回だけ計算する。
+# (ループ内に置くと、閾値の数だけ全く同じ統計が重複して
+#  comparison_df に記録され、「閾値によって上昇相場のみの
+#  数字が変わった」ように誤読される原因になっていた)
+# =========================================================
+
+def build_filter_comparison(result_df, thresholds=PROBABILITY_THRESHOLDS):
+
+    rows = []
+
+    def add_rows(threshold, filter_name, selected):
+
+        if len(selected) == 0:
+            return
+
+        for phase in ["ALL", "BACKTEST", "OOS"]:
+
+            if phase == "ALL":
+                phase_df = selected
+            else:
+                phase_df = selected[selected["phase"] == phase]
+
+            stats = compute_stats(phase_df)
+
+            if stats is None:
+                continue
+
+            rows.append({
+                "threshold": threshold,
+                "filter": filter_name,
+                "phase": phase,
+                "total": stats["total"],
+                "wins": stats["wins"],
+                "losses": stats["losses"],
+                "holds": stats["holds"],
+                "win_rate": round(stats["win_rate"], 4),
+                "expectancy": round(stats["expectancy"], 4),
+                "profit_factor": (
+                    round(stats["profit_factor"], 4)
+                    if not np.isnan(stats["profit_factor"])
+                    else np.nan
+                ),
+                "max_drawdown": round(stats["max_drawdown"], 4),
+                "cumulative_return": round(stats["cumulative_return"], 4),
+                "final_equity": round(stats["final_equity"], 6),
+            })
+
+    # 基本のAI買い条件(prediction == 2)
+    base = result_df[result_df["prediction"] == 2].copy()
+
+    # -------------------------------------------------
+    # 「上昇相場のみ」は閾値非依存 → 1回だけ計算
+    # threshold は None(「閾値なし」を示す)として記録
+    # -------------------------------------------------
+    uptrend_only_df = base[base["regime"] == "上昇"].copy()
+    add_rows(None, "上昇相場のみ", uptrend_only_df)
+
+    for threshold in thresholds:
+
+        prob_df = base[base["up_probability"] >= threshold].copy()
+
+        uptrend_df = prob_df[prob_df["regime"] == "上昇"].copy()
+
+        add_rows(threshold, "確率のみ", prob_df)
+        add_rows(threshold, "上昇相場+確率", uptrend_df)
+
+    return pd.DataFrame(rows)
+
+
+def _format_threshold_label(threshold):
+
+    if threshold is None or (isinstance(threshold, float) and np.isnan(threshold)):
+        return "条件なし"
+
+    return f"UP≥{int(threshold):2d}%"
+
+
+# =========================================================
+# 比較結果表示
+# =========================================================
+
+def print_filter_comparison(comparison_df):
+
+    print("")
+    print("=" * 110)
+    print("🔬 AI買い条件フィルター比較")
+    print("=" * 110)
+
+    print("※ 0% = 現状基準。 自動で最適値は選択しません。")
+    print("※「上昇相場のみ」はUP確率と無関係のため、条件は1種類のみ表示されます。")
+
+    for filter_name in ["確率のみ", "上昇相場のみ", "上昇相場+確率"]:
+
+        print("")
+        print(f"【{filter_name}】")
+
+        for phase in ["BACKTEST", "OOS"]:
+
+            print(f"\n--- {phase} ---")
+
+            subset = comparison_df[
+                (comparison_df["filter"] == filter_name)
+                & (comparison_df["phase"] == phase)
+            ].copy()
+
+            if subset.empty:
+                print("データなし")
+                continue
+
+            for _, row in subset.iterrows():
+
+                label = _format_threshold_label(row["threshold"])
+
+                pf_val = row["profit_factor"]
+                pf_text = "―" if pd.isna(pf_val) else f"{pf_val:.2f}"
+
+                print(
+                    f"{label} | "
+                    f"件数={int(row['total']):4d} | "
+                    f"勝率={row['win_rate']:5.1f}% | "
+                    f"期待値={row['expectancy']:+.2f}% | "
+                    f"PF={pf_text} | "
+                    f"DD={row['max_drawdown']:.1f}% | "
+                    f"累積={row['cumulative_return']:+.1f}%"
+                )
+
+
+# =========================================================
+# Discord用比較
+# =========================================================
+
+def format_filter_comparison_for_discord(comparison_df):
+
+    lines = [
+        "🔬 フィルター比較",
+        "※0%=現状基準 / 自動最適化なし"
+    ]
+
+    for phase in ["BACKTEST", "OOS"]:
+
+        lines.append(f"\n【{phase}】")
+
+        for filter_name in ["確率のみ", "上昇相場のみ", "上昇相場+確率"]:
+
+            subset = comparison_df[
+                (comparison_df["filter"] == filter_name)
+                & (comparison_df["phase"] == phase)
+            ]
+
+            if subset.empty:
+                continue
+
+            lines.append(f"■ {filter_name}")
+
+            for _, row in subset.iterrows():
+
+                label = _format_threshold_label(row["threshold"])
+
+                pf_val = row["profit_factor"]
+                pf_text = "―" if pd.isna(pf_val) else f"{pf_val:.2f}"
+
+                lines.append(
+                    f"{label} "
+                    f"件{int(row['total'])} "
+                    f"勝率{row['win_rate']:.0f}% "
+                    f"期待{row['expectancy']:+.2f}% "
+                    f"PF{pf_text} "
+                    f"DD{row['max_drawdown']:.0f}%"
+                )
+
+    return "\n".join(lines)
+
+
+# =========================================================
+# サマリーCSV
 # =========================================================
 
 def save_summary_csv(
     overall_stats,
-    regime_stats,
     phase_stats,
+    regime_stats,
     rank1_stats,
-    buy_stats
+    buy_stats,
+    comparison_df
 ):
 
     rows = []
@@ -1153,35 +1052,62 @@ def save_summary_csv(
         row = {"group": label}
 
         for key, value in stats.items():
-
             if key == "equity_curve":
                 continue
-
             row[key] = value
 
         rows.append(row)
 
     add_row("全体", overall_stats)
 
-    for label in ["上昇", "下落", "レンジ", "急落・高ボラ"]:
-        add_row(f"相場局面_{label}", regime_stats.get(label))
-
     for label in ["BACKTEST", "OOS"]:
         add_row(f"フェーズ_{label}", phase_stats.get(label))
+
+    for label in ["上昇", "下落", "レンジ", "急落・高ボラ"]:
+        add_row(f"相場局面_{label}", regime_stats.get(label))
 
     add_row("ランク1", rank1_stats)
     add_row("買い推奨", buy_stats)
 
-    summary_df = pd.DataFrame(rows)
-
-    summary_df.to_csv(
-        "backtest_summary.csv",
-        index=False,
-        encoding="utf-8-sig"
+    pd.DataFrame(rows).to_csv(
+        "backtest_summary.csv", index=False, encoding="utf-8-sig"
     )
 
-    print("")
+    comparison_df.to_csv(
+        "filter_comparison.csv", index=False, encoding="utf-8-sig"
+    )
+
     print("✅ backtest_summary.csv 保存")
+    print("✅ filter_comparison.csv 保存")
+
+
+# =========================================================
+# フォワードリターン
+# =========================================================
+
+def format_forward_return_summary(df, horizons=FORWARD_HORIZONS):
+
+    subset = df[df["buy_signal"] == 1]
+
+    lines = ["\n📅 フォワードリターン"]
+
+    if len(subset) == 0:
+        lines.append("データなし")
+        return "\n".join(lines)
+
+    for h in horizons:
+
+        col = f"fwd_return_{h}d"
+
+        if col not in subset.columns:
+            continue
+
+        vals = subset[col].dropna()
+
+        if len(vals) > 0:
+            lines.append(f"{h}日: {vals.mean():+.2f}% (件数{len(vals)})")
+
+    return "\n".join(lines)
 
 
 # =========================================================
@@ -1191,26 +1117,24 @@ def save_summary_csv(
 def main():
 
     print("")
-    print("=" * 60)
-    print("📊 ウォークフォワード・バックテスト 拡張版")
-    print("=" * 60)
+    print("=" * 70)
+    print("📊 ウォークフォワード・バックテスト")
+    print("🔬 フィルター比較版")
+    print("=" * 70)
 
-    print(f"学習期間: {TRAIN_DAYS}営業日")
-    print(f"再学習間隔: {RETRAIN_DAYS}営業日")
-    print(f"予測期間: {FORWARD_DAYS}営業日")
-    print(f"売買判定: 最大{MAX_HOLD_DAYS}営業日")
-    print(f"利確: +{TAKE_PROFIT * 100:.1f}%")
-    print(f"損切: -{STOP_LOSS * 100:.1f}%")
-    print(f"流動性: {MIN_AVG_VOLUME:,}")
-    print(f"完全OOS期間: 直近{OOS_DAYS}営業日")
-    print(f"フォワード確認: {FORWARD_HORIZONS}営業日")
-    print("")
+    print(f"学習期間: {TRAIN_DAYS}")
+    print(f"再学習間隔: {RETRAIN_DAYS}")
+    print(f"予測期間: {FORWARD_DAYS}")
+    print(f"TP: +{TAKE_PROFIT * 100:.1f}%")
+    print(f"SL: -{STOP_LOSS * 100:.1f}%")
+    print(f"OOS: 直近{OOS_DAYS}営業日")
+    print(f"比較閾値: {PROBABILITY_THRESHOLDS}")
 
     # =====================================================
-    # 日経平均
+    # 日経
     # =====================================================
 
-    print("📥 日経平均取得")
+    print("\n📥 日経平均取得")
 
     nikkei = safe_download(
         "^N225", period=DATA_PERIOD, interval="1d",
@@ -1221,21 +1145,15 @@ def main():
         print("❌ 日経平均取得失敗")
         return
 
-    # -----------------------------------------------------
-    # 【新機能】相場局面をここで先に算出しておく
-    # (特徴量作成前の生のCloseを使うため、
-    #  create_nikkei_featuresより先に実行)
-    # -----------------------------------------------------
-
     regime_series = classify_regime(nikkei)
 
     nikkei = create_nikkei_features(nikkei)
 
     # =====================================================
-    # 日経225先物
+    # 先物
     # =====================================================
 
-    print("📥 日経225先物取得")
+    print("\n📥 日経225先物取得")
 
     futures = safe_download(
         "NIY=F", period=DATA_PERIOD, interval="1d",
@@ -1265,6 +1183,9 @@ def main():
             auto_adjust=False, progress=False
         )
 
+        # 【修正】取得失敗時のログを復元(以前のバージョンで
+        # 抜け落ちていた。どの銘柄が失敗したか追えないと
+        # デバッグしづらいため)
         if stock is None:
             print(f"{ticker}: データ取得失敗")
             continue
@@ -1321,14 +1242,14 @@ def main():
         all_results.extend(ticker_results)
 
     if not all_results:
-        print("❌ バックテスト結果なし")
+        print("❌ 結果なし")
         return
 
     result_df = pd.DataFrame(all_results)
 
-    # -----------------------------------------------------
-    # 【新機能】相場局面(regime)をdateで紐付け
-    # -----------------------------------------------------
+    # =====================================================
+    # 相場局面
+    # =====================================================
 
     regime_lookup = {
         idx.strftime("%Y-%m-%d"): val
@@ -1341,8 +1262,7 @@ def main():
         "walk_forward_results.csv", index=False, encoding="utf-8-sig"
     )
 
-    print("")
-    print("✅ walk_forward_results.csv 保存")
+    print("\n✅ walk_forward_results.csv 保存")
 
     # =====================================================
     # Accuracy / Precision
@@ -1361,6 +1281,15 @@ def main():
     except Exception:
         precision = 0
 
+    print("")
+    print("=" * 60)
+    print("📊 ウォークフォワード結果")
+    print("=" * 60)
+
+    print(f"予測件数: {len(result_df)}")
+    print(f"Accuracy: {accuracy:.2f}%")
+    print(f"Precision: {precision:.2f}%")
+
     # =====================================================
     # 全体
     # =====================================================
@@ -1372,92 +1301,90 @@ def main():
     # =====================================================
 
     rank1_idx = result_df.groupby("date")["up_probability"].idxmax()
+
     rank1_df = result_df.loc[rank1_idx].copy()
+
     rank1_stats = compute_stats(rank1_df)
 
     # =====================================================
-    # 買い推奨
+    # 現状の買い推奨
     # =====================================================
 
     buy_df = result_df[result_df["buy_signal"] == 1].copy()
+
     buy_stats = compute_stats(buy_df)
 
     # =====================================================
-    # 【新機能】相場局面別
+    # 相場局面
     # =====================================================
 
-    REGIME_LABELS = ["上昇", "下落", "レンジ", "急落・高ボラ"]
+    regime_stats = {}
 
-    regime_stats = compute_group_stats(result_df, "regime", REGIME_LABELS)
-
-    # =====================================================
-    # 【新機能】バックテスト vs 完全OOS
-    # =====================================================
-
-    PHASE_LABELS = ["BACKTEST", "OOS"]
-
-    phase_stats = compute_group_stats(result_df, "phase", PHASE_LABELS)
+    for label in ["上昇", "下落", "レンジ", "急落・高ボラ"]:
+        regime_stats[label] = compute_stats(result_df[result_df["regime"] == label])
 
     # =====================================================
-    # 全体表示
+    # BT / OOS
     # =====================================================
+
+    phase_stats = {}
+
+    for label in ["BACKTEST", "OOS"]:
+        phase_stats[label] = compute_stats(result_df[result_df["phase"] == label])
+
+    print_stats("📊 全体", overall_stats)
+    print_stats("🏆 ランク1", rank1_stats)
+    print_stats("🟢 現状買い推奨", buy_stats)
 
     print("")
-    print("=" * 60)
-    print("📊 ウォークフォワード結果")
-    print("=" * 60)
+    print("=" * 70)
+    print("🧪 BACKTEST vs OOS")
+    print("=" * 70)
 
-    print(f"予測件数       : {len(result_df)}")
-    print(f"Accuracy       : {accuracy:.2f}%")
-    print(f"Precision      : {precision:.2f}%")
-
-    print_stats("📊 全体成績", overall_stats)
-    print_stats("🏆 ランク1成績", rank1_stats)
-    print_stats("🟢 買い推奨成績", buy_stats)
-
-    print("")
-    print("=" * 60)
-    print("🧪 バックテスト vs 完全OOS")
-    print("=" * 60)
     print_stats_oneline("BACKTEST", phase_stats.get("BACKTEST"))
     print_stats_oneline("OOS", phase_stats.get("OOS"))
 
     print("")
-    print("=" * 60)
-    print("🌦 相場局面別成績")
-    print("=" * 60)
-    for label in REGIME_LABELS:
+    print("=" * 70)
+    print("🌦 相場局面")
+    print("=" * 70)
+
+    for label in ["上昇", "下落", "レンジ", "急落・高ボラ"]:
         print_stats_oneline(label, regime_stats.get(label))
+
+    # =====================================================
+    # ★今回のメイン比較
+    # =====================================================
+
+    comparison_df = build_filter_comparison(result_df, PROBABILITY_THRESHOLDS)
+
+    print_filter_comparison(comparison_df)
 
     # =====================================================
     # 銘柄別
     # =====================================================
 
     print("")
-    print("=" * 60)
+    print("=" * 70)
     print("📊 銘柄別成績")
-    print("=" * 60)
+    print("=" * 70)
 
     for ticker, group in result_df.groupby("ticker"):
 
         ticker_accuracy = group["correct"].mean() * 100
 
-        ticker_wins = (group["result"] == "WIN").sum()
-        ticker_losses = group["result"].isin(["LOSS", "TIMEOUT_LOSS"]).sum()
-        ticker_trades = ticker_wins + ticker_losses
+        wins = (group["result"] == "WIN").sum()
+        losses = group["result"].isin(["LOSS", "TIMEOUT_LOSS"]).sum()
+        decided = wins + losses
 
-        ticker_win_rate = (
-            ticker_wins / ticker_trades * 100 if ticker_trades > 0 else 0
-        )
-
-        ticker_avg_return = group["return"].mean()
+        win_rate = wins / decided * 100 if decided > 0 else 0
 
         print(
             f"{ticker:8s} "
             f"{COMPANY_NAMES.get(ticker, ''):10s} "
             f"Accuracy={ticker_accuracy:5.1f}% "
-            f"勝率={ticker_win_rate:5.1f}% "
-            f"平均={ticker_avg_return:+.2f}% "
+            f"勝率={win_rate:5.1f}% "
+            f"平均={group['return'].mean():+.2f}% "
             f"件数={len(group)}"
         )
 
@@ -1465,53 +1392,37 @@ def main():
     # 資産曲線
     # =====================================================
 
-    equity = overall_stats["equity_curve"]
-
-    equity.to_csv(
-        "portfolio_equity_curve.csv",
-        header=["equity"],
-        encoding="utf-8-sig"
+    overall_stats["equity_curve"].to_csv(
+        "portfolio_equity_curve.csv", header=["equity"], encoding="utf-8-sig"
     )
 
-    print("")
-    print("✅ portfolio_equity_curve.csv 保存")
-
+    # 【修正】rank1_statsがNoneになる可能性は理論上低いが、
+    # 念のためbuy_statsと同様にNoneチェックを入れて安全に保存する
     if rank1_stats is not None:
         rank1_stats["equity_curve"].to_csv(
             "rank1_equity_curve.csv", header=["equity"], encoding="utf-8-sig"
         )
-        print("✅ rank1_equity_curve.csv 保存")
 
     if buy_stats is not None:
         buy_stats["equity_curve"].to_csv(
             "buy_equity_curve.csv", header=["equity"], encoding="utf-8-sig"
         )
-        print("✅ buy_equity_curve.csv 保存")
 
     # =====================================================
-    # 【新機能】統計サマリーCSV
+    # CSV
     # =====================================================
 
     save_summary_csv(
         overall_stats,
-        regime_stats,
         phase_stats,
+        regime_stats,
         rank1_stats,
-        buy_stats
+        buy_stats,
+        comparison_df
     )
 
     # =====================================================
-    # 流動性除外
-    # =====================================================
-
-    if skipped_liquidity:
-        print("")
-        print("⚠ 流動性フィルター除外:")
-        for ticker in skipped_liquidity:
-            print(f"  {ticker} {COMPANY_NAMES.get(ticker, '')}")
-
-    # =====================================================
-    # 【新機能】フォワードリターンまとめ
+    # フォワード
     # =====================================================
 
     forward_summary_text = format_forward_return_summary(result_df)
@@ -1523,40 +1434,59 @@ def main():
     # Discord
     # =====================================================
 
-    discord_msg = build_discord_message(
-        result_df,
-        overall_stats,
-        rank1_stats,
-        buy_stats,
-        regime_stats,
-        phase_stats,
-        forward_summary_text
+    def _pf_text(stats):
+        if stats is None or np.isnan(stats["profit_factor"]):
+            return "―"
+        return f"{stats['profit_factor']:.2f}"
+
+    overall_pf_text = _pf_text(overall_stats)
+
+    discord = (
+        "📊 AI WALK FORWARD BACKTEST\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"期間: {result_df['date'].min()} ～ {result_df['date'].max()}\n\n"
+        f"最終資産倍率: {overall_stats['final_equity']:.4f}\n"
+        f"累積: {overall_stats['cumulative_return']:+.2f}%\n"
+        f"期待値: {overall_stats['expectancy']:+.2f}%\n"
+        f"PF: {overall_pf_text}\n"
+        f"最大DD: {overall_stats['max_drawdown']:.2f}%\n\n"
+        "🧪 BACKTEST vs OOS\n"
+        + (
+            f"BT: 期待{phase_stats['BACKTEST']['expectancy']:+.2f}% "
+            f"PF{_pf_text(phase_stats['BACKTEST'])}\n"
+            if phase_stats.get("BACKTEST")
+            else "BT: データなし\n"
+        )
+        + (
+            f"OOS: 期待{phase_stats['OOS']['expectancy']:+.2f}% "
+            f"PF{_pf_text(phase_stats['OOS'])}\n"
+            if phase_stats.get("OOS")
+            else "OOS: データなし\n"
+        )
+        + "\n"
+        + format_filter_comparison_for_discord(comparison_df)
     )
 
-    send_discord(discord_msg)
+    send_discord(discord)
 
     # =====================================================
     # 完了
     # =====================================================
 
     print("")
-    print("=" * 60)
-    print("✅ ウォークフォワード・バックテスト完了")
-    print("=" * 60)
+    print("=" * 70)
+    print("✅ 完了")
+    print("=" * 70)
 
     print("")
     print("生成ファイル:")
-    print("  walk_forward_results.csv     (取引明細・regime/phase/fwd_return付き)")
-    print("  portfolio_equity_curve.csv   (全体・日次資産曲線)")
-    print("  rank1_equity_curve.csv       (ランク1・日次資産曲線)")
-    print("  buy_equity_curve.csv         (買い推奨・日次資産曲線)")
-    print("  backtest_summary.csv         (全グループ横断の統計サマリー)")
+    print("  walk_forward_results.csv")
+    print("  portfolio_equity_curve.csv")
+    print("  rank1_equity_curve.csv")
+    print("  buy_equity_curve.csv")
+    print("  backtest_summary.csv")
+    print("  filter_comparison.csv")
 
-
-# =========================================================
-# 実行
-# =========================================================
 
 if __name__ == "__main__":
-
     main()
