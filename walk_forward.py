@@ -354,6 +354,10 @@ def calc_rsi(
 
 # =========================================================
 # ADX
+#
+# ※ADX内部のATR平滑化はWilder方式(EWM alpha=1/period)が
+# 正しい標準アルゴリズムであり、本番stock_scan.pyの
+# calc_adx()も同じ実装。ここは変更不要。
 # =========================================================
 
 def calc_adx(
@@ -512,7 +516,23 @@ def calc_adx(
 
 
 # =========================================================
-# ATR
+# ATR(atr_ratio特徴量・TP/SL計算用)
+#
+# 【修正・重要】
+# 以前の版はここで tr.ewm(alpha=1/period, adjust=False)
+# を使っていたが、これは本番stock_scan.pyのATR計算
+# (tr.rolling(14).mean() = 単純移動平均)と異なっていた。
+#
+# atr_ratioは
+#   ・モデルの学習特徴量
+#   ・3クラス分類targetのしきい値
+#   ・TP/SLの計算(ATR×3.0 / ATR×1.5)
+# のすべてに使われる値のため、本番と計算方法がズレると
+# 「本番ロジックの再現」という前提が崩れてしまう。
+# 本番と同じ rolling(14).mean() に統一する。
+#
+# (ADX内部で使うATRはWilder方式のEWMが正しく、それは
+# calc_adx()内に別途実装済みでそちらは変更していない)
 # =========================================================
 
 def calc_atr(
@@ -554,12 +574,10 @@ def calc_atr(
         axis=1
     )
 
+    # 本番stock_scan.pyと同じ単純移動平均(rolling)
     atr = (
         tr
-        .ewm(
-            alpha=1 / period,
-            adjust=False
-        )
+        .rolling(period)
         .mean()
     )
 
