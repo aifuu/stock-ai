@@ -3620,6 +3620,14 @@ trend_yearly.to_csv(
 # 最終サマリー
 # =========================================================
 
+def format_pf(value):
+
+    if np.isinf(value):
+        return "inf"
+
+    return f"{value:.2f}"
+
+
 print(
     "\n==========================================="
 )
@@ -3633,19 +3641,15 @@ print(
 )
 
 print(
-    f"期間: "
-    f"{START_DATE} ～ "
-    f"{END_DATE}"
+    f"期間: {START_DATE} ～ {END_DATE}"
 )
 
 print(
-    f"予測件数: "
-    f"{len(results_df)}"
+    f"予測件数: {len(results_df)}"
 )
 
 print(
-    f"TOP_N: "
-    f"{TOP_N}"
+    f"TOP_N: {TOP_N}"
 )
 
 print(
@@ -3653,132 +3657,98 @@ print(
 )
 
 print(
-    f"REFIT: "
-    f"{REFIT_EVERY_TRADING_DAYS}営業日"
+    f"REFIT: {REFIT_EVERY_TRADING_DAYS}営業日"
 )
 
 print(
-    f"BUY限定: "
-    f"{TRADE_ONLY_BUY_SIGNALS}"
+    f"BUY限定: {TRADE_ONLY_BUY_SIGNALS}"
+)
+
+print(
+    "流動性フィルター: 学習・予測ともON"
 )
 
 
+# =========================================================
+# 全体
+# =========================================================
+
 if summary_all:
 
-    pf_all = (
-        summary_all[
-            "profit_factor"
-        ]
-    )
-
-
-    if np.isinf(
-        pf_all
-    ):
-
-        pf_text = "inf"
-
-    else:
-
-        pf_text = (
-            f"{pf_all:.2f}"
-        )
-
+    pf_all = summary_all["profit_factor"]
 
     print(
-        f"\n勝率: "
-        f"{summary_all['win_rate']:.2f}%"
+        f"\n勝率: {summary_all['win_rate']:.2f}%"
     )
 
     print(
-        f"平均リターン: "
-        f"{summary_all['avg_return']:.2f}%"
+        f"平均リターン: {summary_all['avg_return']:.2f}%"
     )
 
     print(
-        f"PF: "
-        f"{pf_text}"
+        f"PF: {format_pf(pf_all)}"
     )
 
     print(
-        f"最大DD: "
-        f"{summary_all['max_drawdown']:.2f}%"
+        f"最大DD: {summary_all['max_drawdown']:.2f}%"
     )
 
 
 # =========================================================
-# 追加比較
+# 日経上昇トレンド
 # =========================================================
 
 if summary_up:
+
+    pf_up = summary_up["profit_factor"]
 
     print(
         "\n📈 日経上昇トレンド時"
     )
 
     print(
-        f"勝率: "
-        f"{summary_up['win_rate']:.2f}%"
+        f"勝率: {summary_up['win_rate']:.2f}%"
     )
 
     print(
-        f"平均リターン: "
-        f"{summary_up['avg_return']:.2f}%"
+        f"平均リターン: {summary_up['avg_return']:.2f}%"
     )
 
     print(
-        f"PF: "
-        f"{(
-            'inf'
-            if np.isinf(
-                summary_up[
-                    'profit_factor'
-                ]
-            )
-            else
-            f"{summary_up['profit_factor']:.2f}"
-        )}"
+        f"PF: {format_pf(pf_up)}"
     )
 
     print(
-        f"最大DD: "
-        f"{summary_up['max_drawdown']:.2f}%"
+        f"最大DD: {summary_up['max_drawdown']:.2f}%"
     )
 
+
+# =========================================================
+# 日経非上昇トレンド
+# =========================================================
 
 if summary_down:
+
+    pf_down = summary_down["profit_factor"]
 
     print(
         "\n📉 日経非上昇トレンド時"
     )
 
     print(
-        f"勝率: "
-        f"{summary_down['win_rate']:.2f}%"
+        f"勝率: {summary_down['win_rate']:.2f}%"
     )
 
     print(
-        f"平均リターン: "
-        f"{summary_down['avg_return']:.2f}%"
+        f"平均リターン: {summary_down['avg_return']:.2f}%"
     )
 
     print(
-        f"PF: "
-        f"{(
-            'inf'
-            if np.isinf(
-                summary_down[
-                    'profit_factor'
-                ]
-            )
-            else
-            f"{summary_down['profit_factor']:.2f}"
-        )}"
+        f"PF: {format_pf(pf_down)}"
     )
 
     print(
-        f"最大DD: "
-        f"{summary_down['max_drawdown']:.2f}%"
+        f"最大DD: {summary_down['max_drawdown']:.2f}%"
     )
 
 
