@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore")
 
 
 # =========================================================
-# DISCORD
+# Discord
 # =========================================================
 
 WEBHOOK_URL = os.getenv(
@@ -35,7 +35,6 @@ def send_discord(message):
     try:
 
         if len(message) > 1900:
-
             message = message[:1900]
 
         response = requests.post(
@@ -72,28 +71,6 @@ def send_discord(message):
         print(
             f"❌ Discord通知エラー: {e}"
         )
-
-
-# =========================================================
-# WALK-FORWARD BACKTEST
-#
-# 予測日より未来の情報を学習に使わない。
-#
-# 0 = 下落
-# 1 = 横ばい
-# 2 = 上昇
-#
-# ATRベースtarget
-# ATR TP / SL
-# 日経フィルター
-# 流動性フィルター
-# DEV / VALIDATION / OOS
-# TOP1～TOP_N
-# 月別・年別集計
-# Discord通知
-#
-# Python 3.11対応
-# =========================================================
 
 
 # =========================================================
@@ -151,9 +128,6 @@ TEST_WARMUP_DAYS = int(
 
 # =========================================================
 # 再学習間隔
-#
-# 1  = 毎営業日
-# 20 = 20営業日ごと
 # =========================================================
 
 REFIT_EVERY_TRADING_DAYS = int(
@@ -176,16 +150,20 @@ RANDOM_STATE = 42
 
 
 # =========================================================
-# BUY限定
+# 比較対象
 # =========================================================
 
-TRADE_ONLY_BUY_SIGNALS = (
-    os.getenv(
-        "WF_TRADE_ONLY_BUY",
-        "true"
-    ).lower()
-    == "true"
-)
+UP_THRESHOLDS = [
+    50,
+    55,
+    60,
+    65
+]
+
+NIKKEI_FILTER_OPTIONS = [
+    True,
+    False
+]
 
 
 # =========================================================
@@ -225,7 +203,7 @@ TICKERS = [
     "8306.T",
     "5803.T",
     "6526.T",
-    "6613.T"
+    "6613.T",
 ]
 
 
@@ -653,10 +631,6 @@ def create_features(df):
         .squeeze()
     )
 
-    # -----------------------------------------------------
-    # 基本
-    # -----------------------------------------------------
-
     df["ret1"] = (
         close.pct_change()
     )
@@ -688,10 +662,6 @@ def create_features(df):
     df["adx"] = (
         calc_adx(df)
     )
-
-    # -----------------------------------------------------
-    # MACD
-    # -----------------------------------------------------
 
     ema12 = (
         close
@@ -726,10 +696,6 @@ def create_features(df):
         .mean()
     )
 
-    # -----------------------------------------------------
-    # 52週高値 / 安値
-    # -----------------------------------------------------
-
     high252 = (
         close
         .rolling(252)
@@ -742,9 +708,7 @@ def create_features(df):
         .min()
     )
 
-    df["high252"] = (
-        high252
-    )
+    df["high252"] = high252
 
     df["from_high"] = (
         close
@@ -761,10 +725,6 @@ def create_features(df):
         -
         1
     ) * 100
-
-    # -----------------------------------------------------
-    # 相対強度用
-    # -----------------------------------------------------
 
     df["_stock_ret5"] = (
         close
@@ -834,14 +794,10 @@ def create_features(df):
     )
 
     obv = (
-        (
-            volume
-            *
-            price_direction
-        )
-        .fillna(0)
-        .cumsum()
-    )
+        volume
+        *
+        price_direction
+    ).fillna(0).cumsum()
 
     df["obv_change"] = (
         obv.diff(5)
@@ -998,7 +954,7 @@ def build_futures_features(
         close.shift(1)
     )
 
-    # 先物のみ1日ラグ
+    # 先物だけ1日ラグ
     for col in [
         "future_return",
         "future_ma5",
@@ -1046,10 +1002,7 @@ def prepare_symbol_data(
         df
     )
 
-    # -----------------------------------------------------
     # 日経
-    # -----------------------------------------------------
-
     df = df.join(
         nikkei[
             [
@@ -1066,10 +1019,7 @@ def prepare_symbol_data(
         how="left"
     )
 
-    # -----------------------------------------------------
     # 先物
-    # -----------------------------------------------------
-
     df = df.join(
         futures[
             [
@@ -1082,20 +1032,14 @@ def prepare_symbol_data(
         how="left"
     )
 
-    # -----------------------------------------------------
     # 相対強度
-    # -----------------------------------------------------
-
     df["relative_strength"] = (
         df["_stock_ret5"]
         -
         df["nikkei_ret5_raw"]
     )
 
-    # -----------------------------------------------------
     # 流動性
-    # -----------------------------------------------------
-
     df["avg_volume20"] = (
         df["Volume"]
         .rolling(20)
@@ -1108,10 +1052,7 @@ def prepare_symbol_data(
         MIN_AVG_VOLUME
     )
 
-    # -----------------------------------------------------
     # target
-    # -----------------------------------------------------
-
     future_price = (
         df["Close"]
         .shift(-FORWARD_DAYS)
@@ -1130,7 +1071,9 @@ def prepare_symbol_data(
         *
         ATR_TARGET_MULTIPLIER
         *
-        np.sqrt(FORWARD_DAYS)
+        np.sqrt(
+            FORWARD_DAYS
+        )
     )
 
     df["target"] = np.select(
@@ -1154,10 +1097,6 @@ def prepare_symbol_data(
         future_return.notna()
     )
 
-    # -----------------------------------------------------
-    # target_date
-    # -----------------------------------------------------
-
     target_date = (
         pd.Series(
             df.index,
@@ -1170,10 +1109,7 @@ def prepare_symbol_data(
         target_date
     )
 
-    # -----------------------------------------------------
-    # 特徴量欠損
-    # -----------------------------------------------------
-
+    # 最後に特徴量欠損除去
     df = df.dropna(
         subset=FEATURES
     ).copy()
@@ -1186,7 +1122,7 @@ def prepare_symbol_data(
 
 
 # =========================================================
-# シグナル
+# シグナル作成
 # =========================================================
 
 def calculate_signal(
@@ -1246,31 +1182,21 @@ def calculate_signal(
             1
         ) * 100
 
-    # -----------------------------------------------------
-    # テクニカルスコア
-    # -----------------------------------------------------
-
     technical_score = 0
 
     if rsi < 35:
-
         technical_score += 25
 
     if macd > signal:
-
         technical_score += 25
 
     if ma25 > ma75:
-
         technical_score += 20
 
     if vol_ratio > 1.5:
-
         technical_score += 20
 
-    if np.isfinite(
-        distance
-    ):
+    if np.isfinite(distance):
 
         if distance > -10:
 
@@ -1291,10 +1217,6 @@ def calculate_signal(
     ) > 0:
 
         technical_score += 5
-
-    # -----------------------------------------------------
-    # AIスコア
-    # -----------------------------------------------------
 
     technical_score_normalized = (
         technical_score
@@ -1326,10 +1248,6 @@ def calculate_signal(
         )
     )
 
-    # -----------------------------------------------------
-    # 確率
-    # -----------------------------------------------------
-
     up_percent = (
         up_prob * 100
     )
@@ -1342,45 +1260,18 @@ def calculate_signal(
         flat_prob * 100
     )
 
-    is_tie = (
-        abs(
-            up_percent
-            -
-            down_percent
+    # 表示用シグナル
+    if flat_percent >= 50:
+
+        final_signal = (
+            "🟡 監視(横ばい優勢)"
         )
-        <=
-        1.0
-    )
 
-    is_flat_dominant = (
-        flat_percent
-        >=
-        50.0
-    )
-
-    # -----------------------------------------------------
-    # シグナル
-    # -----------------------------------------------------
-
-    if is_flat_dominant:
-
-        if (
-            up_percent >= 50
-            and
-            up_percent > down_percent
-        ):
-
-            final_signal = (
-                "🟡 監視(横ばい優勢)"
-            )
-
-        else:
-
-            final_signal = (
-                "🔴 買わない"
-            )
-
-    elif is_tie:
+    elif abs(
+        up_percent
+        -
+        down_percent
+    ) <= 1:
 
         final_signal = (
             "🟡 監視(拮抗)"
@@ -1402,12 +1293,10 @@ def calculate_signal(
             "🟡 監視"
         )
 
-    # -----------------------------------------------------
-    # 日経フィルター
-    # -----------------------------------------------------
-
     nikkei_uptrend = bool(
-        df_row["nikkei_uptrend"]
+        df_row[
+            "nikkei_uptrend"
+        ]
     )
 
     if (
@@ -1422,12 +1311,11 @@ def calculate_signal(
             "🟡 監視(日経下落/レンジ)"
         )
 
-    # -----------------------------------------------------
     # ATR TP / SL
-    # -----------------------------------------------------
-
     atr_ratio = float(
-        df_row["atr_ratio"]
+        df_row[
+            "atr_ratio"
+        ]
     )
 
     take_profit = round(
@@ -1465,23 +1353,46 @@ def calculate_signal(
     )
 
     return {
-        "score": ai_score,
-        "signal": final_signal,
-        "nikkei_uptrend": nikkei_uptrend,
-        "technical_score": technical_score_normalized,
-        "price": price,
-        "take_profit": take_profit,
-        "stop_loss": stop_loss,
-        "up_prob": up_percent,
-        "flat_prob": flat_percent,
-        "down_prob": down_percent,
-        "rsi": rsi,
-        "vol": vol_ratio,
+        "score":
+            ai_score,
+
+        "signal":
+            final_signal,
+
+        "nikkei_uptrend":
+            nikkei_uptrend,
+
+        "technical_score":
+            technical_score_normalized,
+
+        "price":
+            price,
+
+        "take_profit":
+            take_profit,
+
+        "stop_loss":
+            stop_loss,
+
+        "up_prob":
+            up_percent,
+
+        "flat_prob":
+            flat_percent,
+
+        "down_prob":
+            down_percent,
+
+        "rsi":
+            rsi,
+
+        "vol":
+            vol_ratio,
     }
 
 
 # =========================================================
-# 5営業日結果判定
+# 売買結果
 # =========================================================
 
 def evaluate_trade(
@@ -1525,8 +1436,7 @@ def evaluate_trade(
             row["Low"]
         )
 
-        # 同日TP/SL両方到達
-        # 保守的にLOSS
+        # 同日TP/SL両ヒット
         if (
             low <= stop_loss
             and
@@ -1596,10 +1506,6 @@ def evaluate_trade(
                 stop_loss
             )
 
-    # -----------------------------------------------------
-    # タイムアウト
-    # -----------------------------------------------------
-
     close_price = float(
         future.iloc[-1]["Close"]
     )
@@ -1641,7 +1547,7 @@ def evaluate_trade(
 
 
 # =========================================================
-# モデル学習
+# モデル
 # =========================================================
 
 def fit_model(
@@ -1756,7 +1662,7 @@ def max_drawdown(
 
 
 # =========================================================
-# Profit Factor
+# PF
 # =========================================================
 
 def profit_factor(
@@ -1814,8 +1720,7 @@ def summarize(
         if print_result:
 
             print(
-                f"\n[{label}] "
-                f"取引なし"
+                f"\n[{label}] 取引なし"
             )
 
         return {}
@@ -1920,120 +1825,121 @@ def summarize(
         print(
             "=============================="
         )
-
         print(
             f"📊 {label}"
         )
-
         print(
             "=============================="
         )
-
         print(
             f"シグナル数: {signals}"
         )
-
         print(
             f"WIN: {wins}"
         )
-
         print(
-            f"LOSS/TIMEOUT_LOSS: "
-            f"{losses}"
+            f"LOSS/TIMEOUT_LOSS: {losses}"
         )
-
         print(
             f"HOLD: {holds}"
         )
-
         print(
             f"勝率: {win_rate:.2f}%"
         )
-
         print(
-            f"平均リターン: "
-            f"{avg_return:.2f}%"
+            f"平均リターン: {avg_return:.2f}%"
         )
-
         print(
             f"PF: {pf_text}"
         )
-
         print(
             f"最大DD: {mdd:.2f}%"
         )
-
         print(
-            f"平均保有日数: "
-            f"{avg_hold_days:.2f}"
+            f"平均保有日数: {avg_hold_days:.2f}"
         )
 
     return {
-        "signals": signals,
-        "wins": wins,
-        "losses": losses,
-        "holds": holds,
-        "win_rate": win_rate,
-        "avg_return": avg_return,
-        "profit_factor": pf,
-        "max_drawdown": mdd,
-        "avg_hold_days": avg_hold_days,
+        "signals":
+            signals,
+
+        "wins":
+            wins,
+
+        "losses":
+            losses,
+
+        "holds":
+            holds,
+
+        "win_rate":
+            win_rate,
+
+        "avg_return":
+            avg_return,
+
+        "profit_factor":
+            pf,
+
+        "max_drawdown":
+            mdd,
+
+        "avg_hold_days":
+            avg_hold_days,
     }
 
 
 # =========================================================
-# サマリーをDiscord用1行に変換
+# Discord用
 # =========================================================
 
-def summary_line(
-    prefix,
+def pf_text(
+    value
+):
+
+    if value is None:
+
+        return "N/A"
+
+    if np.isinf(value):
+
+        return "inf"
+
+    return f"{value:.2f}"
+
+
+def discord_summary_line(
+    name,
     stats
 ):
 
     if not stats:
 
         return (
-            f"{prefix}: データなし"
-        )
-
-    pf_value = (
-        stats["profit_factor"]
-    )
-
-    if np.isinf(
-        pf_value
-    ):
-
-        pf_text = "inf"
-
-    else:
-
-        pf_text = (
-            f"{pf_value:.2f}"
+            f"{name}: データなし"
         )
 
     return (
-        f"{prefix} "
+        f"{name} "
         f"件数={stats['signals']} "
         f"勝率={stats['win_rate']:.2f}% "
-        f"平均={stats['avg_return']:.2f}% "
-        f"PF={pf_text} "
-        f"DD={stats['max_drawdown']:.2f}%"
+        f"平均={stats['avg_return']:+.2f}% "
+        f"PF={pf_text(stats['profit_factor'])} "
+        f"DD={stats['max_drawdown']:+.2f}%"
     )
 
 
 # =========================================================
-# 実行開始
+# START
 # =========================================================
 
+print("")
 print(
     "==========================================="
 )
-
 print(
     "🤖 STOCK AI WALK-FORWARD BACKTEST"
 )
-
 print(
     "==========================================="
 )
@@ -2047,43 +1953,31 @@ print(
 )
 
 print(
-    "日経MA25 > MA75フィルター: ON"
-)
-
-print(
-    f"ATR TP: {ATR_TP_MULTIPLIER}x"
-)
-
-print(
-    f"ATR SL: {ATR_SL_MULTIPLIER}x"
-)
-
-print(
-    f"モデル再学習間隔: "
+    f"再学習間隔: "
     f"{REFIT_EVERY_TRADING_DAYS}営業日"
 )
 
 print(
-    f"予測開始ウォームアップ: "
-    f"{TEST_WARMUP_DAYS}営業日"
+    f"ATR TP: "
+    f"{ATR_TP_MULTIPLIER}x"
 )
 
 print(
-    f"買いシグナル限定: "
-    f"{TRADE_ONLY_BUY_SIGNALS}"
+    f"ATR SL: "
+    f"{ATR_SL_MULTIPLIER}x"
 )
 
+print(
+    "比較:"
+)
 
-if (
-    REFIT_EVERY_TRADING_DAYS
-    <=
-    5
-):
+print(
+    "UP50 / 55 / 60 / 65%"
+)
 
-    print(
-        "⚠ 再学習間隔が短いため、"
-        "実行時間が長くなる可能性があります"
-    )
+print(
+    "日経フィルター ON / OFF"
+)
 
 
 # =========================================================
@@ -2134,7 +2028,6 @@ nikkei = safe_download(
     auto_adjust=True
 )
 
-
 if nikkei is None:
 
     raise RuntimeError(
@@ -2143,7 +2036,7 @@ if nikkei is None:
 
 
 # =========================================================
-# 日経先物
+# 先物
 # =========================================================
 
 futures = safe_download(
@@ -2164,7 +2057,6 @@ futures = safe_download(
     auto_adjust=True
 )
 
-
 if futures is None:
 
     raise RuntimeError(
@@ -2172,12 +2064,16 @@ if futures is None:
     )
 
 
-nikkei = build_nikkei_features(
-    nikkei
+nikkei = (
+    build_nikkei_features(
+        nikkei
+    )
 )
 
-futures = build_futures_features(
-    futures
+futures = (
+    build_futures_features(
+        futures
+    )
 )
 
 
@@ -2191,8 +2087,7 @@ symbol_data = {}
 for ticker in TICKERS:
 
     print(
-        f"データ準備: "
-        f"{ticker}"
+        f"データ準備: {ticker}"
     )
 
     df = prepare_symbol_data(
@@ -2215,9 +2110,7 @@ for ticker in TICKERS:
 
     if df is not None:
 
-        symbol_data[
-            ticker
-        ] = df
+        symbol_data[ticker] = df
 
         print(
             f"  {len(df)} rows"
@@ -2244,20 +2137,15 @@ if not symbol_data:
 all_dates = sorted(
     set().union(
         *[
-            set(
-                df.index
-            )
-            for df in
-            symbol_data.values()
+            set(df.index)
+            for df in symbol_data.values()
         ]
     )
 )
 
-
 prediction_dates_all = [
     d
-    for d in
-    all_dates
+    for d in all_dates
     if (
         start_ts
         <=
@@ -2273,9 +2161,7 @@ prediction_dates_all = [
 # =========================================================
 
 if (
-    len(
-        prediction_dates_all
-    )
+    len(prediction_dates_all)
     >
     TEST_WARMUP_DAYS
 ):
@@ -2332,11 +2218,6 @@ else:
         prediction_dates
     )
 
-    print(
-        "⚠ OOS_DAYSが予測期間以上のため、"
-        "全期間をOOS扱いにします"
-    )
-
 
 split_idx = int(
     len(non_oos_dates)
@@ -2344,20 +2225,17 @@ split_idx = int(
     DEV_SPLIT_RATIO
 )
 
-
 dev_dates = (
     non_oos_dates[
         :split_idx
     ]
 )
 
-
 validation_dates = (
     non_oos_dates[
         split_idx:
     ]
 )
-
 
 phase_by_date = {}
 
@@ -2383,65 +2261,29 @@ for d in oos_dates:
     ] = "OOS"
 
 
-if dev_dates:
-
-    print(
-        f"DEV期間: "
-        f"{len(dev_dates)}営業日 "
-        f"({pd.Timestamp(dev_dates[0]).date()} ～ "
-        f"{pd.Timestamp(dev_dates[-1]).date()})"
-    )
-
-else:
-
-    print(
-        "DEV期間: 0営業日"
-    )
-
-
-if validation_dates:
-
-    print(
-        f"VALIDATION期間: "
-        f"{len(validation_dates)}営業日 "
-        f"({pd.Timestamp(validation_dates[0]).date()} ～ "
-        f"{pd.Timestamp(validation_dates[-1]).date()})"
-    )
-
-else:
-
-    print(
-        "VALIDATION期間: 0営業日"
-    )
-
-
-if oos_dates:
-
-    print(
-        f"OOS期間: "
-        f"{len(oos_dates)}営業日 "
-        f"({pd.Timestamp(oos_dates[0]).date()} ～ "
-        f"{pd.Timestamp(oos_dates[-1]).date()})"
-    )
-
-else:
-
-    print(
-        "OOS期間: 0営業日"
-    )
-
+print(
+    f"DEV: {len(dev_dates)}営業日"
+)
 
 print(
-    "\n⚠ 今回のOOSは、候補条件の選定に"
-    "すでに影響しているため消費済みとして扱います。"
+    f"VALIDATION: "
+    f"{len(validation_dates)}営業日"
+)
+
+print(
+    f"OOS: "
+    f"{len(oos_dates)}営業日"
 )
 
 
 # =========================================================
 # WALK FORWARD
+#
+# ここでは「候補を全部保存」。
+# 条件の比較は後段で行う。
 # =========================================================
 
-results = []
+candidate_history = []
 
 model = None
 
@@ -2456,12 +2298,7 @@ for pos, prediction_date in enumerate(
         prediction_date
     )
 
-
-    if (
-        pos % 20
-        ==
-        0
-    ):
+    if pos % 20 == 0:
 
         print(
             f"進捗: "
@@ -2472,7 +2309,7 @@ for pos, prediction_date in enumerate(
 
 
     # =====================================================
-    # 再学習判定
+    # 再学習
     # =====================================================
 
     need_refit = (
@@ -2487,10 +2324,6 @@ for pos, prediction_date in enumerate(
         REFIT_EVERY_TRADING_DAYS
     )
 
-
-    # =====================================================
-    # 再学習
-    # =====================================================
 
     if need_refit:
 
@@ -2598,11 +2431,6 @@ for pos, prediction_date in enumerate(
 
             model = None
 
-            print(
-                f"⚠ 学習データ不足: "
-                f"{len(train_all)}件"
-            )
-
             continue
 
 
@@ -2631,10 +2459,6 @@ for pos, prediction_date in enumerate(
 
             model = None
 
-            print(
-                "⚠ 3クラス不足"
-            )
-
             continue
 
 
@@ -2657,14 +2481,10 @@ for pos, prediction_date in enumerate(
         print(
             f"  ✅ model refit "
             f"{prediction_date.date()} "
-            f"train_rows={len(train_all)} "
-            f"classes={list(model.classes_)}"
+            f"train_rows="
+            f"{len(train_all)}"
         )
 
-
-    # =====================================================
-    # モデルなし
-    # =====================================================
 
     if model is None:
 
@@ -2672,7 +2492,7 @@ for pos, prediction_date in enumerate(
 
 
     # =====================================================
-    # 当日候補
+    # 当日の全候補
     # =====================================================
 
     candidates = []
@@ -2691,34 +2511,21 @@ for pos, prediction_date in enumerate(
             continue
 
 
-        row = (
-            df.loc[
-                prediction_date
-            ]
-        )
+        row = df.loc[
+            prediction_date
+        ]
 
 
-        # -------------------------------------------------
         # 流動性
-        # -------------------------------------------------
-
         if not bool(
-            row[
-                "liquid"
-            ]
+            row["liquid"]
         ):
 
             continue
 
 
-        # -------------------------------------------------
-        # 特徴量
-        # -------------------------------------------------
-
         x = (
-            row[
-                FEATURES
-            ]
+            row[FEATURES]
             .to_frame()
             .T
         )
@@ -2732,10 +2539,6 @@ for pos, prediction_date in enumerate(
 
             continue
 
-
-        # -------------------------------------------------
-        # 予測
-        # -------------------------------------------------
 
         try:
 
@@ -2794,10 +2597,6 @@ for pos, prediction_date in enumerate(
             continue
 
 
-        # -------------------------------------------------
-        # シグナル
-        # -------------------------------------------------
-
         signal = calculate_signal(
             row,
             up_prob,
@@ -2809,18 +2608,16 @@ for pos, prediction_date in enumerate(
         signal.update(
             {
                 "date":
-                prediction_date.strftime(
-                    "%Y-%m-%d"
-                ),
+                    prediction_date,
 
                 "ticker":
-                ticker,
+                    ticker,
 
                 "company":
-                COMPANY_NAMES.get(
-                    ticker,
-                    ""
-                ),
+                    COMPANY_NAMES.get(
+                        ticker,
+                        ""
+                    ),
             }
         )
 
@@ -2836,7 +2633,7 @@ for pos, prediction_date in enumerate(
 
 
     # =====================================================
-    # スコア順
+    # AIスコア順
     # =====================================================
 
     candidates.sort(
@@ -2847,934 +2644,1137 @@ for pos, prediction_date in enumerate(
 
 
     # =====================================================
-    # BUY限定
+    # 全候補保存
     # =====================================================
 
-    if TRADE_ONLY_BUY_SIGNALS:
+    for candidate in candidates:
 
-        candidates = [
-            x
-            for x
-            in candidates
-            if x["signal"]
-            ==
-            "🔥 強い買い"
-        ]
-
-
-    # =====================================================
-    # TOP_N
-    # =====================================================
-
-    selected = (
-        candidates[
-            :TOP_N
-        ]
-    )
-
-
-    # =====================================================
-    # 5営業日評価
-    # =====================================================
-
-    for rank, s in enumerate(
-        selected,
-        start=1
-    ):
-
-        ticker = (
-            s["ticker"]
-        )
-
-
-        df = (
-            symbol_data[
-                ticker
-            ]
-        )
-
-
-        (
-            result,
-            ret,
-            hold_days,
-            exit_price
-        ) = evaluate_trade(
-            df,
-            prediction_date,
-            s["price"],
-            s["take_profit"],
-            s["stop_loss"]
-        )
-
-
-        results.append(
+        candidate_history.append(
             {
                 "date":
-                s["date"],
+                    candidate[
+                        "date"
+                    ],
 
                 "ticker":
-                ticker,
+                    candidate[
+                        "ticker"
+                    ],
 
-                "rank":
-                rank,
+                "company":
+                    candidate[
+                        "company"
+                    ],
 
                 "score":
-                round(
-                    s["score"],
-                    2
-                ),
-
-                "signal":
-                s["signal"],
-
-                "phase":
-                phase_by_date.get(
-                    prediction_date,
-                    "UNKNOWN"
-                ),
-
-                "nikkei_uptrend":
-                bool(
-                    s["nikkei_uptrend"]
-                ),
+                    float(
+                        candidate[
+                            "score"
+                        ]
+                    ),
 
                 "up_prob":
-                round(
-                    s["up_prob"],
-                    2
-                ),
+                    float(
+                        candidate[
+                            "up_prob"
+                        ]
+                    ),
 
                 "flat_prob":
-                round(
-                    s["flat_prob"],
-                    2
-                ),
+                    float(
+                        candidate[
+                            "flat_prob"
+                        ]
+                    ),
 
                 "down_prob":
-                round(
-                    s["down_prob"],
-                    2
-                ),
+                    float(
+                        candidate[
+                            "down_prob"
+                        ]
+                    ),
 
                 "price":
-                s["price"],
+                    float(
+                        candidate[
+                            "price"
+                        ]
+                    ),
 
                 "take_profit":
-                s["take_profit"],
+                    float(
+                        candidate[
+                            "take_profit"
+                        ]
+                    ),
 
                 "stop_loss":
-                s["stop_loss"],
+                    float(
+                        candidate[
+                            "stop_loss"
+                        ]
+                    ),
 
-                "return":
-                (
-                    round(
-                        float(ret),
-                        4
-                    )
-                    if
-                    pd.notna(ret)
-                    else
-                    np.nan
-                ),
+                "nikkei_uptrend":
+                    bool(
+                        candidate[
+                            "nikkei_uptrend"
+                        ]
+                    ),
 
-                "hold_days":
-                hold_days,
+                "rsi":
+                    float(
+                        candidate[
+                            "rsi"
+                        ]
+                    ),
 
-                "result":
-                result,
-
-                "exit_price":
-                exit_price,
+                "vol":
+                    float(
+                        candidate[
+                            "vol"
+                        ]
+                    ),
             }
         )
 
 
 # =========================================================
-# 結果0件
+# 候補が無い場合
 # =========================================================
 
-if not results:
+if not candidate_history:
 
     raise RuntimeError(
-        "バックテスト結果が0件です"
+        "ウォークフォワード候補が0件です"
     )
+
+
+candidate_df = pd.DataFrame(
+    candidate_history
+)
+
+
+candidate_df["date"] = (
+    pd.to_datetime(
+        candidate_df["date"]
+    )
+)
+
+
+print("")
+print(
+    "✅ ウォークフォワード候補生成完了"
+)
+
+print(
+    f"候補件数: "
+    f"{len(candidate_df)}"
+)
+
+
+# =========================================================
+# 戦略評価
+# =========================================================
+
+def evaluate_strategy_variant(
+    candidate_df,
+    threshold,
+    nikkei_filter
+):
+
+    rows = []
+
+
+    for prediction_date, day_candidates in (
+        candidate_df
+        .groupby(
+            "date"
+        )
+    ):
+
+        day_candidates = (
+            day_candidates
+            .copy()
+        )
+
+
+        # -------------------------------------------------
+        # UP確率
+        # -------------------------------------------------
+
+        day_candidates = (
+            day_candidates[
+                day_candidates[
+                    "up_prob"
+                ]
+                >=
+                threshold
+            ]
+            .copy()
+        )
+
+
+        # -------------------------------------------------
+        # UP > DOWN
+        # -------------------------------------------------
+
+        day_candidates = (
+            day_candidates[
+                day_candidates[
+                    "up_prob"
+                ]
+                >
+                day_candidates[
+                    "down_prob"
+                ]
+            ]
+            .copy()
+        )
+
+
+        # -------------------------------------------------
+        # 横ばい優勢除外
+        # -------------------------------------------------
+
+        day_candidates = (
+            day_candidates[
+                day_candidates[
+                    "flat_prob"
+                ]
+                <
+                50
+            ]
+            .copy()
+        )
+
+
+        # -------------------------------------------------
+        # 日経フィルター
+        # -------------------------------------------------
+
+        if nikkei_filter:
+
+            day_candidates = (
+                day_candidates[
+                    day_candidates[
+                        "nikkei_uptrend"
+                    ]
+                    ==
+                    True
+                ]
+                .copy()
+            )
+
+
+        if day_candidates.empty:
+
+            continue
+
+
+        # -------------------------------------------------
+        # AIスコア順TOP_N
+        # -------------------------------------------------
+
+        selected = (
+            day_candidates
+            .sort_values(
+                "score",
+                ascending=False
+            )
+            .head(TOP_N)
+        )
+
+
+        # -------------------------------------------------
+        # 売買結果
+        # -------------------------------------------------
+
+        for rank, (_, candidate) in enumerate(
+            selected.iterrows(),
+            start=1
+        ):
+
+            ticker = (
+                candidate[
+                    "ticker"
+                ]
+            )
+
+
+            if ticker not in symbol_data:
+
+                continue
+
+
+            df = (
+                symbol_data[
+                    ticker
+                ]
+            )
+
+
+            (
+                result,
+                ret,
+                hold_days,
+                exit_price
+            ) = evaluate_trade(
+                df,
+                prediction_date,
+                candidate["price"],
+                candidate[
+                    "take_profit"
+                ],
+                candidate[
+                    "stop_loss"
+                ]
+            )
+
+
+            if result == "NO_DATA":
+
+                continue
+
+
+            rows.append(
+                {
+                    "date":
+                        prediction_date,
+
+                    "ticker":
+                        ticker,
+
+                    "company":
+                        candidate[
+                            "company"
+                        ],
+
+                    "rank":
+                        rank,
+
+                    "score":
+                        candidate[
+                            "score"
+                        ],
+
+                    "up_prob":
+                        candidate[
+                            "up_prob"
+                        ],
+
+                    "flat_prob":
+                        candidate[
+                            "flat_prob"
+                        ],
+
+                    "down_prob":
+                        candidate[
+                            "down_prob"
+                        ],
+
+                    "nikkei_uptrend":
+                        candidate[
+                            "nikkei_uptrend"
+                        ],
+
+                    "price":
+                        candidate[
+                            "price"
+                        ],
+
+                    "take_profit":
+                        candidate[
+                            "take_profit"
+                        ],
+
+                    "stop_loss":
+                        candidate[
+                            "stop_loss"
+                        ],
+
+                    "result":
+                        result,
+
+                    "return":
+                        ret,
+
+                    "hold_days":
+                        hold_days,
+
+                    "exit_price":
+                        exit_price,
+
+                    "phase":
+                        phase_by_date.get(
+                            prediction_date,
+                            "UNKNOWN"
+                        ),
+
+                    "threshold":
+                        threshold,
+
+                    "nikkei_filter":
+                        nikkei_filter,
+
+                    "strategy":
+                        (
+                            f"UP{threshold}_"
+                            f"NIKKEI"
+                            f"{'ON' if nikkei_filter else 'OFF'}"
+                        ),
+                }
+            )
+
+
+    if not rows:
+
+        return pd.DataFrame()
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# =========================================================
+# 8条件比較
+# =========================================================
+
+strategy_detail_frames = []
+
+strategy_summary_rows = []
+
+
+for threshold in UP_THRESHOLDS:
+
+    for nikkei_filter in (
+        NIKKEI_FILTER_OPTIONS
+    ):
+
+        strategy_name = (
+            f"UP{threshold}_"
+            f"NIKKEI"
+            f"{'ON' if nikkei_filter else 'OFF'}"
+        )
+
+
+        print("")
+        print(
+            "=" * 60
+        )
+
+        print(
+            f"検証中: "
+            f"{strategy_name}"
+        )
+
+        print(
+            "=" * 60
+        )
+
+
+        variant_df = (
+            evaluate_strategy_variant(
+                candidate_df,
+                threshold,
+                nikkei_filter
+            )
+        )
+
+
+        if not variant_df.empty:
+
+            strategy_detail_frames.append(
+                variant_df
+            )
+
+
+        # -------------------------------------------------
+        # 全体
+        # -------------------------------------------------
+
+        stats = summarize(
+            variant_df,
+            strategy_name,
+            print_result=True
+        )
+
+
+        if stats:
+
+            strategy_summary_rows.append(
+                {
+                    "strategy":
+                        strategy_name,
+
+                    "threshold":
+                        threshold,
+
+                    "nikkei_filter":
+                        nikkei_filter,
+
+                    "signals":
+                        stats[
+                            "signals"
+                        ],
+
+                    "wins":
+                        stats[
+                            "wins"
+                        ],
+
+                    "losses":
+                        stats[
+                            "losses"
+                        ],
+
+                    "holds":
+                        stats[
+                            "holds"
+                        ],
+
+                    "win_rate":
+                        stats[
+                            "win_rate"
+                        ],
+
+                    "avg_return":
+                        stats[
+                            "avg_return"
+                        ],
+
+                    "profit_factor":
+                        stats[
+                            "profit_factor"
+                        ],
+
+                    "max_drawdown":
+                        stats[
+                            "max_drawdown"
+                        ],
+
+                    "avg_hold_days":
+                        stats[
+                            "avg_hold_days"
+                        ],
+                }
+            )
+
+        else:
+
+            strategy_summary_rows.append(
+                {
+                    "strategy":
+                        strategy_name,
+
+                    "threshold":
+                        threshold,
+
+                    "nikkei_filter":
+                        nikkei_filter,
+
+                    "signals":
+                        0,
+
+                    "wins":
+                        0,
+
+                    "losses":
+                        0,
+
+                    "holds":
+                        0,
+
+                    "win_rate":
+                        0.0,
+
+                    "avg_return":
+                        0.0,
+
+                    "profit_factor":
+                        0.0,
+
+                    "max_drawdown":
+                        0.0,
+
+                    "avg_hold_days":
+                        0.0,
+                }
+            )
 
 
 # =========================================================
 # 結果DataFrame
 # =========================================================
 
-results_df = pd.DataFrame(
-    results
+strategy_summary_df = pd.DataFrame(
+    strategy_summary_rows
 )
 
 
-results_df["date"] = (
-    pd.to_datetime(
-        results_df["date"]
+strategy_detail_df = (
+    pd.concat(
+        strategy_detail_frames,
+        ignore_index=True
     )
-)
-
-
-results_df = (
-    results_df
-    .sort_values(
-        [
-            "date",
-            "rank"
-        ]
-    )
-    .reset_index(
-        drop=True
-    )
+    if strategy_detail_frames
+    else
+    pd.DataFrame()
 )
 
 
 # =========================================================
-# CSV保存
+# 保存
 # =========================================================
 
-results_df.to_csv(
-    "walk_forward_results.csv",
+strategy_summary_df.to_csv(
+    "walk_forward_strategy_comparison.csv",
+    index=False,
+    encoding="utf-8-sig"
+)
+
+
+candidate_df.to_csv(
+    "walk_forward_all_candidates.csv",
+    index=False,
+    encoding="utf-8-sig"
+)
+
+
+if not strategy_detail_df.empty:
+
+    strategy_detail_df.to_csv(
+        "walk_forward_strategy_details.csv",
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+
+# =========================================================
+# フェーズ別比較
+# =========================================================
+
+phase_rows = []
+
+
+if not strategy_detail_df.empty:
+
+    for (
+        strategy_name,
+        strategy_group
+    ) in (
+        strategy_detail_df
+        .groupby(
+            "strategy"
+        )
+    ):
+
+        for (
+            phase_name,
+            phase_group
+        ) in (
+            strategy_group
+            .groupby(
+                "phase"
+            )
+        ):
+
+            stats = summarize(
+                phase_group,
+                (
+                    f"{strategy_name} "
+                    f"{phase_name}"
+                ),
+                print_result=False
+            )
+
+
+            if not stats:
+
+                continue
+
+
+            phase_rows.append(
+                {
+                    "strategy":
+                        strategy_name,
+
+                    "phase":
+                        phase_name,
+
+                    "signals":
+                        stats[
+                            "signals"
+                        ],
+
+                    "wins":
+                        stats[
+                            "wins"
+                        ],
+
+                    "losses":
+                        stats[
+                            "losses"
+                        ],
+
+                    "holds":
+                        stats[
+                            "holds"
+                        ],
+
+                    "win_rate":
+                        stats[
+                            "win_rate"
+                        ],
+
+                    "avg_return":
+                        stats[
+                            "avg_return"
+                        ],
+
+                    "profit_factor":
+                        stats[
+                            "profit_factor"
+                        ],
+
+                    "max_drawdown":
+                        stats[
+                            "max_drawdown"
+                        ],
+
+                    "avg_hold_days":
+                        stats[
+                            "avg_hold_days"
+                        ],
+                }
+            )
+
+
+phase_strategy_df = pd.DataFrame(
+    phase_rows
+)
+
+
+phase_strategy_df.to_csv(
+    "walk_forward_strategy_phase_comparison.csv",
     index=False,
     encoding="utf-8-sig"
 )
 
 
 # =========================================================
-# TOP別集計
+# DEV / VALIDATIONランキング
 # =========================================================
 
-rank_summaries = {}
+print("")
+print(
+    "=" * 80
+)
+
+print(
+    "🧪 VALIDATIONランキング"
+)
+
+print(
+    "=" * 80
+)
 
 
-for rank in range(
-    1,
-    TOP_N + 1
-):
+validation_df = pd.DataFrame()
 
-    rank_df = (
-        results_df[
-            results_df["rank"]
+
+if not phase_strategy_df.empty:
+
+    validation_df = (
+        phase_strategy_df[
+            phase_strategy_df["phase"]
             ==
-            rank
+            "VALIDATION"
         ]
         .copy()
     )
 
-    rank_summaries[
-        rank
-    ] = summarize(
-        rank_df,
-        f"TOP{rank}"
-    )
+
+    if not validation_df.empty:
+
+        validation_df = (
+            validation_df
+            .sort_values(
+                [
+                    "win_rate",
+                    "profit_factor"
+                ],
+                ascending=[
+                    False,
+                    False
+                ]
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+
+        for _, row in (
+            validation_df
+            .iterrows()
+        ):
+
+            print(
+                f"{row['strategy']:18s} "
+                f"件数={int(row['signals']):4d} "
+                f"勝率={row['win_rate']:6.2f}% "
+                f"平均={row['avg_return']:+6.2f}% "
+                f"PF={pf_text(row['profit_factor'])} "
+                f"DD={row['max_drawdown']:+6.2f}%"
+            )
 
 
 # =========================================================
-# 全体
+# DEVランキング
 # =========================================================
 
-summary_all = summarize(
-    results_df,
-    "全体"
+print("")
+print(
+    "=" * 80
+)
+
+print(
+    "🧪 DEVランキング"
+)
+
+print(
+    "=" * 80
 )
 
 
-# =========================================================
-# 日経上昇
-# =========================================================
-
-summary_up = summarize(
-    results_df[
-        results_df[
-            "nikkei_uptrend"
-        ]
-        ==
-        True
-    ].copy(),
-    "日経MA25 > MA75"
-)
+dev_df = pd.DataFrame()
 
 
-# =========================================================
-# 日経非上昇
-# =========================================================
+if not phase_strategy_df.empty:
 
-summary_down = summarize(
-    results_df[
-        results_df[
-            "nikkei_uptrend"
-        ]
-        ==
-        False
-    ].copy(),
-    "日経MA25 <= MA75"
-)
-
-
-# =========================================================
-# シグナル別
-# =========================================================
-
-SIGNALS = [
-    "🔥 強い買い",
-    "🟡 監視",
-    "🟡 監視(日経下落/レンジ)",
-    "🟡 監視(横ばい優勢)",
-    "🟡 監視(拮抗)",
-    "🔴 買わない",
-]
-
-
-signal_summaries = {}
-
-
-for signal_name in SIGNALS:
-
-    part = (
-        results_df[
-            results_df["signal"]
+    dev_df = (
+        phase_strategy_df[
+            phase_strategy_df["phase"]
             ==
-            signal_name
+            "DEV"
         ]
         .copy()
     )
 
-    signal_summaries[
-        signal_name
-    ] = summarize(
-        part,
-        signal_name
-    )
+
+    if not dev_df.empty:
+
+        dev_df = (
+            dev_df
+            .sort_values(
+                [
+                    "win_rate",
+                    "profit_factor"
+                ],
+                ascending=[
+                    False,
+                    False
+                ]
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+
+        for _, row in (
+            dev_df
+            .iterrows()
+        ):
+
+            print(
+                f"{row['strategy']:18s} "
+                f"件数={int(row['signals']):4d} "
+                f"勝率={row['win_rate']:6.2f}% "
+                f"平均={row['avg_return']:+6.2f}% "
+                f"PF={pf_text(row['profit_factor'])} "
+                f"DD={row['max_drawdown']:+6.2f}%"
+            )
 
 
 # =========================================================
-# AIスコア別
+# OOSランキング
+#
+# 参考確認のみ
+# 条件選定には使わない
 # =========================================================
 
-score_summaries = {}
+print("")
+print(
+    "=" * 80
+)
+
+print(
+    "🧪 OOSランキング"
+)
+
+print(
+    "=" * 80
+)
 
 
-for threshold in [
-    60,
-    70,
-    80
-]:
+oos_df = pd.DataFrame()
 
-    part = (
-        results_df[
-            results_df["score"]
-            >=
-            threshold
+
+if not phase_strategy_df.empty:
+
+    oos_df = (
+        phase_strategy_df[
+            phase_strategy_df["phase"]
+            ==
+            "OOS"
         ]
         .copy()
     )
 
-    score_summaries[
-        threshold
-    ] = summarize(
-        part,
-        f"AIスコア {threshold}以上"
-    )
+
+    if not oos_df.empty:
+
+        oos_df = (
+            oos_df
+            .sort_values(
+                [
+                    "win_rate",
+                    "profit_factor"
+                ],
+                ascending=[
+                    False,
+                    False
+                ]
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+
+        for _, row in (
+            oos_df
+            .iterrows()
+        ):
+
+            print(
+                f"{row['strategy']:18s} "
+                f"件数={int(row['signals']):4d} "
+                f"勝率={row['win_rate']:6.2f}% "
+                f"平均={row['avg_return']:+6.2f}% "
+                f"PF={pf_text(row['profit_factor'])} "
+                f"DD={row['max_drawdown']:+6.2f}%"
+            )
 
 
 # =========================================================
 # 月別
 # =========================================================
 
-results_df["month"] = (
-    results_df["date"]
-    .dt
-    .to_period("M")
-    .astype(str)
-)
+if not strategy_detail_df.empty:
 
-
-monthly = (
-    results_df
-    .groupby(
-        "month"
+    strategy_detail_df["month"] = (
+        strategy_detail_df["date"]
+        .dt
+        .to_period("M")
+        .astype(str)
     )
-    .agg(
-        signals=(
-            "ticker",
-            "size"
-        ),
-        avg_return=(
-            "return",
-            "mean"
-        ),
-        total_return=(
-            "return",
-            "sum"
-        ),
-        wins=(
-            "result",
-            lambda s:
-            (
-                s
-                ==
-                "WIN"
-            ).sum()
-        ),
-        losses=(
-            "result",
-            lambda s:
-            s.isin(
-                [
-                    "LOSS",
-                    "TIMEOUT_LOSS"
-                ]
-            ).sum()
-        ),
-        holds=(
-            "result",
-            lambda s:
-            (
-                s
-                ==
-                "HOLD"
-            ).sum()
-        ),
+
+
+    monthly = (
+        strategy_detail_df
+        .groupby(
+            [
+                "strategy",
+                "month"
+            ]
+        )
+        .agg(
+            signals=(
+                "ticker",
+                "size"
+            ),
+
+            avg_return=(
+                "return",
+                "mean"
+            ),
+
+            total_return=(
+                "return",
+                "sum"
+            ),
+
+            wins=(
+                "result",
+                lambda s:
+                (
+                    s == "WIN"
+                ).sum()
+            ),
+
+            losses=(
+                "result",
+                lambda s:
+                s.isin(
+                    [
+                        "LOSS",
+                        "TIMEOUT_LOSS"
+                    ]
+                ).sum()
+            ),
+
+            holds=(
+                "result",
+                lambda s:
+                (
+                    s == "HOLD"
+                ).sum()
+            ),
+        )
+        .reset_index()
     )
-    .reset_index()
-)
 
 
-monthly["win_rate"] = np.where(
-    (
+    monthly["win_rate"] = np.where(
+        (
+            monthly["wins"]
+            +
+            monthly["losses"]
+        )
+        >
+        0,
+
         monthly["wins"]
-        +
-        monthly["losses"]
+        /
+        (
+            monthly["wins"]
+            +
+            monthly["losses"]
+        )
+        *
+        100,
+
+        0
     )
-    >
-    0,
-    monthly["wins"]
-    /
-    (
-        monthly["wins"]
-        +
-        monthly["losses"]
-    )
-    *
-    100,
-    0
-)
 
 
-monthly.to_csv(
-    "walk_forward_monthly.csv",
-    index=False,
-    encoding="utf-8-sig"
-)
+    monthly.to_csv(
+        "walk_forward_monthly.csv",
+        index=False,
+        encoding="utf-8-sig"
+    )
 
 
 # =========================================================
 # 年別
 # =========================================================
 
-results_df["year"] = (
-    results_df["date"]
-    .dt
-    .year
-)
+if not strategy_detail_df.empty:
 
-
-yearly = (
-    results_df
-    .groupby(
-        "year"
+    strategy_detail_df["year"] = (
+        strategy_detail_df["date"]
+        .dt
+        .year
     )
-    .agg(
-        signals=(
-            "ticker",
-            "size"
-        ),
-        avg_return=(
-            "return",
-            "mean"
-        ),
-        total_return=(
-            "return",
-            "sum"
-        ),
-        wins=(
-            "result",
-            lambda s:
-            (
-                s
-                ==
-                "WIN"
-            ).sum()
-        ),
-        losses=(
-            "result",
-            lambda s:
-            s.isin(
-                [
-                    "LOSS",
-                    "TIMEOUT_LOSS"
-                ]
-            ).sum()
-        ),
-        holds=(
-            "result",
-            lambda s:
-            (
-                s
-                ==
-                "HOLD"
-            ).sum()
-        ),
+
+
+    yearly = (
+        strategy_detail_df
+        .groupby(
+            [
+                "strategy",
+                "year"
+            ]
+        )
+        .agg(
+            signals=(
+                "ticker",
+                "size"
+            ),
+
+            avg_return=(
+                "return",
+                "mean"
+            ),
+
+            total_return=(
+                "return",
+                "sum"
+            ),
+
+            wins=(
+                "result",
+                lambda s:
+                (
+                    s == "WIN"
+                ).sum()
+            ),
+
+            losses=(
+                "result",
+                lambda s:
+                s.isin(
+                    [
+                        "LOSS",
+                        "TIMEOUT_LOSS"
+                    ]
+                ).sum()
+            ),
+
+            holds=(
+                "result",
+                lambda s:
+                (
+                    s == "HOLD"
+                ).sum()
+            ),
+        )
+        .reset_index()
     )
-    .reset_index()
-)
 
 
-yearly["win_rate"] = np.where(
-    (
+    yearly["win_rate"] = np.where(
+        (
+            yearly["wins"]
+            +
+            yearly["losses"]
+        )
+        >
+        0,
+
         yearly["wins"]
-        +
-        yearly["losses"]
-    )
-    >
-    0,
-    yearly["wins"]
-    /
-    (
-        yearly["wins"]
-        +
-        yearly["losses"]
-    )
-    *
-    100,
-    0
-)
-
-
-yearly.to_csv(
-    "walk_forward_yearly.csv",
-    index=False,
-    encoding="utf-8-sig"
-)
-
-
-# =========================================================
-# 年・日経トレンド別
-# =========================================================
-
-trend_yearly = (
-    results_df
-    .groupby(
-        [
-            "year",
-            "nikkei_uptrend"
-        ]
-    )
-    .agg(
-        signals=(
-            "ticker",
-            "size"
-        ),
-        avg_return=(
-            "return",
-            "mean"
-        ),
-        total_return=(
-            "return",
-            "sum"
-        ),
-        wins=(
-            "result",
-            lambda s:
-            (
-                s
-                ==
-                "WIN"
-            ).sum()
-        ),
-        losses=(
-            "result",
-            lambda s:
-            s.isin(
-                [
-                    "LOSS",
-                    "TIMEOUT_LOSS"
-                ]
-            ).sum()
-        ),
-    )
-    .reset_index()
-)
-
-
-trend_yearly["win_rate"] = np.where(
-    (
-        trend_yearly["wins"]
-        +
-        trend_yearly["losses"]
-    )
-    >
-    0,
-    trend_yearly["wins"]
-    /
-    (
-        trend_yearly["wins"]
-        +
-        trend_yearly["losses"]
-    )
-    *
-    100,
-    0
-)
-
-
-trend_yearly.to_csv(
-    "walk_forward_trend_yearly.csv",
-    index=False,
-    encoding="utf-8-sig"
-)
-
-
-# =========================================================
-# DEV / VALIDATION / OOS
-# =========================================================
-
-print("")
-print(
-    "=" * 60
-)
-
-print(
-    "🧪 DEV / VALIDATION / OOS 比較"
-)
-
-print(
-    "(候補条件: 日経上昇+UP≥60%のみ売買)"
-)
-
-print(
-    "=" * 60
-)
-
-
-phase_summaries = {}
-
-
-for phase_label in [
-    "DEV",
-    "VALIDATION",
-    "OOS"
-]:
-
-    phase_df = (
-        results_df[
-            results_df["phase"]
-            ==
-            phase_label
-        ]
-        .copy()
-    )
-
-    stats = summarize(
-        phase_df,
-        f"{phase_label}期間"
-    )
-
-    phase_summaries[
-        phase_label
-    ] = stats
-
-
-    if (
-        phase_label
-        ==
-        "OOS"
-        and
-        len(phase_df)
-        <
-        30
-    ):
-
-        print(
-            f"⚠ OOS件数が"
-            f"{len(phase_df)}件と少ないため、"
-            "この数字だけで判断しないこと。"
+        /
+        (
+            yearly["wins"]
+            +
+            yearly["losses"]
         )
+        *
+        100,
 
-
-    if (
-        phase_label
-        ==
-        "VALIDATION"
-        and
-        len(phase_df)
-        <
-        30
-    ):
-
-        print(
-            f"⚠ VALIDATION件数が"
-            f"{len(phase_df)}件と少ないため、"
-            "DEVとの比較の信頼性は限定的。"
-        )
-
-
-# =========================================================
-# フェーズCSV
-# =========================================================
-
-phase_summary_rows = []
-
-
-for phase_label, stats in (
-    phase_summaries.items()
-):
-
-    if not stats:
-
-        phase_summary_rows.append(
-            {
-                "phase":
-                phase_label,
-
-                "signals":
-                0,
-            }
-        )
-
-        continue
-
-
-    row = {
-        "phase":
-        phase_label
-    }
-
-
-    row.update(
-        stats
+        0
     )
 
 
-    phase_summary_rows.append(
-        row
-    )
-
-
-pd.DataFrame(
-    phase_summary_rows
-).to_csv(
-    "walk_forward_phase_summary.csv",
-    index=False,
-    encoding="utf-8-sig"
-)
-
-
-# =========================================================
-# 最終サマリー
-# =========================================================
-
-print("")
-print(
-    "=" * 60
-)
-
-print(
-    "📌 WALK-FORWARD FINAL SUMMARY"
-)
-
-print(
-    "=" * 60
-)
-
-print(
-    f"期間: "
-    f"{START_DATE} ～ {END_DATE}"
-)
-
-print(
-    f"予測件数: "
-    f"{len(results_df)}"
-)
-
-print(
-    f"TOP_N: "
-    f"{TOP_N}"
-)
-
-print(
-    "日経MA25 > MA75: ON"
-)
-
-print(
-    f"REFIT: "
-    f"{REFIT_EVERY_TRADING_DAYS}営業日"
-)
-
-print(
-    f"BUY限定: "
-    f"{TRADE_ONLY_BUY_SIGNALS}"
-)
-
-
-if summary_all:
-
-    pf_all = (
-        summary_all[
-            "profit_factor"
-        ]
-    )
-
-
-    if np.isinf(
-        pf_all
-    ):
-
-        pf_all_text = "inf"
-
-    else:
-
-        pf_all_text = (
-            f"{pf_all:.2f}"
-        )
-
-
-    print(
-        f"\n勝率: "
-        f"{summary_all['win_rate']:.2f}%"
-    )
-
-    print(
-        f"平均リターン: "
-        f"{summary_all['avg_return']:.2f}%"
-    )
-
-    print(
-        f"PF: "
-        f"{pf_all_text}"
-    )
-
-    print(
-        f"最大DD: "
-        f"{summary_all['max_drawdown']:.2f}%"
+    yearly.to_csv(
+        "walk_forward_yearly.csv",
+        index=False,
+        encoding="utf-8-sig"
     )
 
 
 # =========================================================
-# 日経上昇比較
-# =========================================================
-
-if summary_up:
-
-    print(
-        "\n📈 日経上昇トレンド時"
-    )
-
-    print(
-        f"勝率: "
-        f"{summary_up['win_rate']:.2f}%"
-    )
-
-    print(
-        f"平均リターン: "
-        f"{summary_up['avg_return']:.2f}%"
-    )
-
-
-    pf_up = (
-        summary_up[
-            "profit_factor"
-        ]
-    )
-
-
-    if np.isinf(
-        pf_up
-    ):
-
-        pf_up_text = "inf"
-
-    else:
-
-        pf_up_text = (
-            f"{pf_up:.2f}"
-        )
-
-
-    print(
-        f"PF: "
-        f"{pf_up_text}"
-    )
-
-    print(
-        f"最大DD: "
-        f"{summary_up['max_drawdown']:.2f}%"
-    )
-
-
-# =========================================================
-# 日経非上昇比較
-# =========================================================
-
-if summary_down:
-
-    print(
-        "\n📉 日経非上昇トレンド時"
-    )
-
-    print(
-        f"勝率: "
-        f"{summary_down['win_rate']:.2f}%"
-    )
-
-    print(
-        f"平均リターン: "
-        f"{summary_down['avg_return']:.2f}%"
-    )
-
-
-    pf_down = (
-        summary_down[
-            "profit_factor"
-        ]
-    )
-
-
-    if np.isinf(
-        pf_down
-    ):
-
-        pf_down_text = "inf"
-
-    else:
-
-        pf_down_text = (
-            f"{pf_down:.2f}"
-        )
-
-
-    print(
-        f"PF: "
-        f"{pf_down_text}"
-    )
-
-    print(
-        f"最大DD: "
-        f"{summary_down['max_drawdown']:.2f}%"
-    )
-
-
-# =========================================================
-# Discordメッセージ作成
+# Discord
 # =========================================================
 
 discord_lines = []
 
 
 discord_lines.append(
-    "📊 AI WALK FORWARD BACKTEST"
+    "🧪 AI WALK FORWARD STRATEGY TEST"
 )
 
 discord_lines.append(
@@ -3786,15 +3786,15 @@ discord_lines.append(
 )
 
 discord_lines.append(
-    f"TOP：{TOP_N}"
+    "比較：UP50 / 55 / 60 / 65%"
+)
+
+discord_lines.append(
+    "日経フィルター：ON / OFF"
 )
 
 discord_lines.append(
     f"再学習：{REFIT_EVERY_TRADING_DAYS}営業日"
-)
-
-discord_lines.append(
-    f"予測：{FORWARD_DAYS}営業日"
 )
 
 discord_lines.append(
@@ -3805,60 +3805,43 @@ discord_lines.append(
     f"ATR SL：{ATR_SL_MULTIPLIER}x"
 )
 
-discord_lines.append(
-    f"買い限定：{TRADE_ONLY_BUY_SIGNALS}"
-)
-
 discord_lines.append("")
 
 
 # =========================================================
-# Discord 全体
-# =========================================================
-
-if summary_all:
-
-    discord_lines.append(
-        "【全体】"
-    )
-
-    discord_lines.append(
-        summary_line(
-            "",
-            summary_all
-        )
-    )
-
-    discord_lines.append("")
-
-
-# =========================================================
-# Discord TOP別
+# Validation
 # =========================================================
 
 discord_lines.append(
-    "【TOP別】"
+    "【VALIDATION】"
 )
 
 
-for rank in range(
-    1,
-    TOP_N + 1
+if (
+    validation_df
+    is not None
+    and
+    not validation_df.empty
 ):
 
-    rank_stats = (
-        rank_summaries
-        .get(
-            rank,
-            {}
+    for _, row in (
+        validation_df
+        .head(8)
+        .iterrows()
+    ):
+
+        discord_lines.append(
+            f"{row['strategy']} "
+            f"件数={int(row['signals'])} "
+            f"勝率={row['win_rate']:.2f}% "
+            f"平均={row['avg_return']:+.2f}% "
+            f"PF={pf_text(row['profit_factor'])}"
         )
-    )
+
+else:
 
     discord_lines.append(
-        summary_line(
-            f"#{rank}",
-            rank_stats
-        )
+        "データなし"
     )
 
 
@@ -3866,83 +3849,39 @@ discord_lines.append("")
 
 
 # =========================================================
-# Discord DEV
+# DEV
 # =========================================================
 
-dev_stats = (
-    phase_summaries
-    .get(
-        "DEV",
-        {}
-    )
+discord_lines.append(
+    "【DEV】"
 )
 
 
-if dev_stats:
+if (
+    dev_df
+    is not None
+    and
+    not dev_df.empty
+):
 
-    discord_lines.append(
-        "【DEV】"
-    )
+    for _, row in (
+        dev_df
+        .head(8)
+        .iterrows()
+    ):
 
-    discord_lines.append(
-        summary_line(
-            "",
-            dev_stats
+        discord_lines.append(
+            f"{row['strategy']} "
+            f"件数={int(row['signals'])} "
+            f"勝率={row['win_rate']:.2f}% "
+            f"平均={row['avg_return']:+.2f}% "
+            f"PF={pf_text(row['profit_factor'])}"
         )
-    )
 
-
-# =========================================================
-# Discord VALIDATION
-# =========================================================
-
-validation_stats = (
-    phase_summaries
-    .get(
-        "VALIDATION",
-        {}
-    )
-)
-
-
-if validation_stats:
+else:
 
     discord_lines.append(
-        "【VALIDATION】"
-    )
-
-    discord_lines.append(
-        summary_line(
-            "",
-            validation_stats
-        )
-    )
-
-
-# =========================================================
-# Discord OOS
-# =========================================================
-
-oos_stats = (
-    phase_summaries
-    .get(
-        "OOS",
-        {}
-    )
-)
-
-
-if oos_stats:
-
-    discord_lines.append(
-        "【OOS】"
-    )
-
-    discord_lines.append(
-        summary_line(
-            "",
-            oos_stats
-        )
+        "データなし"
     )
 
 
@@ -3950,55 +3889,108 @@ discord_lines.append("")
 
 
 # =========================================================
-# Discord 日経比較
+# OOS
 # =========================================================
 
-if summary_up:
+discord_lines.append(
+    "【OOS・参考確認】"
+)
 
-    discord_lines.append(
-        "【日経上昇】"
-    )
 
-    discord_lines.append(
-        summary_line(
-            "",
-            summary_up
+if (
+    oos_df
+    is not None
+    and
+    not oos_df.empty
+):
+
+    for _, row in (
+        oos_df
+        .head(8)
+        .iterrows()
+    ):
+
+        discord_lines.append(
+            f"{row['strategy']} "
+            f"件数={int(row['signals'])} "
+            f"勝率={row['win_rate']:.2f}% "
+            f"平均={row['avg_return']:+.2f}% "
+            f"PF={pf_text(row['profit_factor'])}"
         )
+
+else:
+
+    discord_lines.append(
+        "データなし"
     )
 
 
-if summary_down:
+discord_lines.append("")
 
-    discord_lines.append(
-        "【日経非上昇】"
-    )
 
-    discord_lines.append(
-        summary_line(
-            "",
-            summary_down
+# =========================================================
+# 全体の8条件ランキング
+# =========================================================
+
+discord_lines.append(
+    "【全期間比較】"
+)
+
+
+if not strategy_summary_df.empty:
+
+    ranking_all = (
+        strategy_summary_df
+        .sort_values(
+            [
+                "win_rate",
+                "profit_factor"
+            ],
+            ascending=[
+                False,
+                False
+            ]
         )
+        .head(8)
+    )
+
+
+    for _, row in (
+        ranking_all
+        .iterrows()
+    ):
+
+        discord_lines.append(
+            f"{row['strategy']} "
+            f"件数={int(row['signals'])} "
+            f"勝率={row['win_rate']:.2f}% "
+            f"平均={row['avg_return']:+.2f}% "
+            f"PF={pf_text(row['profit_factor'])}"
+        )
+
+else:
+
+    discord_lines.append(
+        "データなし"
     )
 
 
 discord_lines.append("")
 
 discord_lines.append(
-    "📁 walk_forward_results.csv"
+    "📁 walk_forward_strategy_comparison.csv"
 )
 
 discord_lines.append(
-    "📁 walk_forward_phase_summary.csv"
+    "📁 walk_forward_strategy_phase_comparison.csv"
 )
 
-discord_message = "\n".join(
-    discord_lines
+discord_message = (
+    "\n".join(
+        discord_lines
+    )
 )
 
-
-# =========================================================
-# Discord送信
-# =========================================================
 
 print("")
 print(
@@ -4006,7 +3998,7 @@ print(
 )
 
 print(
-    "📨 Discordへウォークフォワード結果を送信"
+    "📨 戦略比較結果をDiscordへ送信"
 )
 
 print(
@@ -4024,16 +4016,40 @@ send_discord(
 
 
 # =========================================================
-# 保存ファイル表示
+# 完了
 # =========================================================
 
 print("")
 print(
-    "✅ 保存ファイル"
+    "==========================================="
 )
 
 print(
-    "  walk_forward_results.csv"
+    "✅ WALK-FORWARD STRATEGY TEST 完了"
+)
+
+print(
+    "==========================================="
+)
+
+print(
+    "保存:"
+)
+
+print(
+    "  walk_forward_all_candidates.csv"
+)
+
+print(
+    "  walk_forward_strategy_comparison.csv"
+)
+
+print(
+    "  walk_forward_strategy_details.csv"
+)
+
+print(
+    "  walk_forward_strategy_phase_comparison.csv"
 )
 
 print(
@@ -4042,17 +4058,4 @@ print(
 
 print(
     "  walk_forward_yearly.csv"
-)
-
-print(
-    "  walk_forward_trend_yearly.csv"
-)
-
-print(
-    "  walk_forward_phase_summary.csv"
-)
-
-print("")
-print(
-    "✅ WALK-FORWARD BACKTEST 完了"
 )
