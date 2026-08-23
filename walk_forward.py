@@ -4,6 +4,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 
 from sklearn.ensemble import RandomForestClassifier
@@ -12,8 +13,69 @@ warnings.filterwarnings("ignore")
 
 
 # =========================================================
-# WALK-FORWARD BACKTEST
+# DISCORD
 # =========================================================
+
+WEBHOOK_URL = os.getenv(
+    "DISCORD_WEBHOOK"
+)
+
+
+def send_discord(message):
+
+    if not WEBHOOK_URL:
+
+        print(
+            "⚠ DISCORD_WEBHOOK が設定されていないため、"
+            "Discord通知をスキップします"
+        )
+
+        return
+
+    try:
+
+        if len(message) > 1900:
+
+            message = message[:1900]
+
+        response = requests.post(
+            WEBHOOK_URL,
+            json={
+                "content": message
+            },
+            timeout=30
+        )
+
+        print(
+            f"Discord status = "
+            f"{response.status_code}"
+        )
+
+        if response.status_code == 204:
+
+            print(
+                "✅ Discord送信成功"
+            )
+
+        else:
+
+            print(
+                "❌ Discord送信失敗"
+            )
+
+            print(
+                response.text
+            )
+
+    except Exception as e:
+
+        print(
+            f"❌ Discord通知エラー: {e}"
+        )
+
+
+# =========================================================
+# WALK-FORWARD BACKTEST
 #
 # 予測日より未来の情報を学習に使わない。
 #
@@ -21,26 +83,14 @@ warnings.filterwarnings("ignore")
 # 1 = 横ばい
 # 2 = 上昇
 #
-# target:
-#   3営業日後の価格
-#   ATRベースでクラス分け
-#
-# 売買:
-#   日経MA25 > MA75
-#   かつ UP確率 >= 60%
-#   の場合のみ「🔥 強い買い」
-#
-# 流動性:
-#   20日平均出来高 >= MIN_AVG_VOLUME
-#
-# TP:
-#   ATR × 3.0
-#
-# SL:
-#   ATR × 1.5
-#
-# 同日TP/SL両ヒット:
-#   保守的にLOSS
+# ATRベースtarget
+# ATR TP / SL
+# 日経フィルター
+# 流動性フィルター
+# DEV / VALIDATION / OOS
+# TOP1～TOP_N
+# 月別・年別集計
+# Discord通知
 #
 # Python 3.11対応
 # =========================================================
@@ -101,6 +151,9 @@ TEST_WARMUP_DAYS = int(
 
 # =========================================================
 # 再学習間隔
+#
+# 1  = 毎営業日
+# 20 = 20営業日ごと
 # =========================================================
 
 REFIT_EVERY_TRADING_DAYS = int(
@@ -123,7 +176,7 @@ RANDOM_STATE = 42
 
 
 # =========================================================
-# 買いシグナル限定
+# BUY限定
 # =========================================================
 
 TRADE_ONLY_BUY_SIGNALS = (
@@ -172,7 +225,7 @@ TICKERS = [
     "8306.T",
     "5803.T",
     "6526.T",
-    "6613.T",
+    "6613.T"
 ]
 
 
@@ -196,6 +249,7 @@ COMPANY_NAMES = {
 
 # =========================================================
 # FEATURES
+# stock_scan.py と共通
 # =========================================================
 
 FEATURES = [
@@ -236,7 +290,10 @@ def safe_download(
     **kwargs
 ):
 
-    for attempt in range(1, retries + 1):
+    for attempt in range(
+        1,
+        retries + 1
+    ):
 
         try:
 
@@ -354,10 +411,6 @@ def calc_rsi(
 
 # =========================================================
 # ADX
-#
-# ※ADX内部のATR平滑化はWilder方式(EWM alpha=1/period)が
-# 正しい標準アルゴリズムであり、本番stock_scan.pyの
-# calc_adx()も同じ実装。ここは変更不要。
 # =========================================================
 
 def calc_adx(
@@ -388,10 +441,14 @@ def calc_adx(
         [
             high - low,
             (
-                high - prev_close
+                high
+                -
+                prev_close
             ).abs(),
             (
-                low - prev_close
+                low
+                -
+                prev_close
             ).abs(),
         ],
         axis=1
@@ -409,7 +466,9 @@ def calc_adx(
 
     plus_dm = np.where(
         (
-            up_move > down_move
+            up_move
+            >
+            down_move
         )
         &
         (
@@ -421,7 +480,9 @@ def calc_adx(
 
     minus_dm = np.where(
         (
-            down_move > up_move
+            down_move
+            >
+            up_move
         )
         &
         (
@@ -516,23 +577,7 @@ def calc_adx(
 
 
 # =========================================================
-# ATR(atr_ratio特徴量・TP/SL計算用)
-#
-# 【修正・重要】
-# 以前の版はここで tr.ewm(alpha=1/period, adjust=False)
-# を使っていたが、これは本番stock_scan.pyのATR計算
-# (tr.rolling(14).mean() = 単純移動平均)と異なっていた。
-#
-# atr_ratioは
-#   ・モデルの学習特徴量
-#   ・3クラス分類targetのしきい値
-#   ・TP/SLの計算(ATR×3.0 / ATR×1.5)
-# のすべてに使われる値のため、本番と計算方法がズレると
-# 「本番ロジックの再現」という前提が崩れてしまう。
-# 本番と同じ rolling(14).mean() に統一する。
-#
-# (ADX内部で使うATRはWilder方式のEWMが正しく、それは
-# calc_adx()内に別途実装済みでそちらは変更していない)
+# ATR
 # =========================================================
 
 def calc_atr(
@@ -563,10 +608,14 @@ def calc_atr(
         [
             high - low,
             (
-                high - prev_close
+                high
+                -
+                prev_close
             ).abs(),
             (
-                low - prev_close
+                low
+                -
+                prev_close
             ).abs(),
         ],
         axis=1
@@ -574,10 +623,12 @@ def calc_atr(
         axis=1
     )
 
-    # 本番stock_scan.pyと同じ単純移動平均(rolling)
     atr = (
         tr
-        .rolling(period)
+        .ewm(
+            alpha=1 / period,
+            adjust=False
+        )
         .mean()
     )
 
@@ -716,7 +767,8 @@ def create_features(df):
     # -----------------------------------------------------
 
     df["_stock_ret5"] = (
-        close.pct_change(5)
+        close
+        .pct_change(5)
     )
 
     # -----------------------------------------------------
@@ -892,13 +944,15 @@ def build_nikkei_features(
     )
 
     nikkei["nikkei_return_5d"] = (
-        close.pct_change(5)
+        close
+        .pct_change(5)
         *
         100
     )
 
     nikkei["nikkei_ret5_raw"] = (
-        close.pct_change(5)
+        close
+        .pct_change(5)
     )
 
     return nikkei
@@ -920,7 +974,8 @@ def build_futures_features(
     )
 
     futures["future_return"] = (
-        close.pct_change()
+        close
+        .pct_change()
     )
 
     futures["future_ma5"] = (
@@ -943,7 +998,7 @@ def build_futures_features(
         close.shift(1)
     )
 
-    # 先物だけ1日ラグ
+    # 先物のみ1日ラグ
     for col in [
         "future_return",
         "future_ma5",
@@ -1054,7 +1109,7 @@ def prepare_symbol_data(
     )
 
     # -----------------------------------------------------
-    # 3営業日後ターゲット
+    # target
     # -----------------------------------------------------
 
     future_price = (
@@ -1116,7 +1171,7 @@ def prepare_symbol_data(
     )
 
     # -----------------------------------------------------
-    # 特徴量欠損除去
+    # 特徴量欠損
     # -----------------------------------------------------
 
     df = df.dropna(
@@ -1131,7 +1186,7 @@ def prepare_symbol_data(
 
 
 # =========================================================
-# シグナル計算
+# シグナル
 # =========================================================
 
 def calculate_signal(
@@ -1192,29 +1247,37 @@ def calculate_signal(
         ) * 100
 
     # -----------------------------------------------------
-    # テクニカル
+    # テクニカルスコア
     # -----------------------------------------------------
 
     technical_score = 0
 
     if rsi < 35:
+
         technical_score += 25
 
     if macd > signal:
+
         technical_score += 25
 
     if ma25 > ma75:
+
         technical_score += 20
 
     if vol_ratio > 1.5:
+
         technical_score += 20
 
-    if np.isfinite(distance):
+    if np.isfinite(
+        distance
+    ):
 
         if distance > -10:
+
             technical_score += 15
 
         elif distance > -20:
+
             technical_score += 8
 
     if float(
@@ -1432,7 +1495,9 @@ def evaluate_trade(
     future = (
         day_df
         .loc[
-            day_df.index > entry_date
+            day_df.index
+            >
+            entry_date
         ]
         .head(5)
         .copy()
@@ -1460,7 +1525,8 @@ def evaluate_trade(
             row["Low"]
         )
 
-        # 同日両ヒットはLOSS
+        # 同日TP/SL両方到達
+        # 保守的にLOSS
         if (
             low <= stop_loss
             and
@@ -1531,7 +1597,7 @@ def evaluate_trade(
             )
 
     # -----------------------------------------------------
-    # 5営業日終了
+    # タイムアウト
     # -----------------------------------------------------
 
     close_price = float(
@@ -1556,11 +1622,15 @@ def evaluate_trade(
         ret < 0
     ):
 
-        result = "TIMEOUT_LOSS"
+        result = (
+            "TIMEOUT_LOSS"
+        )
 
     else:
 
-        result = "HOLD"
+        result = (
+            "HOLD"
+        )
 
     return (
         result,
@@ -1580,7 +1650,9 @@ def fit_model(
 
     usable = (
         train_df[
-            train_df["target_valid"]
+            train_df[
+                "target_valid"
+            ]
         ]
         .copy()
     )
@@ -1733,14 +1805,18 @@ def profit_factor(
 
 def summarize(
     result_df,
-    label
+    label,
+    print_result=True
 ):
 
     if result_df.empty:
 
-        print(
-            f"\n[{label}] 取引なし"
-        )
+        if print_result:
+
+            print(
+                f"\n[{label}] "
+                f"取引なし"
+            )
 
         return {}
 
@@ -1828,29 +1904,69 @@ def summarize(
         .mean()
     )
 
-    if np.isinf(pf):
+    if print_result:
 
-        pf_text = "inf"
+        if np.isinf(pf):
 
-    else:
+            pf_text = "inf"
 
-        pf_text = (
-            f"{pf:.2f}"
+        else:
+
+            pf_text = (
+                f"{pf:.2f}"
+            )
+
+        print("")
+        print(
+            "=============================="
         )
 
-    print("")
-    print("==============================")
-    print(f"📊 {label}")
-    print("==============================")
-    print(f"シグナル数: {signals}")
-    print(f"WIN: {wins}")
-    print(f"LOSS/TIMEOUT_LOSS: {losses}")
-    print(f"HOLD: {holds}")
-    print(f"勝率: {win_rate:.2f}%")
-    print(f"平均リターン: {avg_return:.2f}%")
-    print(f"PF: {pf_text}")
-    print(f"最大DD: {mdd:.2f}%")
-    print(f"平均保有日数: {avg_hold_days:.2f}")
+        print(
+            f"📊 {label}"
+        )
+
+        print(
+            "=============================="
+        )
+
+        print(
+            f"シグナル数: {signals}"
+        )
+
+        print(
+            f"WIN: {wins}"
+        )
+
+        print(
+            f"LOSS/TIMEOUT_LOSS: "
+            f"{losses}"
+        )
+
+        print(
+            f"HOLD: {holds}"
+        )
+
+        print(
+            f"勝率: {win_rate:.2f}%"
+        )
+
+        print(
+            f"平均リターン: "
+            f"{avg_return:.2f}%"
+        )
+
+        print(
+            f"PF: {pf_text}"
+        )
+
+        print(
+            f"最大DD: {mdd:.2f}%"
+        )
+
+        print(
+            f"平均保有日数: "
+            f"{avg_hold_days:.2f}"
+        )
 
     return {
         "signals": signals,
@@ -1866,7 +1982,48 @@ def summarize(
 
 
 # =========================================================
-# MAIN
+# サマリーをDiscord用1行に変換
+# =========================================================
+
+def summary_line(
+    prefix,
+    stats
+):
+
+    if not stats:
+
+        return (
+            f"{prefix}: データなし"
+        )
+
+    pf_value = (
+        stats["profit_factor"]
+    )
+
+    if np.isinf(
+        pf_value
+    ):
+
+        pf_text = "inf"
+
+    else:
+
+        pf_text = (
+            f"{pf_value:.2f}"
+        )
+
+    return (
+        f"{prefix} "
+        f"件数={stats['signals']} "
+        f"勝率={stats['win_rate']:.2f}% "
+        f"平均={stats['avg_return']:.2f}% "
+        f"PF={pf_text} "
+        f"DD={stats['max_drawdown']:.2f}%"
+    )
+
+
+# =========================================================
+# 実行開始
 # =========================================================
 
 print(
@@ -1916,7 +2073,12 @@ print(
     f"{TRADE_ONLY_BUY_SIGNALS}"
 )
 
-if REFIT_EVERY_TRADING_DAYS <= 5:
+
+if (
+    REFIT_EVERY_TRADING_DAYS
+    <=
+    5
+):
 
     print(
         "⚠ 再学習間隔が短いため、"
@@ -1962,13 +2124,16 @@ nikkei = safe_download(
     end=(
         end_ts
         +
-        pd.Timedelta(days=1)
+        pd.Timedelta(
+            days=1
+        )
     ).strftime(
         "%Y-%m-%d"
     ),
     interval="1d",
     auto_adjust=True
 )
+
 
 if nikkei is None:
 
@@ -1978,7 +2143,7 @@ if nikkei is None:
 
 
 # =========================================================
-# 先物
+# 日経先物
 # =========================================================
 
 futures = safe_download(
@@ -1989,13 +2154,16 @@ futures = safe_download(
     end=(
         end_ts
         +
-        pd.Timedelta(days=1)
+        pd.Timedelta(
+            days=1
+        )
     ).strftime(
         "%Y-%m-%d"
     ),
     interval="1d",
     auto_adjust=True
 )
+
 
 if futures is None:
 
@@ -2014,15 +2182,17 @@ futures = build_futures_features(
 
 
 # =========================================================
-# 各銘柄データ準備
+# 各銘柄準備
 # =========================================================
 
 symbol_data = {}
 
+
 for ticker in TICKERS:
 
     print(
-        f"データ準備: {ticker}"
+        f"データ準備: "
+        f"{ticker}"
     )
 
     df = prepare_symbol_data(
@@ -2035,7 +2205,9 @@ for ticker in TICKERS:
         (
             end_ts
             +
-            pd.Timedelta(days=1)
+            pd.Timedelta(
+                days=1
+            )
         ).strftime(
             "%Y-%m-%d"
         )
@@ -2043,7 +2215,9 @@ for ticker in TICKERS:
 
     if df is not None:
 
-        symbol_data[ticker] = df
+        symbol_data[
+            ticker
+        ] = df
 
         print(
             f"  {len(df)} rows"
@@ -2070,15 +2244,20 @@ if not symbol_data:
 all_dates = sorted(
     set().union(
         *[
-            set(df.index)
-            for df in symbol_data.values()
+            set(
+                df.index
+            )
+            for df in
+            symbol_data.values()
         ]
     )
 )
 
+
 prediction_dates_all = [
     d
-    for d in all_dates
+    for d in
+    all_dates
     if (
         start_ts
         <=
@@ -2094,7 +2273,9 @@ prediction_dates_all = [
 # =========================================================
 
 if (
-    len(prediction_dates_all)
+    len(
+        prediction_dates_all
+    )
     >
     TEST_WARMUP_DAYS
 ):
@@ -2125,7 +2306,11 @@ print(
 # DEV / VALIDATION / OOS
 # =========================================================
 
-if len(prediction_dates) > OOS_DAYS:
+if (
+    len(prediction_dates)
+    >
+    OOS_DAYS
+):
 
     non_oos_dates = (
         prediction_dates[
@@ -2159,11 +2344,13 @@ split_idx = int(
     DEV_SPLIT_RATIO
 )
 
+
 dev_dates = (
     non_oos_dates[
         :split_idx
     ]
 )
+
 
 validation_dates = (
     non_oos_dates[
@@ -2171,7 +2358,9 @@ validation_dates = (
     ]
 )
 
+
 phase_by_date = {}
+
 
 for d in dev_dates:
 
@@ -2179,11 +2368,13 @@ for d in dev_dates:
         pd.Timestamp(d)
     ] = "DEV"
 
+
 for d in validation_dates:
 
     phase_by_date[
         pd.Timestamp(d)
     ] = "VALIDATION"
+
 
 for d in oos_dates:
 
@@ -2195,7 +2386,8 @@ for d in oos_dates:
 if dev_dates:
 
     print(
-        f"DEV期間: {len(dev_dates)}営業日 "
+        f"DEV期間: "
+        f"{len(dev_dates)}営業日 "
         f"({pd.Timestamp(dev_dates[0]).date()} ～ "
         f"{pd.Timestamp(dev_dates[-1]).date()})"
     )
@@ -2226,7 +2418,8 @@ else:
 if oos_dates:
 
     print(
-        f"OOS期間: {len(oos_dates)}営業日 "
+        f"OOS期間: "
+        f"{len(oos_dates)}営業日 "
         f"({pd.Timestamp(oos_dates[0]).date()} ～ "
         f"{pd.Timestamp(oos_dates[-1]).date()})"
     )
@@ -2263,7 +2456,12 @@ for pos, prediction_date in enumerate(
         prediction_date
     )
 
-    if pos % 20 == 0:
+
+    if (
+        pos % 20
+        ==
+        0
+    ):
 
         print(
             f"進捗: "
@@ -2298,7 +2496,10 @@ for pos, prediction_date in enumerate(
 
         train_frames = []
 
-        for ticker, df in symbol_data.items():
+
+        for ticker, df in (
+            symbol_data.items()
+        ):
 
             prior = df.loc[
                 (
@@ -2308,7 +2509,9 @@ for pos, prediction_date in enumerate(
                 )
                 &
                 (
-                    df["target_date"]
+                    df[
+                        "target_date"
+                    ]
                     <
                     prediction_date
                 )
@@ -2318,20 +2521,26 @@ for pos, prediction_date in enumerate(
                 )
             ]
 
+
             if prior.empty:
 
                 continue
 
+
             usable_prior = (
                 prior[
-                    prior["target_valid"]
+                    prior[
+                        "target_valid"
+                    ]
                 ]
                 .copy()
             )
 
+
             if usable_prior.empty:
 
                 continue
+
 
             train_piece = (
                 usable_prior[
@@ -2340,11 +2549,17 @@ for pos, prediction_date in enumerate(
                     ["target"]
                 ]
                 .assign(
-                    date=usable_prior.index,
-                    ticker=ticker,
-                    target_valid=True
+                    date=
+                    usable_prior.index,
+
+                    ticker=
+                    ticker,
+
+                    target_valid=
+                    True
                 )
             )
+
 
             train_frames.append(
                 train_piece
@@ -2363,6 +2578,7 @@ for pos, prediction_date in enumerate(
             ignore_index=True
         )
 
+
         train_all = (
             train_all
             .dropna(
@@ -2374,7 +2590,11 @@ for pos, prediction_date in enumerate(
         )
 
 
-        if len(train_all) < MIN_TRAIN_ROWS:
+        if (
+            len(train_all)
+            <
+            MIN_TRAIN_ROWS
+        ):
 
             model = None
 
@@ -2388,7 +2608,9 @@ for pos, prediction_date in enumerate(
 
         class_values = (
             pd.to_numeric(
-                train_all["target"],
+                train_all[
+                    "target"
+                ],
                 errors="coerce"
             )
             .dropna()
@@ -2402,7 +2624,9 @@ for pos, prediction_date in enumerate(
             1,
             2
         }.issubset(
-            set(class_values)
+            set(
+                class_values
+            )
         ):
 
             model = None
@@ -2429,6 +2653,7 @@ for pos, prediction_date in enumerate(
 
         last_fit_pos = pos
 
+
         print(
             f"  ✅ model refit "
             f"{prediction_date.date()} "
@@ -2452,7 +2677,10 @@ for pos, prediction_date in enumerate(
 
     candidates = []
 
-    for ticker, df in symbol_data.items():
+
+    for ticker, df in (
+        symbol_data.items()
+    ):
 
         if (
             prediction_date
@@ -2462,9 +2690,12 @@ for pos, prediction_date in enumerate(
 
             continue
 
-        row = df.loc[
-            prediction_date
-        ]
+
+        row = (
+            df.loc[
+                prediction_date
+            ]
+        )
 
 
         # -------------------------------------------------
@@ -2472,21 +2703,26 @@ for pos, prediction_date in enumerate(
         # -------------------------------------------------
 
         if not bool(
-            row["liquid"]
+            row[
+                "liquid"
+            ]
         ):
 
             continue
 
 
         # -------------------------------------------------
-        # FEATURES
+        # 特徴量
         # -------------------------------------------------
 
         x = (
-            row[FEATURES]
+            row[
+                FEATURES
+            ]
             .to_frame()
             .T
         )
+
 
         if (
             x.isna()
@@ -2498,7 +2734,7 @@ for pos, prediction_date in enumerate(
 
 
         # -------------------------------------------------
-        # predict_proba
+        # 予測
         # -------------------------------------------------
 
         try:
@@ -2514,9 +2750,14 @@ for pos, prediction_date in enumerate(
                 model.classes_
             )
 
+
             if not all(
                 cls in classes
-                for cls in [0, 1, 2]
+                for cls in [
+                    0,
+                    1,
+                    2
+                ]
             ):
 
                 continue
@@ -2539,6 +2780,7 @@ for pos, prediction_date in enumerate(
                     classes.index(2)
                 ]
             )
+
 
         except Exception as e:
 
@@ -2563,23 +2805,25 @@ for pos, prediction_date in enumerate(
             flat_prob
         )
 
+
         signal.update(
             {
                 "date":
-                    prediction_date.strftime(
-                        "%Y-%m-%d"
-                    ),
+                prediction_date.strftime(
+                    "%Y-%m-%d"
+                ),
 
                 "ticker":
-                    ticker,
+                ticker,
 
                 "company":
-                    COMPANY_NAMES.get(
-                        ticker,
-                        ""
-                    ),
+                COMPANY_NAMES.get(
+                    ticker,
+                    ""
+                ),
             }
         )
+
 
         candidates.append(
             signal
@@ -2610,7 +2854,8 @@ for pos, prediction_date in enumerate(
 
         candidates = [
             x
-            for x in candidates
+            for x
+            in candidates
             if x["signal"]
             ==
             "🔥 強い買い"
@@ -2621,7 +2866,11 @@ for pos, prediction_date in enumerate(
     # TOP_N
     # =====================================================
 
-    selected = candidates[:TOP_N]
+    selected = (
+        candidates[
+            :TOP_N
+        ]
+    )
 
 
     # =====================================================
@@ -2633,11 +2882,17 @@ for pos, prediction_date in enumerate(
         start=1
     ):
 
-        ticker = s["ticker"]
+        ticker = (
+            s["ticker"]
+        )
 
-        df = symbol_data[
-            ticker
-        ]
+
+        df = (
+            symbol_data[
+                ticker
+            ]
+        )
+
 
         (
             result,
@@ -2656,85 +2911,87 @@ for pos, prediction_date in enumerate(
         results.append(
             {
                 "date":
-                    s["date"],
+                s["date"],
 
                 "ticker":
-                    ticker,
+                ticker,
 
                 "rank":
-                    rank,
+                rank,
 
                 "score":
-                    round(
-                        s["score"],
-                        2
-                    ),
+                round(
+                    s["score"],
+                    2
+                ),
 
                 "signal":
-                    s["signal"],
+                s["signal"],
 
                 "phase":
-                    phase_by_date.get(
-                        prediction_date,
-                        "UNKNOWN"
-                    ),
+                phase_by_date.get(
+                    prediction_date,
+                    "UNKNOWN"
+                ),
 
                 "nikkei_uptrend":
-                    bool(
-                        s["nikkei_uptrend"]
-                    ),
+                bool(
+                    s["nikkei_uptrend"]
+                ),
 
                 "up_prob":
-                    round(
-                        s["up_prob"],
-                        2
-                    ),
+                round(
+                    s["up_prob"],
+                    2
+                ),
 
                 "flat_prob":
-                    round(
-                        s["flat_prob"],
-                        2
-                    ),
+                round(
+                    s["flat_prob"],
+                    2
+                ),
 
                 "down_prob":
-                    round(
-                        s["down_prob"],
-                        2
-                    ),
+                round(
+                    s["down_prob"],
+                    2
+                ),
 
                 "price":
-                    s["price"],
+                s["price"],
 
                 "take_profit":
-                    s["take_profit"],
+                s["take_profit"],
 
                 "stop_loss":
-                    s["stop_loss"],
+                s["stop_loss"],
 
                 "return":
-                    (
-                        round(
-                            float(ret),
-                            4
-                        )
-                        if pd.notna(ret)
-                        else np.nan
-                    ),
+                (
+                    round(
+                        float(ret),
+                        4
+                    )
+                    if
+                    pd.notna(ret)
+                    else
+                    np.nan
+                ),
 
                 "hold_days":
-                    hold_days,
+                hold_days,
 
                 "result":
-                    result,
+                result,
 
                 "exit_price":
-                    exit_price,
+                exit_price,
             }
         )
 
 
 # =========================================================
-# 結果チェック
+# 結果0件
 # =========================================================
 
 if not results:
@@ -2744,13 +3001,21 @@ if not results:
     )
 
 
+# =========================================================
+# 結果DataFrame
+# =========================================================
+
 results_df = pd.DataFrame(
     results
 )
 
-results_df["date"] = pd.to_datetime(
-    results_df["date"]
+
+results_df["date"] = (
+    pd.to_datetime(
+        results_df["date"]
+    )
 )
+
 
 results_df = (
     results_df
@@ -2767,7 +3032,7 @@ results_df = (
 
 
 # =========================================================
-# メイン結果CSV
+# CSV保存
 # =========================================================
 
 results_df.to_csv(
@@ -2778,20 +3043,30 @@ results_df.to_csv(
 
 
 # =========================================================
-# TOP別
+# TOP別集計
 # =========================================================
+
+rank_summaries = {}
+
 
 for rank in range(
     1,
     TOP_N + 1
 ):
 
-    summarize(
+    rank_df = (
         results_df[
             results_df["rank"]
             ==
             rank
-        ].copy(),
+        ]
+        .copy()
+    )
+
+    rank_summaries[
+        rank
+    ] = summarize(
+        rank_df,
         f"TOP{rank}"
     )
 
@@ -2812,7 +3087,9 @@ summary_all = summarize(
 
 summary_up = summarize(
     results_df[
-        results_df["nikkei_uptrend"]
+        results_df[
+            "nikkei_uptrend"
+        ]
         ==
         True
     ].copy(),
@@ -2826,7 +3103,9 @@ summary_up = summarize(
 
 summary_down = summarize(
     results_df[
-        results_df["nikkei_uptrend"]
+        results_df[
+            "nikkei_uptrend"
+        ]
         ==
         False
     ].copy(),
@@ -2847,26 +3126,35 @@ SIGNALS = [
     "🔴 買わない",
 ]
 
-for signal in SIGNALS:
+
+signal_summaries = {}
+
+
+for signal_name in SIGNALS:
 
     part = (
         results_df[
             results_df["signal"]
             ==
-            signal
+            signal_name
         ]
         .copy()
     )
 
-    summarize(
+    signal_summaries[
+        signal_name
+    ] = summarize(
         part,
-        signal
+        signal_name
     )
 
 
 # =========================================================
 # AIスコア別
 # =========================================================
+
+score_summaries = {}
+
 
 for threshold in [
     60,
@@ -2883,7 +3171,9 @@ for threshold in [
         .copy()
     )
 
-    summarize(
+    score_summaries[
+        threshold
+    ] = summarize(
         part,
         f"AIスコア {threshold}以上"
     )
@@ -2900,9 +3190,12 @@ results_df["month"] = (
     .astype(str)
 )
 
+
 monthly = (
     results_df
-    .groupby("month")
+    .groupby(
+        "month"
+    )
     .agg(
         signals=(
             "ticker",
@@ -2920,7 +3213,9 @@ monthly = (
             "result",
             lambda s:
             (
-                s == "WIN"
+                s
+                ==
+                "WIN"
             ).sum()
         ),
         losses=(
@@ -2937,19 +3232,24 @@ monthly = (
             "result",
             lambda s:
             (
-                s == "HOLD"
+                s
+                ==
+                "HOLD"
             ).sum()
         ),
     )
     .reset_index()
 )
 
+
 monthly["win_rate"] = np.where(
     (
         monthly["wins"]
         +
         monthly["losses"]
-    ) > 0,
+    )
+    >
+    0,
     monthly["wins"]
     /
     (
@@ -2961,6 +3261,7 @@ monthly["win_rate"] = np.where(
     100,
     0
 )
+
 
 monthly.to_csv(
     "walk_forward_monthly.csv",
@@ -2979,9 +3280,12 @@ results_df["year"] = (
     .year
 )
 
+
 yearly = (
     results_df
-    .groupby("year")
+    .groupby(
+        "year"
+    )
     .agg(
         signals=(
             "ticker",
@@ -2999,7 +3303,9 @@ yearly = (
             "result",
             lambda s:
             (
-                s == "WIN"
+                s
+                ==
+                "WIN"
             ).sum()
         ),
         losses=(
@@ -3016,19 +3322,24 @@ yearly = (
             "result",
             lambda s:
             (
-                s == "HOLD"
+                s
+                ==
+                "HOLD"
             ).sum()
         ),
     )
     .reset_index()
 )
 
+
 yearly["win_rate"] = np.where(
     (
         yearly["wins"]
         +
         yearly["losses"]
-    ) > 0,
+    )
+    >
+    0,
     yearly["wins"]
     /
     (
@@ -3040,6 +3351,7 @@ yearly["win_rate"] = np.where(
     100,
     0
 )
+
 
 yearly.to_csv(
     "walk_forward_yearly.csv",
@@ -3077,7 +3389,9 @@ trend_yearly = (
             "result",
             lambda s:
             (
-                s == "WIN"
+                s
+                ==
+                "WIN"
             ).sum()
         ),
         losses=(
@@ -3094,12 +3408,15 @@ trend_yearly = (
     .reset_index()
 )
 
+
 trend_yearly["win_rate"] = np.where(
     (
         trend_yearly["wins"]
         +
         trend_yearly["losses"]
-    ) > 0,
+    )
+    >
+    0,
     trend_yearly["wins"]
     /
     (
@@ -3111,6 +3428,7 @@ trend_yearly["win_rate"] = np.where(
     100,
     0
 )
+
 
 trend_yearly.to_csv(
     "walk_forward_trend_yearly.csv",
@@ -3124,16 +3442,25 @@ trend_yearly.to_csv(
 # =========================================================
 
 print("")
-print("=" * 60)
+print(
+    "=" * 60
+)
+
 print(
     "🧪 DEV / VALIDATION / OOS 比較"
 )
+
 print(
     "(候補条件: 日経上昇+UP≥60%のみ売買)"
 )
-print("=" * 60)
+
+print(
+    "=" * 60
+)
+
 
 phase_summaries = {}
+
 
 for phase_label in [
     "DEV",
@@ -3159,10 +3486,15 @@ for phase_label in [
         phase_label
     ] = stats
 
+
     if (
-        phase_label == "OOS"
+        phase_label
+        ==
+        "OOS"
         and
-        len(phase_df) < 30
+        len(phase_df)
+        <
+        30
     ):
 
         print(
@@ -3171,10 +3503,15 @@ for phase_label in [
             "この数字だけで判断しないこと。"
         )
 
+
     if (
-        phase_label == "VALIDATION"
+        phase_label
+        ==
+        "VALIDATION"
         and
-        len(phase_df) < 30
+        len(phase_df)
+        <
+        30
     ):
 
         print(
@@ -3190,6 +3527,7 @@ for phase_label in [
 
 phase_summary_rows = []
 
+
 for phase_label, stats in (
     phase_summaries.items()
 ):
@@ -3199,26 +3537,31 @@ for phase_label, stats in (
         phase_summary_rows.append(
             {
                 "phase":
-                    phase_label,
+                phase_label,
+
                 "signals":
-                    0
+                0,
             }
         )
 
         continue
 
+
     row = {
         "phase":
-            phase_label
+        phase_label
     }
+
 
     row.update(
         stats
     )
 
+
     phase_summary_rows.append(
         row
     )
+
 
 pd.DataFrame(
     phase_summary_rows
@@ -3234,20 +3577,31 @@ pd.DataFrame(
 # =========================================================
 
 print("")
-print("=" * 60)
-print("📌 WALK-FORWARD FINAL SUMMARY")
-print("=" * 60)
-
 print(
-    f"期間: {START_DATE} ～ {END_DATE}"
+    "=" * 60
 )
 
 print(
-    f"予測件数: {len(results_df)}"
+    "📌 WALK-FORWARD FINAL SUMMARY"
 )
 
 print(
-    f"TOP_N: {TOP_N}"
+    "=" * 60
+)
+
+print(
+    f"期間: "
+    f"{START_DATE} ～ {END_DATE}"
+)
+
+print(
+    f"予測件数: "
+    f"{len(results_df)}"
+)
+
+print(
+    f"TOP_N: "
+    f"{TOP_N}"
 )
 
 print(
@@ -3267,21 +3621,25 @@ print(
 
 if summary_all:
 
-    pf_all = summary_all[
-        "profit_factor"
-    ]
+    pf_all = (
+        summary_all[
+            "profit_factor"
+        ]
+    )
+
 
     if np.isinf(
         pf_all
     ):
 
-        pf_text = "inf"
+        pf_all_text = "inf"
 
     else:
 
-        pf_text = (
+        pf_all_text = (
             f"{pf_all:.2f}"
         )
+
 
     print(
         f"\n勝率: "
@@ -3295,7 +3653,7 @@ if summary_all:
 
     print(
         f"PF: "
-        f"{pf_text}"
+        f"{pf_all_text}"
     )
 
     print(
@@ -3324,11 +3682,17 @@ if summary_up:
         f"{summary_up['avg_return']:.2f}%"
     )
 
-    pf_up = summary_up[
-        "profit_factor"
-    ]
 
-    if np.isinf(pf_up):
+    pf_up = (
+        summary_up[
+            "profit_factor"
+        ]
+    )
+
+
+    if np.isinf(
+        pf_up
+    ):
 
         pf_up_text = "inf"
 
@@ -3337,6 +3701,7 @@ if summary_up:
         pf_up_text = (
             f"{pf_up:.2f}"
         )
+
 
     print(
         f"PF: "
@@ -3369,11 +3734,17 @@ if summary_down:
         f"{summary_down['avg_return']:.2f}%"
     )
 
-    pf_down = summary_down[
-        "profit_factor"
-    ]
 
-    if np.isinf(pf_down):
+    pf_down = (
+        summary_down[
+            "profit_factor"
+        ]
+    )
+
+
+    if np.isinf(
+        pf_down
+    ):
 
         pf_down_text = "inf"
 
@@ -3382,6 +3753,7 @@ if summary_down:
         pf_down_text = (
             f"{pf_down:.2f}"
         )
+
 
     print(
         f"PF: "
@@ -3395,13 +3767,292 @@ if summary_down:
 
 
 # =========================================================
-# 保存ファイル一覧
+# Discordメッセージ作成
+# =========================================================
+
+discord_lines = []
+
+
+discord_lines.append(
+    "📊 AI WALK FORWARD BACKTEST"
+)
+
+discord_lines.append(
+    "━━━━━━━━━━━━━━━━━━"
+)
+
+discord_lines.append(
+    f"期間：{START_DATE} ～ {END_DATE}"
+)
+
+discord_lines.append(
+    f"TOP：{TOP_N}"
+)
+
+discord_lines.append(
+    f"再学習：{REFIT_EVERY_TRADING_DAYS}営業日"
+)
+
+discord_lines.append(
+    f"予測：{FORWARD_DAYS}営業日"
+)
+
+discord_lines.append(
+    f"ATR TP：{ATR_TP_MULTIPLIER}x"
+)
+
+discord_lines.append(
+    f"ATR SL：{ATR_SL_MULTIPLIER}x"
+)
+
+discord_lines.append(
+    f"買い限定：{TRADE_ONLY_BUY_SIGNALS}"
+)
+
+discord_lines.append("")
+
+
+# =========================================================
+# Discord 全体
+# =========================================================
+
+if summary_all:
+
+    discord_lines.append(
+        "【全体】"
+    )
+
+    discord_lines.append(
+        summary_line(
+            "",
+            summary_all
+        )
+    )
+
+    discord_lines.append("")
+
+
+# =========================================================
+# Discord TOP別
+# =========================================================
+
+discord_lines.append(
+    "【TOP別】"
+)
+
+
+for rank in range(
+    1,
+    TOP_N + 1
+):
+
+    rank_stats = (
+        rank_summaries
+        .get(
+            rank,
+            {}
+        )
+    )
+
+    discord_lines.append(
+        summary_line(
+            f"#{rank}",
+            rank_stats
+        )
+    )
+
+
+discord_lines.append("")
+
+
+# =========================================================
+# Discord DEV
+# =========================================================
+
+dev_stats = (
+    phase_summaries
+    .get(
+        "DEV",
+        {}
+    )
+)
+
+
+if dev_stats:
+
+    discord_lines.append(
+        "【DEV】"
+    )
+
+    discord_lines.append(
+        summary_line(
+            "",
+            dev_stats
+        )
+    )
+
+
+# =========================================================
+# Discord VALIDATION
+# =========================================================
+
+validation_stats = (
+    phase_summaries
+    .get(
+        "VALIDATION",
+        {}
+    )
+)
+
+
+if validation_stats:
+
+    discord_lines.append(
+        "【VALIDATION】"
+    )
+
+    discord_lines.append(
+        summary_line(
+            "",
+            validation_stats
+        )
+    )
+
+
+# =========================================================
+# Discord OOS
+# =========================================================
+
+oos_stats = (
+    phase_summaries
+    .get(
+        "OOS",
+        {}
+    )
+)
+
+
+if oos_stats:
+
+    discord_lines.append(
+        "【OOS】"
+    )
+
+    discord_lines.append(
+        summary_line(
+            "",
+            oos_stats
+        )
+    )
+
+
+discord_lines.append("")
+
+
+# =========================================================
+# Discord 日経比較
+# =========================================================
+
+if summary_up:
+
+    discord_lines.append(
+        "【日経上昇】"
+    )
+
+    discord_lines.append(
+        summary_line(
+            "",
+            summary_up
+        )
+    )
+
+
+if summary_down:
+
+    discord_lines.append(
+        "【日経非上昇】"
+    )
+
+    discord_lines.append(
+        summary_line(
+            "",
+            summary_down
+        )
+    )
+
+
+discord_lines.append("")
+
+discord_lines.append(
+    "📁 walk_forward_results.csv"
+)
+
+discord_lines.append(
+    "📁 walk_forward_phase_summary.csv"
+)
+
+discord_message = "\n".join(
+    discord_lines
+)
+
+
+# =========================================================
+# Discord送信
 # =========================================================
 
 print("")
-print("✅ 保存ファイル")
-print("  walk_forward_results.csv")
-print("  walk_forward_monthly.csv")
-print("  walk_forward_yearly.csv")
-print("  walk_forward_trend_yearly.csv")
-print("  walk_forward_phase_summary.csv")
+print(
+    "==========================================="
+)
+
+print(
+    "📨 Discordへウォークフォワード結果を送信"
+)
+
+print(
+    "==========================================="
+)
+
+print(
+    discord_message
+)
+
+
+send_discord(
+    discord_message
+)
+
+
+# =========================================================
+# 保存ファイル表示
+# =========================================================
+
+print("")
+print(
+    "✅ 保存ファイル"
+)
+
+print(
+    "  walk_forward_results.csv"
+)
+
+print(
+    "  walk_forward_monthly.csv"
+)
+
+print(
+    "  walk_forward_yearly.csv"
+)
+
+print(
+    "  walk_forward_trend_yearly.csv"
+)
+
+print(
+    "  walk_forward_phase_summary.csv"
+)
+
+print("")
+print(
+    "✅ WALK-FORWARD BACKTEST 完了"
+)
