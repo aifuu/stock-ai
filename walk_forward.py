@@ -55,6 +55,29 @@ from sklearn.ensemble import RandomForestClassifier
 # 13. 本番との比較を優先するため、
 #     学習対象は「予測日より前にtargetが確定していて、
 #     かつその日が流動的だった」全履歴を使う
+#
+# 14. 【候補条件・実験用】このバージョンでは
+#     stock_scan.py本体とは異なる、より厳しい売買条件を
+#     検証する:
+#       日経MA25 > MA75 かつ UP確率 >= 60%
+#       のときだけ「🔥 強い買い」とし、それ以外は
+#       全て「🟡 監視」(=売買対象外)にする。
+#     さらに TRADE_ONLY_BUY_SIGNALS のデフォルトを
+#     True にし、実際に「🔥 強い買い」だけをTOP_N選定
+#     する(監視・買わないは選ばない)。
+#
+#     これはOOS結果を見て選んだ候補条件であるため、
+#     まだ正式採用ではない。DEV/VALIDATION/OOSの
+#     3期間に分けて集計し(下記15参照)、DEVで見つけた
+#     傾向がVALIDATIONでも通用するかを確認してから、
+#     本番stock_scan.pyへの反映を検討すること。
+#
+# 15. 【新機能】DEV / VALIDATION / OOS 期間分割
+#     BACKTEST期間(ウォームアップ後・OOS_DAYS営業日より
+#     前)を DEV_SPLIT_RATIO で DEV と VALIDATION に分割。
+#     結果には phase 列(DEV/VALIDATION/OOS)を付与し、
+#     3区分で別々に集計する
+#     (walk_forward_phase_summary.csv に保存)。
 # =========================================================
 
 
@@ -155,15 +178,63 @@ RANDOM_STATE = 42
 # 本番と同じくスコア順TOP_N
 #
 # True:
-# 「🔥 強い買い」「🟢 買い」だけを対象
+# 「🔥 強い買い」だけを対象
+#
+# 【候補条件・実験用】
+# デフォルトをTrueに変更。日経上昇+UP≥60%(下記
+# calculate_signal参照)という「買いシグナルのみを
+# 実際に売買する」候補戦略を検証するための設定。
+#
+# ⚠ これはOOS結果を見て選んだ候補条件のため、
+# 「正式採用」ではなく「検証対象」という位置づけ。
+# DEV/VALIDATION期間の両方で通用するかを、まず
+# このスクリプト内で確認すること。
 # =========================================================
 
 TRADE_ONLY_BUY_SIGNALS = (
     os.getenv(
         "WF_TRADE_ONLY_BUY",
-        "false"
+        "true"
     ).lower()
     == "true"
+)
+
+
+# =========================================================
+# 【新機能】DEV / VALIDATION / OOS 期間分割
+#
+# 「候補条件をOOSで選んでしまった」循環を避けるため、
+# BACKTEST期間(ウォームアップ後・OOS期間より前)を
+# さらに2つに分ける。
+#
+#   DEV        : 条件を思いついた根拠となる期間
+#                (ここの数字を見て閾値などを選んでよい)
+#   VALIDATION : DEVで良かった条件が、別の期間でも
+#                通用するかを確認する期間
+#                (ここを見て初めて「条件が汎化するか」
+#                 を判断する。ここを見てさらに閾値を
+#                 微調整してはいけない)
+#   OOS        : 直近 OOS_DAYS 営業日。最終確認専用。
+#                今回すでに一度見て60%という候補を
+#                選んでしまっているため、今回のOOSは
+#                「消費済み」として扱う。今後さらに
+#                閾値を調整したくなった場合、新しい
+#                データが十分溜まるまで、真のOOS検証は
+#                行えない。
+# =========================================================
+
+OOS_DAYS = int(
+    os.getenv(
+        "WF_OOS_DAYS",
+        "90"
+    )
+)
+
+DEV_SPLIT_RATIO = float(
+    os.getenv(
+        "WF_DEV_SPLIT_RATIO",
+        "0.6"
+    )
 )
 
 
@@ -1445,6 +1516,20 @@ def calculate_signal(
         )
 
 
+    # =====================================================
+    # 【候補条件・実験用】
+    #
+    # 通常のstock_scan.pyでは50%/40%の中間段階
+    # (🟢買い / 🟡監視)があるが、今回検証する候補戦略は
+    # 「日経上昇+UP≥60%のときだけ買う」という、より
+    # 厳しい単一のしきい値。中間段階を廃止し、
+    # 60%未満は一律🟡監視(=買い対象外)にする。
+    #
+    # ※ これは stock_scan.py 本体の変更ではなく、
+    # この検証スクリプト内だけの候補条件。DEV/VALIDATION
+    # 両期間で確認できるまでは、本番には反映しない。
+    # =====================================================
+
     elif (
         up_percent >= 60
         and
@@ -1456,32 +1541,10 @@ def calculate_signal(
         )
 
 
-    elif (
-        up_percent >= 50
-        and
-        up_percent > down_percent
-    ):
-
-        final_signal = (
-            "🟢 買い"
-        )
-
-
-    elif (
-        up_percent >= 40
-        and
-        up_percent > down_percent
-    ):
-
-        final_signal = (
-            "🟡 監視"
-        )
-
-
     else:
 
         final_signal = (
-            "🔴 買わない"
+            "🟡 監視"
         )
 
 
@@ -1489,7 +1552,10 @@ def calculate_signal(
     # 日経フィルター
     #
     # MA25 > MA75 でない場合、
-    # 買い系を監視へ落とす。
+    # 強い買いを監視へ落とす。
+    #
+    # (🟢買いは上記の変更で発生しなくなったため
+    #  対象から削除)
     # =====================================================
 
     nikkei_uptrend = bool(
@@ -1503,10 +1569,8 @@ def calculate_signal(
         not nikkei_uptrend
         and
         final_signal
-        in [
-            "🔥 強い買い",
-            "🟢 買い"
-        ]
+        ==
+        "🔥 強い買い"
     ):
 
         final_signal = (
@@ -2502,6 +2566,82 @@ print(
 
 
 # =========================================================
+# 【新機能】DEV / VALIDATION / OOS 期間分割
+#
+# prediction_dates(ウォームアップ済み)を、末尾から
+# OOS_DAYS営業日をOOSとして切り出し、残り(BACKTEST期間)を
+# DEV_SPLIT_RATIOでDEV/VALIDATIONに分割する。
+#
+# 各日付がどのフェーズに属するかを辞書化しておき、
+# 後で結果行にタグ付けする。
+# =========================================================
+
+if len(prediction_dates) > OOS_DAYS:
+
+    non_oos_dates = prediction_dates[:-OOS_DAYS]
+    oos_dates = prediction_dates[-OOS_DAYS:]
+
+else:
+
+    non_oos_dates = []
+    oos_dates = list(prediction_dates)
+
+    print(
+        "⚠ OOS_DAYSが予測期間以上のため、"
+        "全期間をOOS扱いにします。"
+    )
+
+split_idx = int(len(non_oos_dates) * DEV_SPLIT_RATIO)
+
+dev_dates = non_oos_dates[:split_idx]
+validation_dates = non_oos_dates[split_idx:]
+
+phase_by_date = {}
+
+for d in dev_dates:
+    phase_by_date[pd.Timestamp(d)] = "DEV"
+
+for d in validation_dates:
+    phase_by_date[pd.Timestamp(d)] = "VALIDATION"
+
+for d in oos_dates:
+    phase_by_date[pd.Timestamp(d)] = "OOS"
+
+print(
+    f"DEV期間        : {len(dev_dates)}営業日"
+    + (
+        f" ({pd.Timestamp(dev_dates[0]).date()} ～ "
+        f"{pd.Timestamp(dev_dates[-1]).date()})"
+        if dev_dates else ""
+    )
+)
+
+print(
+    f"VALIDATION期間 : {len(validation_dates)}営業日"
+    + (
+        f" ({pd.Timestamp(validation_dates[0]).date()} ～ "
+        f"{pd.Timestamp(validation_dates[-1]).date()})"
+        if validation_dates else ""
+    )
+)
+
+print(
+    f"OOS期間        : {len(oos_dates)}営業日"
+    + (
+        f" ({pd.Timestamp(oos_dates[0]).date()} ～ "
+        f"{pd.Timestamp(oos_dates[-1]).date()})"
+        if oos_dates else ""
+    )
+)
+
+print(
+    "\n⚠ 今回のOOSは、候補条件(UP≥60%)の選定に"
+    "すでに影響しているため「消費済み」として扱う。"
+    "このOOS結果を根拠にさらに閾値を調整しないこと。"
+)
+
+
+# =========================================================
 # WALK FORWARD
 # =========================================================
 
@@ -2959,6 +3099,8 @@ for pos, prediction_date in enumerate(
         TRADE_ONLY_BUY_SIGNALS
     ):
 
+        # 🟢買いは候補条件の変更で発生しなくなったため
+        # フィルター対象から削除(🔥強い買いのみ)
         candidates = [
             x
             for x
@@ -2968,11 +3110,8 @@ for pos, prediction_date in enumerate(
             x[
                 "signal"
             ]
-            in
-            [
-                "🔥 強い買い",
-                "🟢 買い",
-            ]
+            ==
+            "🔥 強い買い"
         ]
 
 
@@ -3042,6 +3181,12 @@ for pos, prediction_date in enumerate(
                     s[
                         "signal"
                     ],
+
+                "phase":
+                    phase_by_date.get(
+                        prediction_date,
+                        "UNKNOWN"
+                    ),
 
                 "nikkei_uptrend":
                     bool(
@@ -3247,9 +3392,10 @@ summary_down = (
 # シグナル別
 # =========================================================
 
+# 【候補条件・実験用】🟢買いは今回の候補条件変更により
+# 発生しなくなったため一覧から削除
 SIGNALS = [
     "🔥 強い買い",
-    "🟢 買い",
     "🟡 監視",
     "🟡 監視(日経下落/レンジ)",
     "🟡 監視(横ばい優勢)",
@@ -3620,14 +3766,6 @@ trend_yearly.to_csv(
 # 最終サマリー
 # =========================================================
 
-def format_pf(value):
-
-    if np.isinf(value):
-        return "inf"
-
-    return f"{value:.2f}"
-
-
 print(
     "\n==========================================="
 )
@@ -3641,15 +3779,19 @@ print(
 )
 
 print(
-    f"期間: {START_DATE} ～ {END_DATE}"
+    f"期間: "
+    f"{START_DATE} ～ "
+    f"{END_DATE}"
 )
 
 print(
-    f"予測件数: {len(results_df)}"
+    f"予測件数: "
+    f"{len(results_df)}"
 )
 
 print(
-    f"TOP_N: {TOP_N}"
+    f"TOP_N: "
+    f"{TOP_N}"
 )
 
 print(
@@ -3657,99 +3799,243 @@ print(
 )
 
 print(
-    f"REFIT: {REFIT_EVERY_TRADING_DAYS}営業日"
+    f"REFIT: "
+    f"{REFIT_EVERY_TRADING_DAYS}営業日"
 )
 
 print(
-    f"BUY限定: {TRADE_ONLY_BUY_SIGNALS}"
+    f"BUY限定: "
+    f"{TRADE_ONLY_BUY_SIGNALS}"
 )
 
-print(
-    "流動性フィルター: 学習・予測ともON"
-)
-
-
-# =========================================================
-# 全体
-# =========================================================
 
 if summary_all:
 
-    pf_all = summary_all["profit_factor"]
+    pf_all = (
+        summary_all[
+            "profit_factor"
+        ]
+    )
+
+
+    if np.isinf(
+        pf_all
+    ):
+
+        pf_text = "inf"
+
+    else:
+
+        pf_text = (
+            f"{pf_all:.2f}"
+        )
+
 
     print(
-        f"\n勝率: {summary_all['win_rate']:.2f}%"
+        f"\n勝率: "
+        f"{summary_all['win_rate']:.2f}%"
     )
 
     print(
-        f"平均リターン: {summary_all['avg_return']:.2f}%"
+        f"平均リターン: "
+        f"{summary_all['avg_return']:.2f}%"
     )
 
     print(
-        f"PF: {format_pf(pf_all)}"
+        f"PF: "
+        f"{pf_text}"
     )
 
     print(
-        f"最大DD: {summary_all['max_drawdown']:.2f}%"
+        f"最大DD: "
+        f"{summary_all['max_drawdown']:.2f}%"
     )
 
 
 # =========================================================
-# 日経上昇トレンド
+# 追加比較
 # =========================================================
 
 if summary_up:
-
-    pf_up = summary_up["profit_factor"]
 
     print(
         "\n📈 日経上昇トレンド時"
     )
 
     print(
-        f"勝率: {summary_up['win_rate']:.2f}%"
+        f"勝率: "
+        f"{summary_up['win_rate']:.2f}%"
     )
 
     print(
-        f"平均リターン: {summary_up['avg_return']:.2f}%"
+        f"平均リターン: "
+        f"{summary_up['avg_return']:.2f}%"
     )
 
     print(
-        f"PF: {format_pf(pf_up)}"
+        f"PF: "
+        f"{(
+            'inf'
+            if np.isinf(
+                summary_up[
+                    'profit_factor'
+                ]
+            )
+            else
+            f"{summary_up['profit_factor']:.2f}"
+        )}"
     )
 
     print(
-        f"最大DD: {summary_up['max_drawdown']:.2f}%"
+        f"最大DD: "
+        f"{summary_up['max_drawdown']:.2f}%"
     )
 
-
-# =========================================================
-# 日経非上昇トレンド
-# =========================================================
 
 if summary_down:
-
-    pf_down = summary_down["profit_factor"]
 
     print(
         "\n📉 日経非上昇トレンド時"
     )
 
     print(
-        f"勝率: {summary_down['win_rate']:.2f}%"
+        f"勝率: "
+        f"{summary_down['win_rate']:.2f}%"
     )
 
     print(
-        f"平均リターン: {summary_down['avg_return']:.2f}%"
+        f"平均リターン: "
+        f"{summary_down['avg_return']:.2f}%"
     )
 
     print(
-        f"PF: {format_pf(pf_down)}"
+        f"PF: "
+        f"{(
+            'inf'
+            if np.isinf(
+                summary_down[
+                    'profit_factor'
+                ]
+            )
+            else
+            f"{summary_down['profit_factor']:.2f}"
+        )}"
     )
 
     print(
-        f"最大DD: {summary_down['max_drawdown']:.2f}%"
+        f"最大DD: "
+        f"{summary_down['max_drawdown']:.2f}%"
     )
+
+
+# =========================================================
+# 【新機能】DEV / VALIDATION / OOS 別サマリー
+#
+# 候補条件(日経上昇+UP≥60%、買いシグナルのみ売買)が、
+# DEVで見つけた傾向がVALIDATIONでも通用するかを確認する。
+#
+# 判断の目安:
+#   DEVとVALIDATIONの勝率・PF・期待値が近い
+#     → 条件が偶然ではなく、ある程度汎化している可能性
+#   VALIDATIONでDEVより大きく悪化
+#     → DEV期間に対する過学習(条件選びすぎ)の疑い
+#
+# OOSは最終確認用。件数が少ない場合は特に、
+# 数字が良くても悪くても過度に一喜一憂しないこと。
+# =========================================================
+
+print(
+    "\n"
+    + "=" * 60
+)
+
+print(
+    "🧪 DEV / VALIDATION / OOS 比較"
+    "(候補条件: 日経上昇+UP≥60%のみ売買)"
+)
+
+print(
+    "=" * 60
+)
+
+phase_summaries = {}
+
+for phase_label in [
+    "DEV",
+    "VALIDATION",
+    "OOS",
+]:
+
+    phase_df = (
+        results_df[
+            results_df["phase"]
+            ==
+            phase_label
+        ].copy()
+    )
+
+    phase_summaries[phase_label] = summarize(
+        phase_df,
+        f"{phase_label}期間"
+    )
+
+    if (
+        phase_label == "OOS"
+        and len(phase_df) < 30
+    ):
+
+        print(
+            f"⚠ OOS件数が{len(phase_df)}件と少ないため、"
+            "この数字だけで戦略の良し悪しを判断しないこと。"
+        )
+
+    if (
+        phase_label == "VALIDATION"
+        and len(phase_df) < 30
+    ):
+
+        print(
+            f"⚠ VALIDATION件数が{len(phase_df)}件と少ないため、"
+            "DEVとの比較の信頼性は限定的。"
+        )
+
+
+# =========================================================
+# フェーズ別サマリーCSV保存
+# =========================================================
+
+phase_summary_rows = []
+
+for phase_label, stats in phase_summaries.items():
+
+    if not stats:
+
+        phase_summary_rows.append(
+            {
+                "phase": phase_label,
+                "signals": 0,
+            }
+        )
+
+        continue
+
+    row = {"phase": phase_label}
+    row.update(stats)
+
+    phase_summary_rows.append(row)
+
+pd.DataFrame(
+    phase_summary_rows
+).to_csv(
+    "walk_forward_phase_summary.csv",
+    index=False,
+    encoding="utf-8-sig",
+)
+
+print(
+    "\n✅ walk_forward_phase_summary.csv 保存"
+    "(DEV/VALIDATION/OOS比較)"
+)
 
 
 # =========================================================
