@@ -62,6 +62,10 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python walk_forward.py
+
+        # ==============================
+        # Adversarial Validation
+        # ==============================
         
       - name: Run Adversarial Validation
         if: github.event.schedule == '30 23 * * 1-5' || github.event_name == 'workflow_dispatch'
@@ -69,21 +73,28 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python adversarial_strategy_validator.py
 
-      # ==============================
-      # Commit
-      # ==============================
+        # ==============================
+        # Commit
+        # ==============================
+        
       - name: Commit AI data and backtest results
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-
+          
           git add train_data.csv || true
           git add model.pkl || true
           git add prediction_history.csv || true
+          # Walk Forward
           git add walk_forward_results.csv || true
-          git add portfolio_equity_curve.csv || true
-          git add backtest_summary.csv || true
           git add walk_forward_all_candidates.csv || true
+          git add walk_forward_strategy_comparison.csv || true
+          git add walk_forward_strategy_details.csv || true
+          git add walk_forward_strategy_phase_comparison.csv || true
+          git add walk_forward_monthly.csv || true
+          git add walk_forward_yearly.csv || true
+          
+          # Adversarial Validation
           git add adversarial_dev_all_results.csv || true
           git add adversarial_dev_selected_candidates.csv || true
           git add adversarial_validation_gate.csv || true
@@ -94,7 +105,9 @@ jobs:
           git add adversarial_final_candidates.csv || true
           git add paper_trade_candidates.csv || true
           git add adversarial_monitoring_config.csv || true
-
-          git commit -m "Update AI scan and backtest results" || echo "No changes"
-
-          git push
+          
+          git add portfolio_equity_curve.csv || true
+          git add backtest_summary.csv || true
+          
+          git commit -m "Update AI scan and adversarial backtest results" || echo "No changes"
+          git push         
