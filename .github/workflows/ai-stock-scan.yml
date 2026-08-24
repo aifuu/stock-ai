@@ -62,6 +62,12 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python walk_forward.py
+        
+      - name: Run Adversarial Validation
+        if: github.event.schedule == '30 23 * * 1-5' || github.event_name == 'workflow_dispatch'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python adversarial_strategy_validator.py
 
       # ==============================
       # Commit
@@ -77,6 +83,17 @@ jobs:
           git add walk_forward_results.csv || true
           git add portfolio_equity_curve.csv || true
           git add backtest_summary.csv || true
+          git add walk_forward_all_candidates.csv || true
+          git add adversarial_dev_all_results.csv || true
+          git add adversarial_dev_selected_candidates.csv || true
+          git add adversarial_validation_gate.csv || true
+          git add adversarial_sensitivity.csv || true
+          git add adversarial_oos_gate.csv || true
+          git add adversarial_monte_carlo.csv || true
+          git add adversarial_selected_sizing.csv || true
+          git add adversarial_final_candidates.csv || true
+          git add paper_trade_candidates.csv || true
+          git add adversarial_monitoring_config.csv || true
 
           git commit -m "Update AI scan and backtest results" || echo "No changes"
 
