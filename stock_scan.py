@@ -9,7 +9,216 @@ import numpy as np
 import requests
 import joblib
 
+import json
+
 from sklearn.ensemble import RandomForestClassifier
+
+# ===================== 
+# 自動戦略ポリシー 
+# ===================== 
+POLICY_FILE = "strategy_policy.json" 
+ 
+DEFAULT_POLICY_UP_THRESHOLD = 50 
+DEFAULT_MIN_SCORE_FOR_BUY = 60 
+DEFAULT_NIKKEI_FILTER = False 
+ 
+DEFAULT_ATR_TP_MULTIPLIER = 3.0 
+DEFAULT_ATR_SL_MULTIPLIER = 1.5 
+DEFAULT_HOLD_DAYS = 5 
+ 
+ 
+def load_strategy_policy(): 
+ 
+    default_policy = { 
+        "status": "DEFAULT", 
+ 
+        "POLICY_up_threshold": DEFAULT_POLICY_UP_THRESHOLD, 
+        "min_score_for_buy": DEFAULT_MIN_SCORE_FOR_BUY, 
+ 
+        "nikkei_filter": DEFAULT_NIKKEI_FILTER, 
+ 
+        "atr_tp_multiplier": 
+            DEFAULT_ATR_TP_MULTIPLIER, 
+ 
+        "atr_sl_multiplier": 
+            DEFAULT_ATR_SL_MULTIPLIER, 
+ 
+        "hold_days": 
+            DEFAULT_HOLD_DAYS, 
+    } 
+ 
+    if not os.path.exists( 
+        POLICY_FILE 
+    ): 
+        print( 
+            "⚠ strategy_policy.jsonなし" 
+        ) 
+ 
+        print( 
+            "→ デフォルト設定を使用" 
+        ) 
+ 
+        return default_policy 
+ 
+    try: 
+ 
+        with open( 
+            POLICY_FILE, 
+            "r", 
+            encoding="utf-8" 
+        ) as f: 
+ 
+            policy = json.load(f) 
+ 
+        if not isinstance( 
+            policy, 
+            dict 
+        ): 
+            raise ValueError( 
+                "policyがdictではありません" 
+            ) 
+ 
+        merged = default_policy.copy() 
+ 
+        merged.update( 
+            policy 
+        ) 
+ 
+        # ===================== 
+        # 安全チェック 
+        # ===================== 
+ 
+        if merged["status"] not in [ 
+            "APPROVED", 
+            "DEFAULT" 
+        ]: 
+ 
+            print( 
+                "⚠ policy status=" 
+                f"{merged['status']}" 
+            ) 
+ 
+            print( 
+                "→ デフォルト設定を使用" 
+            ) 
+ 
+            return default_policy 
+ 
+        merged["POLICY_up_threshold"] = int( 
+            merged["POLICY_up_threshold"] 
+        ) 
+ 
+        merged["min_score_for_buy"] = int( 
+            merged["min_score_for_buy"] 
+        ) 
+ 
+        merged["nikkei_filter"] = bool( 
+            merged["nikkei_filter"] 
+        ) 
+ 
+        merged["atr_tp_multiplier"] = float( 
+            merged["atr_tp_multiplier"] 
+        ) 
+ 
+        merged["atr_sl_multiplier"] = float( 
+            merged["atr_sl_multiplier"] 
+        ) 
+ 
+        merged["hold_days"] = int( 
+            merged["hold_days"] 
+        ) 
+ 
+        print("") 
+        print( 
+            "🤖 自動戦略ポリシー読み込み" 
+        ) 
+        print( 
+            "status:", 
+            merged["status"] 
+        ) 
+        print( 
+            "UP:", 
+            merged["POLICY_up_threshold"] 
+        ) 
+        print( 
+            "MIN SCORE:", 
+            merged["min_score_for_buy"] 
+        ) 
+        print( 
+            "日経フィルター:", 
+            merged["nikkei_filter"] 
+        ) 
+        print( 
+            "ATR TP:", 
+            merged["atr_tp_multiplier"] 
+        ) 
+        print( 
+            "ATR SL:", 
+            merged["atr_sl_multiplier"] 
+        ) 
+        print( 
+            "HOLD:", 
+            merged["hold_days"] 
+        ) 
+ 
+        return merged 
+ 
+    except Exception as e: 
+ 
+        print( 
+            "⚠ strategy_policy.json" 
+            f"読み込み失敗: {e}" 
+        ) 
+ 
+        print( 
+            "→ デフォルト設定を使用" 
+        ) 
+ 
+        return default_policy 
+ 
+ 
+STRATEGY_POLICY = load_strategy_policy() 
+ 
+ 
+# ===================== 
+# 本番で使用する設定 
+# ===================== 
+ 
+POLICY_UP_THRESHOLD = ( 
+    STRATEGY_POLICY[ 
+        "POLICY_up_threshold" 
+    ] 
+) 
+ 
+MIN_SCORE_FOR_BUY = ( 
+    STRATEGY_POLICY[ 
+        "min_score_for_buy" 
+    ] 
+) 
+ 
+NIKKEI_FILTER_ENABLED = ( 
+    STRATEGY_POLICY[ 
+        "nikkei_filter" 
+    ] 
+) 
+ 
+ATR_TP_MULTIPLIER = ( 
+    STRATEGY_POLICY[ 
+        "atr_tp_multiplier" 
+    ] 
+) 
+ 
+ATR_SL_MULTIPLIER = ( 
+    STRATEGY_POLICY[ 
+        "atr_sl_multiplier" 
+    ] 
+) 
+ 
+HOLD_DAYS = ( 
+    STRATEGY_POLICY[ 
+        "hold_days" 
+    ] 
+)
 
 
 # =========================================================
