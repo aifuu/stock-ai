@@ -121,7 +121,60 @@ MIN_AVG_VOLUME = 300000
 
 
 # =========================================================
+# テスタ型モメンタム設定
+#
+# 「安いから買う」よりも、
+# ・上昇トレンド
+# ・直近の強さ
+# ・出来高を伴う上昇
+# ・高値圏での強さ
+# ・日経に対する相対強度
+# を数値化して評価する。
+#
+# 特定個人の非公開手法を再現するものではなく、
+# 公開情報から一般化した「テスタ型」の検証用実装。
+# =========================================================
+TESTA_MOMENTUM_WEIGHT = 0.25
+TESTA_MIN_SCORE_FOR_BUY = 55.0
+TESTA_STRONG_SCORE = 75.0
+
+
+# =========================================================
+# 買い推奨 / 監視 の分類
+#
+# ★改善点⑤
+#
+# prediction_history.csv の成績集計を汚さないよう、
+# 「実際に買う想定のシグナル」と「監視だけのシグナル」を
+# ここで明示的に分離する。
+#
+# BUY_SIGNALS  … 実戦成績(勝率・PF等)の集計対象
+# MONITOR_SIGNALS … 参考データとして記録するが勝率には含めない
+# それ以外(🔴 買わない等) … 成績対象外
+# =========================================================
+BUY_SIGNALS = {
+    "🔥 強い買い",
+    "🟢 買い",
+}
+
+
+def signal_category(signal):
+    if signal in BUY_SIGNALS:
+        return "buy"
+    elif isinstance(signal, str) and signal.startswith("🟡"):
+        return "monitor"
+    else:
+        return "no_buy"
+
+
+# =========================================================
 # 学習・予測で使う特徴量
+#
+# ★改善点②
+#
+# 銘柄をOne-Hotで覚えさせるのではなく、
+# 「その銘柄が今どんな性質か(出来高規模・変動率など)」を
+# スケール非依存な形で特徴量に加える。
 # =========================================================
 FEATURES = [
     # 基本
@@ -139,6 +192,15 @@ FEATURES = [
     # 相対強度
     "relative_strength",
 
+    # テスタ型モメンタム
+    "ret5",
+    "ret20",
+    "ma25_slope5",
+    "volume_surge",
+    "breakout20",
+    "trend_alignment",
+    "momentum_score",
+
     # ボリンジャーバンド
     "bb_position",
     "bb_width",
@@ -148,6 +210,10 @@ FEATURES = [
 
     # ATR
     "atr_ratio",
+
+    # 銘柄特性(スケール非依存)
+    "volatility20",
+    "avg_volume_ratio",
 
     # 日経平均
     "nikkei_kairi25",
@@ -165,8 +231,13 @@ FEATURES = [
 
 # =========================================================
 # ダウンロード失敗時のリトライ
+#
+# ★改善点⑥
+#
+# 指数バックオフ(2秒→4秒→8秒→16秒…)にして、
+# yfinance側のレート制限に配慮する。
 # =========================================================
-def safe_download(ticker, retries=3, wait_sec=3, **kwargs):
+def safe_download(ticker, retries=5, base_wait=2, **kwargs):
 
     for attempt in range(1, retries + 1):
 
@@ -192,10 +263,71 @@ def safe_download(ticker, retries=3, wait_sec=3, **kwargs):
             )
 
         if attempt < retries:
+
+            wait_sec = base_wait * (2 ** (attempt - 1))
+
+            print(
+                f"{wait_sec}秒待機してリトライします..."
+            )
+
             time.sleep(wait_sec)
 
     print(
         f"❌ {ticker} リトライ{retries}回失敗"
+    )
+
+    return None
+
+
+# =========================================================
+# 複数銘柄の一括ダウンロード
+#
+# ★改善点⑥
+#
+# 銘柄ごとに個別アクセスするのではなく、
+# 可能な限りまとめて1回のリクエストで取得し、
+# API呼び出し回数を減らす。
+# 失敗した場合は呼び出し側で個別リトライにフォールバックする。
+# =========================================================
+def safe_download_batch(tickers, retries=5, base_wait=2, **kwargs):
+
+    for attempt in range(1, retries + 1):
+
+        try:
+            df = yf.download(
+                tickers,
+                group_by="ticker",
+                threads=True,
+                **kwargs
+            )
+
+            if df is not None and not df.empty:
+                return df
+
+            print(
+                f"一括取得: 空データ "
+                f"(試行{attempt}/{retries})"
+            )
+
+        except Exception as e:
+
+            print(
+                f"一括取得失敗 "
+                f"(試行{attempt}/{retries}): {e}"
+            )
+
+        if attempt < retries:
+
+            wait_sec = base_wait * (2 ** (attempt - 1))
+
+            print(
+                f"{wait_sec}秒待機してリトライします..."
+            )
+
+            time.sleep(wait_sec)
+
+    print(
+        "❌ 一括取得 リトライ失敗"
     )
 
     return None
@@ -392,6 +524,96 @@ def create_features(df):
 
 
     # -----------------------------------------------------
+    # テスタ型モメンタム特徴量
+    # -----------------------------------------------------
+    df["ret5"] = (
+        close.pct_change(5) * 100
+    )
+
+    df["ret20"] = (
+        close.pct_change(20) * 100
+    )
+
+    # MA25が5日前より上向いているかを数値化
+    df["ma25_slope5"] = (
+        (
+            df["ma25"]
+            /
+            df["ma25"].shift(5)
+            - 1
+        ) * 100
+    )
+
+    # 短期の出来高急増
+    df["volume_surge"] = (
+        volume
+        /
+        volume.rolling(5).mean()
+    )
+
+    # 20日高値をどれだけ上抜いているか
+    rolling_high20 = (
+        close.shift(1).rolling(20).max()
+    )
+
+    df["breakout20"] = (
+        close / rolling_high20 - 1
+    ) * 100
+
+    # トレンド方向の整合性
+    df["trend_alignment"] = (
+        (close > df["ma25"]).astype(int)
+        +
+        (df["ma25"] > df["ma75"]).astype(int)
+        +
+        (df["ma25_slope5"] > 0).astype(int)
+    )
+
+    # 0～100のテスタ型モメンタムスコア
+    momentum_score = pd.Series(
+        0.0,
+        index=df.index
+    )
+
+    momentum_score += np.where(
+        close > df["ma25"], 20, 0
+    )
+
+    momentum_score += np.where(
+        df["ma25"] > df["ma75"], 20, 0
+    )
+
+    momentum_score += np.where(
+        df["ma25_slope5"] > 0, 15, 0
+    )
+
+    momentum_score += np.where(
+        df["ret5"] > 0, 10, 0
+    )
+
+    momentum_score += np.where(
+        df["ret20"] > 0, 10, 0
+    )
+
+    momentum_score += np.where(
+        df["volume_surge"] >= 1.2, 10, 0
+    )
+
+    momentum_score += np.where(
+        df["from_high"] >= -10, 10, 0
+    )
+
+    momentum_score += np.where(
+        df["breakout20"] >= 0, 5, 0
+    )
+
+    df["momentum_score"] = momentum_score.clip(
+        lower=0,
+        upper=100
+    )
+
+
+    # -----------------------------------------------------
     # 相対強度用中間列
     # -----------------------------------------------------
     df["_stock_ret5"] = (
@@ -487,6 +709,33 @@ def create_features(df):
         * 100
     )
 
+
+    # -----------------------------------------------------
+    # ★改善点②: 銘柄特性(スケール非依存)
+    #
+    # volatility20      … 直近20日の日次リターンのばらつき(%)
+    # avg_volume_ratio  … 直近20日平均出来高 / 直近60日平均出来高
+    #                      (銘柄間の出来高規模差を吸収した「今が
+    #                       出来高多いか少ないか」の相対指標)
+    # -----------------------------------------------------
+    df["avg_volume20"] = (
+        volume.rolling(20).mean()
+    )
+
+    df["avg_volume60"] = (
+        volume.rolling(60).mean()
+    )
+
+    df["volatility20"] = (
+        df["ret1"].rolling(20).std() * 100
+    )
+
+    df["avg_volume_ratio"] = (
+        df["avg_volume20"]
+        /
+        df["avg_volume60"].replace(0, np.nan)
+    )
+
     return df
 
 
@@ -519,30 +768,12 @@ def calc_score(
         close.dropna().iloc[-1]
     )
 
-    rsi = float(
-        df["rsi"].iloc[-1]
-    )
-
-    macd = float(
-        df["macd"].iloc[-1]
-    )
-
-    signal = float(
-        df["signal"].iloc[-1]
-    )
-
-    ma25 = float(
-        df["ma25"].iloc[-1]
-    )
-
-    ma75 = float(
-        df["ma75"].iloc[-1]
-    )
-
-    vol_ratio = float(
-        df["vol_ratio"].iloc[-1]
-    )
-
+    rsi = float(df["rsi"].iloc[-1])
+    macd = float(df["macd"].iloc[-1])
+    signal = float(df["signal"].iloc[-1])
+    ma25 = float(df["ma25"].iloc[-1])
+    ma75 = float(df["ma75"].iloc[-1])
+    vol_ratio = float(df["vol_ratio"].iloc[-1])
 
     # -----------------------------------------------------
     # 52週高値からの距離
@@ -555,35 +786,27 @@ def calc_score(
         price / high52 - 1
     ) * 100
 
-
     # =====================================================
-    # テクニカルスコア
+    # 従来テクニカルスコア
     # =====================================================
     technical_score = 0
-
 
     if rsi < 35:
         technical_score += 25
 
-
     if macd > signal:
         technical_score += 25
-
 
     if ma25 > ma75:
         technical_score += 20
 
-
     if vol_ratio > 1.5:
         technical_score += 20
 
-
     if distance > -10:
         technical_score += 15
-
     elif distance > -20:
         technical_score += 8
-
 
     nikkei_rsi_value = float(
         df["nikkei_rsi"].iloc[-1]
@@ -592,7 +815,6 @@ def calc_score(
     if nikkei_rsi_value > 50:
         technical_score += 5
 
-
     nikkei_return_value = float(
         df["nikkei_return_5d"].iloc[-1]
     )
@@ -600,14 +822,26 @@ def calc_score(
     if nikkei_return_value > 0:
         technical_score += 5
 
+    # =====================================================
+    # テスタ型モメンタム
+    # =====================================================
+    testa_score = float(
+        df["momentum_score"].iloc[-1]
+    )
+
+    ret5 = float(df["ret5"].iloc[-1])
+    ret20 = float(df["ret20"].iloc[-1])
+    ma25_slope5 = float(df["ma25_slope5"].iloc[-1])
+    volume_surge = float(df["volume_surge"].iloc[-1])
+    breakout20 = float(df["breakout20"].iloc[-1])
+    relative_strength = float(
+        df["relative_strength"].iloc[-1]
+    )
 
     # =====================================================
-    # AIスコア
+    # AI + 従来テクニカル + テスタ型モメンタム
     # =====================================================
     MAX_TECHNICAL_SCORE = 115.0
-
-    TECH_WEIGHT = 0.70
-    AI_WEIGHT = 0.30
 
     technical_score_normalized = (
         technical_score
@@ -615,12 +849,17 @@ def calc_score(
         * 100
     )
 
+    # 従来AI部分を少し残し、モメンタムを追加
+    BASE_TECH_WEIGHT = 0.525
+    AI_WEIGHT = 0.225
+    TESTA_WEIGHT = TESTA_MOMENTUM_WEIGHT
+
     ai_score = (
-        technical_score_normalized
-        * TECH_WEIGHT
+        technical_score_normalized * BASE_TECH_WEIGHT
         +
-        (up_prob * 100)
-        * AI_WEIGHT
+        (up_prob * 100) * AI_WEIGHT
+        +
+        testa_score * TESTA_WEIGHT
     )
 
     ai_score = max(
@@ -628,22 +867,12 @@ def calc_score(
         min(100, ai_score)
     )
 
-
     # =====================================================
     # 確率
     # =====================================================
-    up_percent = (
-        up_prob * 100
-    )
-
-    down_percent = (
-        down_prob * 100
-    )
-
-    flat_percent = (
-        flat_prob * 100
-    )
-
+    up_percent = up_prob * 100
+    down_percent = down_prob * 100
+    flat_percent = flat_prob * 100
 
     # =====================================================
     # 拮抗・横ばい判定
@@ -652,44 +881,31 @@ def calc_score(
     TIE_MARGIN = 1.0
 
     is_tie = (
-        abs(
-            up_percent
-            - down_percent
-        )
+        abs(up_percent - down_percent)
         <= TIE_MARGIN
     )
 
     is_flat_dominant = (
-        flat_percent
-        >= FLAT_DOMINANT_THRESHOLD
+        flat_percent >= FLAT_DOMINANT_THRESHOLD
     )
 
-
     # =====================================================
-    # ★日経MA25 / MA75判定
-    #
-    # calc_score内でも直接確認する。
-    #
-    # NaNや列不存在の場合は安全側でNO。
+    # 日経トレンド
     # =====================================================
     nikkei_uptrend = False
 
     try:
-
         nikkei_ma25_value = float(
             df["nikkei_ma25"].iloc[-1]
         )
-
         nikkei_ma75_value = float(
             df["nikkei_ma75"].iloc[-1]
         )
 
         if (
             np.isfinite(nikkei_ma25_value)
-            and
-            np.isfinite(nikkei_ma75_value)
+            and np.isfinite(nikkei_ma75_value)
         ):
-
             nikkei_uptrend = (
                 nikkei_ma25_value
                 >
@@ -697,102 +913,67 @@ def calc_score(
             )
 
     except Exception as e:
-
         print(
             "⚠ 日経トレンド判定失敗:",
             e
         )
 
-        nikkei_uptrend = False
-
-
     # =====================================================
-    # 通常のAI判定
-    #
-    # ここではAIの判定ロジックそのものを変更しない。
+    # 通常AI判定
     # =====================================================
     if is_flat_dominant:
-
         if (
             up_percent >= 50
-            and
-            up_percent > down_percent
+            and up_percent > down_percent
         ):
-
-            final_signal = (
-                "🟡 監視(横ばい優勢)"
-            )
-
+            final_signal = "🟡 監視(横ばい優勢)"
         else:
-
             final_signal = "🔴 買わない"
 
-
     elif is_tie:
-
         final_signal = "🟡 監視(拮抗)"
-
 
     elif (
         up_percent >= 60
-        and
-        up_percent > down_percent
+        and up_percent > down_percent
     ):
-
         final_signal = "🔥 強い買い"
-
 
     elif (
         up_percent >= 50
-        and
-        up_percent > down_percent
+        and up_percent > down_percent
     ):
-
         final_signal = "🟢 買い"
-
 
     elif (
         up_percent >= 40
-        and
-        up_percent > down_percent
+        and up_percent > down_percent
     ):
-
         final_signal = "🟡 監視"
 
-
     else:
-
         final_signal = "🔴 買わない"
 
+    # =====================================================
+    # テスタ型フィルター
+    #
+    # 強い買い/買いは、
+    # 「上昇確率」だけでなくモメンタムも要求する。
+    #
+    # ただし既存AIの確率そのものは変更しない。
+    # =====================================================
+    testa_weak = (
+        testa_score < TESTA_MIN_SCORE_FOR_BUY
+    )
 
-    # =====================================================
-    # ★★★ 日経トレンドフィルター ★★★
-    #
-    # 日経MA25 > MA75
-    #     → 強い買い / 買いを許可
-    #
-    # 日経MA25 <= MA75
-    #     → 強い買い / 買いを禁止
-    #     → 監視へ変更
-    #
-    # 重要：
-    # AIスコア・確率は変更しない。
-    # 最終シグナルだけを制御する。
-    # =====================================================
+    if final_signal in ("🔥 強い買い", "🟢 買い"):
+        if testa_weak:
+            final_signal = "🟡 監視(モメンタム不足)"
+
+    # 日経フィルター
     if not nikkei_uptrend:
-
-        if final_signal == "🔥 強い買い":
-
-            final_signal = (
-                "🟡 監視(日経下落/レンジ)"
-            )
-
-        elif final_signal == "🟢 買い":
-
-            final_signal = (
-                "🟡 監視(日経下落/レンジ)"
-            )
-
+        if final_signal in ("🔥 強い買い", "🟢 買い"):
+            final_signal = "🟡 監視(日経下落/レンジ)"
 
     # =====================================================
     # ATRベース利確・損切
@@ -804,94 +985,65 @@ def calc_score(
     ATR_TP_MULTIPLIER = 3.0
     ATR_SL_MULTIPLIER = 1.5
 
-
     take_profit = round(
         price
-        *
-        (
+        * (
             1
-            +
-            (
-                atr_ratio_value
-                / 100
-            )
+            + (atr_ratio_value / 100)
             * ATR_TP_MULTIPLIER
         ),
         0
     )
 
-
     stop_loss = round(
         price
-        *
-        (
+        * (
             1
-            -
-            (
-                atr_ratio_value
-                / 100
-            )
+            - (atr_ratio_value / 100)
             * ATR_SL_MULTIPLIER
         ),
         0
     )
 
-
     return {
-
-        "score": round(
-            ai_score,
+        "score": round(ai_score, 1),
+        "signal": final_signal,
+        "category": signal_category(final_signal),
+        "nikkei_uptrend": bool(nikkei_uptrend),
+        "technical_score": round(
+            technical_score_normalized,
             1
         ),
-
-        "signal": final_signal,
-
-        "nikkei_uptrend":
-            bool(nikkei_uptrend),
-
-        "technical_score":
-            round(
-                technical_score_normalized,
-                1
-            ),
-
-        "price":
-            round(price, 0),
-
-        "rsi":
-            round(rsi, 1),
-
-        "vol":
-            round(vol_ratio, 2),
-
-        "take_profit":
-            take_profit,
-
-        "stop_loss":
-            stop_loss,
-
-        "up_prob":
-            round(
-                up_prob * 100,
-                1
-            ),
-
-        "flat_prob":
-            round(
-                flat_prob * 100,
-                1
-            ),
-
-        "down_prob":
-            round(
-                down_prob * 100,
-                1
-            ),
+        "testa_score": round(testa_score, 1),
+        "ret5": round(ret5, 2),
+        "ret20": round(ret20, 2),
+        "ma25_slope5": round(ma25_slope5, 3),
+        "volume_surge": round(volume_surge, 2),
+        "breakout20": round(breakout20, 2),
+        "relative_strength": round(
+            relative_strength * 100,
+            2
+        ),
+        "price": round(price, 0),
+        "rsi": round(rsi, 1),
+        "vol": round(vol_ratio, 2),
+        "take_profit": take_profit,
+        "stop_loss": stop_loss,
+        "up_prob": round(up_prob * 100, 1),
+        "flat_prob": round(flat_prob * 100, 1),
+        "down_prob": round(down_prob * 100, 1),
     }
 
 
 # =========================================================
 # 過去予測の5営業日以内結果判定
+#
+# ★改善点①
+#
+# 「行数が5あるから5日」ではなく、
+# 予測日から5営業日経過したかどうかで判定する。
+# 祝日・データ欠測等で実際の取得行数が5に満たない場合は、
+# 無理に判定を確定させず「判定保留」として次回に回す。
 # =========================================================
 def update_prediction_results():
 
@@ -996,6 +1148,7 @@ def update_prediction_results():
             continue
 
 
+        # 予測日の翌営業日から5営業日分
         business_days = pd.bdate_range(
             start=(
                 prediction_date
@@ -1007,6 +1160,7 @@ def update_prediction_results():
 
 
         if business_days[-1] > today:
+            # まだ5営業日経過していない → 判定保留
             continue
 
 
@@ -1039,7 +1193,7 @@ def update_prediction_results():
         ):
 
             print(
-                f"{ticker} 株価データなし"
+                f"{ticker} 株価データなし(判定保留)"
             )
 
             continue
@@ -1056,15 +1210,31 @@ def update_prediction_results():
             )
 
 
+        # ---------------------------------------------------
+        # ★5営業日分のデータが揃っていない場合は判定保留
+        #
+        # 祝日・システム障害等でデータが欠測していると、
+        # 本来5営業日経過していても実データが5行未満のことがある。
+        # ここで無理にHOLD/TIMEOUT_LOSSに確定させると
+        # 「実際には未検証の結果」が成績に混入してしまうため、
+        # 次回のcron実行に持ち越す。
+        # ---------------------------------------------------
+        if len(data) < 5:
+
+            print(
+                f"{ticker} {prediction_date.date()} "
+                f"判定保留: 営業日データ{len(data)}/5件しか取得できていません"
+            )
+
+            continue
+
+
         result = None
         return_rate = None
         hold_days = None
 
 
-        check_days = min(
-            5,
-            len(data)
-        )
+        check_days = 5
 
 
         for day_index in range(
@@ -1831,6 +2001,69 @@ stale_warnings = []
 
 
 # =========================================================
+# ★改善点⑥: 全銘柄まとめて一括取得
+#
+# 銘柄ごとに個別リクエストするのではなく、
+# まず一括ダウンロードを試み、
+# 取得できなかった銘柄だけ個別にフォールバックする。
+# =========================================================
+batch_price_data = safe_download_batch(
+    TICKERS,
+    period="3y",
+    interval="1d",
+    auto_adjust=True
+)
+
+
+def get_ticker_ohlcv(ticker):
+
+    # 一括取得データから該当銘柄を抽出
+    if batch_price_data is not None:
+
+        try:
+
+            if isinstance(
+                batch_price_data.columns,
+                pd.MultiIndex
+            ):
+
+                top_level = (
+                    batch_price_data.columns
+                    .get_level_values(0)
+                )
+
+                if ticker in top_level:
+
+                    sub_df = (
+                        batch_price_data[ticker]
+                        .dropna(how="all")
+                        .copy()
+                    )
+
+                    if sub_df is not None and len(sub_df) >= 150:
+
+                        return sub_df
+
+        except Exception as e:
+
+            print(
+                f"{ticker} 一括データ抽出失敗: {e}"
+            )
+
+    # 一括取得で十分なデータが取れなかった銘柄は個別にリトライ
+    print(
+        f"{ticker} 個別ダウンロードにフォールバック"
+    )
+
+    return safe_download(
+        ticker,
+        period="3y",
+        interval="1d",
+        auto_adjust=True
+    )
+
+
+# =========================================================
 # メイン処理
 # =========================================================
 for ticker in TICKERS:
@@ -1843,11 +2076,8 @@ for ticker in TICKERS:
         )
 
 
-        df = safe_download(
-            ticker,
-            period="3y",
-            interval="1d",
-            auto_adjust=True
+        df = get_ticker_ohlcv(
+            ticker
         )
 
 
@@ -2000,13 +2230,6 @@ for ticker in TICKERS:
         # =================================================
         # 流動性フィルター
         # =================================================
-        full_df["avg_volume20"] = (
-            full_df["Volume"]
-            .rolling(20)
-            .mean()
-        )
-
-
         latest_avg_volume = (
             full_df[
                 "avg_volume20"
@@ -2035,6 +2258,14 @@ for ticker in TICKERS:
 
         # =================================================
         # ATRベース3クラスtarget
+        #
+        # ★改善点④(確認)
+        #
+        # FORWARD_DAYS(3営業日)先の株価がまだ確定していない
+        # 直近の行は future_return_target が NaN になるため、
+        # 下の notna() フィルターで自動的に学習データから
+        # 除外される。つまり「予測はできるが正解がまだ
+        # 分からない直近3日分」は絶対に学習に混ざらない。
         # =================================================
         future_price = (
             full_df["Close"]
@@ -2090,7 +2321,7 @@ for ticker in TICKERS:
 
 
         # -------------------------------------------------
-        # 将来価格が存在しない行を除外
+        # ★未来が確定していない行(直近FORWARD_DAYS日分)を除外
         # -------------------------------------------------
         train_df = (
             train_df[
@@ -2184,6 +2415,13 @@ for ticker in TICKERS:
 
         # =================================================
         # 予測用最新行
+        #
+        # ★改善点④(確認)
+        #
+        # ここで使う latest 行(=今日時点の最新行)は、
+        # target算出時にshift(-FORWARD_DAYS)でNaNになった行、
+        # つまり上のtrain_dfには含まれていない未確定データ。
+        # 「予測には使うが学習には使わない」を徹底している。
         # =================================================
         latest = (
             full_df[
@@ -2593,6 +2831,9 @@ if model_ready:
                 "signal":
                     data["signal"],
 
+                "category":
+                    data["category"],
+
                 "nikkei_uptrend":
                     bool(
                         data.get(
@@ -2605,6 +2846,29 @@ if model_ready:
                     data[
                         "technical_score"
                     ],
+
+                "testa_score":
+                    data[
+                        "testa_score"
+                    ],
+
+                "ret5":
+                    data["ret5"],
+
+                "ret20":
+                    data["ret20"],
+
+                "ma25_slope5":
+                    data["ma25_slope5"],
+
+                "volume_surge":
+                    data["volume_surge"],
+
+                "breakout20":
+                    data["breakout20"],
+
+                "relative_strength":
+                    data["relative_strength"],
 
                 "prob":
                     data["up_prob"],
@@ -2648,7 +2912,9 @@ if model_ready:
         print(
             f"{ticker} "
             f"score={data['score']} "
+            f"testa={data['testa_score']} "
             f"判定={data['signal']} "
+            f"区分={data['category']} "
             f"日経上昇トレンド="
             f"{'YES' if data.get('nikkei_uptrend', False) else 'NO'} "
             f"下落={data['down_prob']:.1f}% "
@@ -2798,6 +3064,13 @@ for i, r in enumerate(top):
 
 AIスコア: {r['score']}
 テクニカル: {r['technical_score']}
+テスタ型モメンタム: {r['testa_score']}
+5日騰落率: {r['ret5']:+.2f}%
+20日騰落率: {r['ret20']:+.2f}%
+MA25傾き(5日): {r['ma25_slope5']:+.3f}%
+出来高急増率: {r['volume_surge']:.2f}倍
+20日高値突破: {r['breakout20']:+.2f}%
+日経対比強度: {r['relative_strength']:+.2f}%
 日経上昇トレンド: {'YES 🟢' if r['nikkei_uptrend'] else 'NO 🔴'}
 
 下落確率: {r['down_prob']}%
@@ -2817,6 +3090,13 @@ RSI: {r['rsi']}
 
 # =========================================================
 # 予測履歴保存
+#
+# ★改善点⑤
+#
+# 「買い推奨(buy)」「監視(monitor)」「対象外(no_buy)」の
+# 区分(category)を必ず保存する。
+# これにより後段の成績集計で「買い推奨だけの勝率」を
+# 正確に出せるようにする。
 # =========================================================
 history_file = (
     "prediction_history.csv"
@@ -2848,8 +3128,35 @@ for rank, r in enumerate(
             "rank":
                 rank,
 
+            "signal":
+                r["signal"],
+
+            "category":
+                r["category"],
+
             "score":
                 r["score"],
+
+            "testa_score":
+                r["testa_score"],
+
+            "ret5":
+                r["ret5"],
+
+            "ret20":
+                r["ret20"],
+
+            "ma25_slope5":
+                r["ma25_slope5"],
+
+            "volume_surge":
+                r["volume_surge"],
+
+            "breakout20":
+                r["breakout20"],
+
+            "relative_strength":
+                r["relative_strength"],
 
             "probability":
                 r["up_prob"],
@@ -2916,9 +3223,18 @@ if os.path.exists(
 
 
     # -----------------------------------------------------
-    # 旧CSVにnikkei_uptrendが存在しなくても
-    # 新しい行で追加される。
+    # 旧CSVにsignal/categoryが存在しない行は
+    # 「区分不明(旧データ)」として扱い、成績集計からは除外する。
     # -----------------------------------------------------
+    if "category" not in old_df.columns:
+
+        old_df["category"] = np.nan
+
+    if "signal" not in old_df.columns:
+
+        old_df["signal"] = np.nan
+
+
     df_all = pd.concat(
         [
             old_df,
@@ -2957,7 +3273,105 @@ print(
 
 # =========================================================
 # AI成績評価
+#
+# ★改善点⑤
+#
+# 「買い推奨(category == buy)」だけを実戦成績として集計する。
+# 「監視(monitor)」は参考データとして別枠表示、
+# 「対象外(no_buy / 区分不明の旧データ)」は集計から除外する。
 # =========================================================
+def _summarize(df):
+
+    total = len(df)
+
+    wins = (
+        df["result"]
+        == "WIN"
+    ).sum()
+
+    losses = (
+        df["result"]
+        .isin(
+            [
+                "LOSS",
+                "TIMEOUT_LOSS"
+            ]
+        )
+    ).sum()
+
+    holds = (
+        df["result"]
+        == "HOLD"
+    ).sum()
+
+    decided = wins + losses
+
+    win_rate = (
+        wins
+        /
+        decided
+        *
+        100
+        if decided > 0
+        else 0
+    )
+
+    returns = (
+        df["return"]
+        .dropna()
+    )
+
+    if len(returns) > 0:
+
+        avg_return = returns.mean()
+        best = returns.max()
+        worst = returns.min()
+
+        gains = returns[returns > 0].sum()
+
+        loss_sum = (
+            -returns[returns < 0].sum()
+        )
+
+        profit_factor = (
+            gains / loss_sum
+            if loss_sum > 0
+            else np.nan
+        )
+
+    else:
+
+        avg_return = 0
+        best = 0
+        worst = 0
+        profit_factor = np.nan
+
+    days = (
+        df["hold_days"]
+        .dropna()
+    )
+
+    avg_days = (
+        days.mean()
+        if len(days) > 0
+        else 0
+    )
+
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "holds": holds,
+        "decided": decided,
+        "win_rate": win_rate,
+        "avg_return": avg_return,
+        "best": best,
+        "worst": worst,
+        "profit_factor": profit_factor,
+        "avg_days": avg_days,
+    }
+
+
 def show_ai_performance():
 
     file = (
@@ -2973,6 +3387,11 @@ def show_ai_performance():
     df = pd.read_csv(
         file
     )
+
+
+    if "category" not in df.columns:
+
+        df["category"] = np.nan
 
 
     result_df = df[
@@ -3017,92 +3436,36 @@ def show_ai_performance():
     )
 
 
-    total = len(
-        result_df
+    # -----------------------------------------------------
+    # 区分ごとに分離
+    # -----------------------------------------------------
+    buy_df = (
+        result_df[
+            result_df["category"] == "buy"
+        ]
+    )
+
+    monitor_df = (
+        result_df[
+            result_df["category"] == "monitor"
+        ]
     )
 
 
-    wins = (
-        result_df["result"]
-        == "WIN"
-    ).sum()
+    buy_stat = _summarize(buy_df)
+    monitor_stat = _summarize(monitor_df)
 
 
-    losses = (
-        result_df["result"]
-        .isin(
-            [
-                "LOSS",
-                "TIMEOUT_LOSS"
-            ]
-        )
-    ).sum()
-
-
-    holds = (
-        result_df["result"]
-        == "HOLD"
-    ).sum()
-
-
-    decided = (
-        wins
-        +
-        losses
+    pf_text = (
+        f"{buy_stat['profit_factor']:.2f}"
+        if pd.notna(buy_stat["profit_factor"])
+        else "N/A"
     )
 
 
-    win_rate = (
-        wins
-        /
-        decided
-        *
-        100
-        if decided > 0
-        else 0
-    )
-
-
-    returns = (
-        result_df["return"]
-        .dropna()
-    )
-
-
-    if len(returns) > 0:
-
-        avg_return = (
-            returns.mean()
-        )
-
-        best = (
-            returns.max()
-        )
-
-        worst = (
-            returns.min()
-        )
-
-    else:
-
-        avg_return = 0
-        best = 0
-        worst = 0
-
-
-    days = (
-        result_df["hold_days"]
-        .dropna()
-    )
-
-
-    avg_days = (
-        days.mean()
-        if len(days) > 0
-        else 0
-    )
-
-
+    # -----------------------------------------------------
+    # 買い推奨の順位別内訳(rank 1..TOP_N)
+    # -----------------------------------------------------
     rank_text = ""
 
 
@@ -3112,8 +3475,8 @@ def show_ai_performance():
     ):
 
         rank_df = (
-            result_df[
-                result_df["rank"]
+            buy_df[
+                buy_df["rank"]
                 ==
                 rank
             ]
@@ -3129,135 +3492,73 @@ def show_ai_performance():
 
             rank_text += (
                 f"\n#{rank}位\n\n"
-                "データなし\n"
+                "データなし(買い推奨なし)\n"
             )
 
             continue
 
 
-        rank_wins = (
-            rank_df["result"]
-            == "WIN"
-        ).sum()
+        rank_stat = _summarize(rank_df)
 
-
-        rank_losses = (
-            rank_df["result"]
-            .isin(
-                [
-                    "LOSS",
-                    "TIMEOUT_LOSS"
-                ]
-            )
-        ).sum()
-
-
-        rank_holds = (
-            rank_df["result"]
-            == "HOLD"
-        ).sum()
-
-
-        rank_decided = (
-            rank_wins
-            +
-            rank_losses
-        )
-
-
-        rank_win_rate = (
-            rank_wins
-            /
-            rank_decided
-            *
-            100
-            if rank_decided > 0
-            else 0
-        )
-
-
-        rank_returns = (
-            rank_df["return"]
-            .dropna()
-        )
-
-
-        if len(rank_returns) > 0:
-
-            rank_avg_return = (
-                rank_returns.mean()
-            )
-
-            rank_best = (
-                rank_returns.max()
-            )
-
-            rank_worst = (
-                rank_returns.min()
-            )
-
-        else:
-
-            rank_avg_return = 0
-            rank_best = 0
-            rank_worst = 0
-
-
-        rank_days = (
-            rank_df["hold_days"]
-            .dropna()
-        )
-
-
-        rank_avg_days = (
-            rank_days.mean()
-            if len(rank_days) > 0
-            else 0
+        rank_pf_text = (
+            f"{rank_stat['profit_factor']:.2f}"
+            if pd.notna(rank_stat["profit_factor"])
+            else "N/A"
         )
 
 
         rank_text += f"""
 #{rank}位
 
-勝率: {rank_win_rate:.1f}%
-WIN: {rank_wins}件
-LOSS: {rank_losses}件
-HOLD: {rank_holds}件
-判定数: {rank_total}件
+勝率: {rank_stat['win_rate']:.1f}%
+WIN: {rank_stat['wins']}件
+LOSS: {rank_stat['losses']}件
+HOLD: {rank_stat['holds']}件
+判定数: {rank_stat['total']}件
 
-平均利益率: {rank_avg_return:.2f}%
-平均保有日数: {rank_avg_days:.1f}日
-最高利益: {rank_best:+.2f}%
-最大損失: {rank_worst:.2f}%
+平均利益率: {rank_stat['avg_return']:.2f}%
+Profit Factor: {rank_pf_text}
+平均保有日数: {rank_stat['avg_days']:.1f}日
+最高利益: {rank_stat['best']:+.2f}%
+最大損失: {rank_stat['worst']:.2f}%
 """
 
 
     return f"""
 ━━━━━━━━━━━━━━
-📊 AI実績
-（3クラス分類・TOP{TOP_N}・5営業日判定）
+📊 AI実績（買い推奨のみ集計）
+（🔥強い買い・🟢買い / 5営業日判定）
 ━━━━━━━━━━━━━━
 
-【全体】
+【買い推奨 全体】
 
-判定数: {total}件
+判定数: {buy_stat['total']}件
 
-勝ち: {wins}件
-負け: {losses}件
-HOLD: {holds}件
+勝ち: {buy_stat['wins']}件
+負け: {buy_stat['losses']}件
+HOLD: {buy_stat['holds']}件
 
-勝率: {win_rate:.1f}%
+勝率: {buy_stat['win_rate']:.1f}%
+Profit Factor: {pf_text}
 
-平均利益率: {avg_return:.2f}%
-平均保有日数: {avg_days:.1f}日
+平均利益率: {buy_stat['avg_return']:.2f}%
+平均保有日数: {buy_stat['avg_days']:.1f}日
 
-最高利益: {best:+.2f}%
-最大損失: {worst:.2f}%
+最高利益: {buy_stat['best']:+.2f}%
+最大損失: {buy_stat['worst']:.2f}%
 
 ━━━━━━━━━━━━━━
-🏆 TOP{TOP_N}順位別
+🏆 買い推奨 順位別
 ━━━━━━━━━━━━━━
 {rank_text}
+━━━━━━━━━━━━━━
+🟡 監視シグナル(参考データ・成績には含めない)
+━━━━━━━━━━━━━━
+
+判定数: {monitor_stat['total']}件
+勝率(参考): {monitor_stat['win_rate']:.1f}%
+平均利益率(参考): {monitor_stat['avg_return']:.2f}%
+
 ━━━━━━━━━━━━━━
 """
 
