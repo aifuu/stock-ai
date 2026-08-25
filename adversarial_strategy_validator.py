@@ -507,7 +507,7 @@ pd.DataFrame(monitor_rows).to_csv("adversarial_monitoring_config.csv", index=Fal
 print("\n" + "=" * 100)
 print("🏁 FINAL ADVERSARIAL VALIDATION")
 print("=" * 100)
-print("探索数:", len(parameter_space))
+print("探索数:", len(param_space))
 print("N_eff近似:", n_eff)
 print("DEV候補:", len(dev_candidates))
 print("Validation PASS:", int((gate.validation_gate == "PASS").sum()))
@@ -530,7 +530,7 @@ lines = [
     "🛡️ AI ADVERSARIAL VALIDATION",
     "━━━━━━━━━━━━━━━━━━",
     f"期間：{START_DATE.date()} ～ {END_DATE.date()}",
-    f"探索数：{len(parameter_space)}",
+    f"探索数：{len(param_space)}",
     f"N_eff近似：{n_eff}",
     f"DEV候補：{len(dev_candidates)}",
     f"Validation PASS：{int((gate.validation_gate == 'PASS').sum())}",
