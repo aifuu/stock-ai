@@ -991,14 +991,17 @@ def calc_score(
         close.rolling(252).max().iloc[-1]
     )
 
-    distance = (
-        price / high52 - 1
-    ) * 100
+    if not np.isfinite(high52) or high52 <= 0:
+        distance = 0.0
+    else:
+        distance = (
+            price / high52 - 1
+        ) * 100
 
     # =====================================================
     # 従来テクニカルスコア
     # =====================================================
-    technical_score = 0
+    technical_score = 0.0
 
     if rsi < 35:
         technical_score += 25
@@ -1017,19 +1020,24 @@ def calc_score(
     elif distance > -20:
         technical_score += 8
 
+    # -----------------------------------------------------
+    # 日経テクニカル
+    # -----------------------------------------------------
     nikkei_rsi_value = float(
         df["nikkei_rsi"].iloc[-1]
     )
 
-    if nikkei_rsi_value > 50:
-        technical_score += 5
+    if np.isfinite(nikkei_rsi_value):
+        if nikkei_rsi_value > 50:
+            technical_score += 5
 
     nikkei_return_value = float(
         df["nikkei_return_5d"].iloc[-1]
     )
 
-    if nikkei_return_value > 0:
-        technical_score += 5
+    if np.isfinite(nikkei_return_value):
+        if nikkei_return_value > 0:
+            technical_score += 5
 
     # =====================================================
     # テスタ型モメンタム
@@ -1038,17 +1046,32 @@ def calc_score(
         df["momentum_score"].iloc[-1]
     )
 
-    ret5 = float(df["ret5"].iloc[-1])
-    ret20 = float(df["ret20"].iloc[-1])
-    ma25_slope5 = float(df["ma25_slope5"].iloc[-1])
-    volume_surge = float(df["volume_surge"].iloc[-1])
-    breakout20 = float(df["breakout20"].iloc[-1])
+    ret5 = float(
+        df["ret5"].iloc[-1]
+    )
+
+    ret20 = float(
+        df["ret20"].iloc[-1]
+    )
+
+    ma25_slope5 = float(
+        df["ma25_slope5"].iloc[-1]
+    )
+
+    volume_surge = float(
+        df["volume_surge"].iloc[-1]
+    )
+
+    breakout20 = float(
+        df["breakout20"].iloc[-1]
+    )
+
     relative_strength = float(
         df["relative_strength"].iloc[-1]
     )
 
     # =====================================================
-    # AI + 従来テクニカル + テスタ型モメンタム
+    # スコア正規化
     # =====================================================
     MAX_TECHNICAL_SCORE = 115.0
 
@@ -1058,30 +1081,35 @@ def calc_score(
         * 100
     )
 
-    # 従来AI部分を少し残し、モメンタムを追加
+    # =====================================================
+    # AI + テクニカル + テスタ
+    # =====================================================
     BASE_TECH_WEIGHT = 0.525
     AI_WEIGHT = 0.225
     TESTA_WEIGHT = TESTA_MOMENTUM_WEIGHT
 
     ai_score = (
-        technical_score_normalized * BASE_TECH_WEIGHT
+        technical_score_normalized
+        * BASE_TECH_WEIGHT
         +
-        (up_prob * 100) * AI_WEIGHT
+        (up_prob * 100)
+        * AI_WEIGHT
         +
-        testa_score * TESTA_WEIGHT
+        testa_score
+        * TESTA_WEIGHT
     )
 
     ai_score = max(
-        0,
-        min(100, ai_score)
+        0.0,
+        min(100.0, ai_score)
     )
 
     # =====================================================
     # 確率
     # =====================================================
-    up_percent = up_prob * 100
-    down_percent = down_prob * 100
-    flat_percent = flat_prob * 100
+    up_percent = float(up_prob * 100)
+    down_percent = float(down_prob * 100)
+    flat_percent = float(flat_prob * 100)
 
     # =====================================================
     # 拮抗・横ばい判定
@@ -1107,6 +1135,7 @@ def calc_score(
         nikkei_ma25_value = float(
             df["nikkei_ma25"].iloc[-1]
         )
+
         nikkei_ma75_value = float(
             df["nikkei_ma75"].iloc[-1]
         )
@@ -1128,78 +1157,325 @@ def calc_score(
         )
 
     # =====================================================
+    # ★ ポリシー条件
+    # =====================================================
+    #
+    # MIN_SCORE_FOR_BUY:
+    #   総合AIスコアの最低ライン
+    #
+    # POLICY_UP_THRESHOLD:
+    #   AI上昇確率の最低ライン
+    #
+    # この2つを満たさない限り
+    # 「買い」「強い買い」にはしない。
+    # =====================================================
+
+    score_policy_ok = (
+        ai_score >= MIN_SCORE_FOR_BUY
+    )
+
+    probability_policy_ok = (
+        up_percent >= POLICY_UP_THRESHOLD
+        and
+        up_percent > down_percent
+    )
+
+    policy_buy_ok = (
+        score_policy_ok
+        and
+        probability_policy_ok
+    )
+
+    # =====================================================
     # 通常AI判定
     # =====================================================
     if is_flat_dominant:
-        if (
-            up_percent >= 50
-            and up_percent > down_percent
-        ):
+
+        if policy_buy_ok:
             final_signal = "🟡 監視(横ばい優勢)"
         else:
             final_signal = "🔴 買わない"
 
     elif is_tie:
+
         final_signal = "🟡 監視(拮抗)"
 
-    elif (
-        up_percent >= 60
-        and up_percent > down_percent
-    ):
-        final_signal = "🔥 強い買い"
+    elif policy_buy_ok:
 
-    elif (
-        up_percent >= 50
-        and up_percent > down_percent
-    ):
-        final_signal = "🟢 買い"
+        # -------------------------------------------------
+        # ポリシー条件を満たした銘柄だけ
+        # 強い買い / 買いへ進む
+        # -------------------------------------------------
+        if (
+            up_percent >= max(
+                POLICY_UP_THRESHOLD,
+                60.0
+            )
+            and
+            ai_score >= (
+                MIN_SCORE_FOR_BUY + 10
+            )
+        ):
+            final_signal = "🔥 強い買い"
+
+        else:
+            final_signal = "🟢 買い"
 
     elif (
         up_percent >= 40
-        and up_percent > down_percent
+        and
+        up_percent > down_percent
     ):
+
         final_signal = "🟡 監視"
 
     else:
+
         final_signal = "🔴 買わない"
 
     # =====================================================
-    # テスタ型フィルター
-    #
-    # 強い買い/買いは、
-    # 「上昇確率」だけでなくモメンタムも要求する。
-    #
-    # ただし既存AIの確率そのものは変更しない。
+    # ★ テスタ型フィルター
     # =====================================================
     testa_weak = (
         testa_score < TESTA_MIN_SCORE_FOR_BUY
     )
 
-    if final_signal in ("🔥 強い買い", "🟢 買い"):
+    if final_signal in (
+        "🔥 強い買い",
+        "🟢 買い"
+    ):
+
         if testa_weak:
-            final_signal = "🟡 監視(モメンタム不足)"
 
-    # 日経フィルター
-    if not nikkei_uptrend:
-        if final_signal in ("🔥 強い買い", "🟢 買い"):
-            final_signal = "🟡 監視(日経下落/レンジ)"
+            final_signal = (
+                "🟡 監視(モメンタム不足)"
+            )
 
     # =====================================================
-    # ATRベース利確・損切
+    # ★ 日経フィルター
     # =====================================================
-    atr_ratio_value = float(
-        df["atr_ratio"].iloc[-1]
-    )
+    #
+    # NIKKEI_FILTER_ENABLED = True
+    # の場合のみ有効。
+    #
+    # 日経25MA <= 75MAなら
+    # 買い → 監視へ落とす。
+    # =====================================================
+    if (
+        NIKKEI_FILTER_ENABLED
+        and
+        not nikkei_uptrend
+    ):
 
-    ATR_TP_MULTIPLIER = 3.0
-    ATR_SL_MULTIPLIER = 1.5
+        if final_signal in (
+            "🔥 強い買い",
+            "🟢 買い"
+        ):
 
+            final_signal = (
+                "🟡 監視(日経下落/レンジ)"
+            )
+
+    # =====================================================
+    # ★ 最終スコア条件
+    # =====================================================
+    #
+    # 何らかのフィルターによって
+    # 買い条件を満たさなくなった場合、
+    # 強い買い/買いを残さない。
+    # =====================================================
+
+    if final_signal in (
+        "🔥 強い買い",
+        "🟢 買い"
+    ):
+
+        if not score_policy_ok:
+            final_signal = (
+                "🟡 監視(スコア不足)"
+            )
+
+        elif not probability_policy_ok:
+            final_signal = (
+                "🟡 監視(上昇確率不足)"
+            )
+
+    # =====================================================
+    # ★ ATRをOHLCから実計算
+    # =====================================================
+    #
+    # atr_ratioを固定値として使用しない。
+    #
+    # True Range:
+    #   High - Low
+    #   |High - 前日Close|
+    #   |Low  - 前日Close|
+    #
+    # 14日ATRを計算し、
+    # 現在価格に対するATR比率から
+    # TP / SLを決定する。
+    # =====================================================
+
+    atr_value = np.nan
+
+    try:
+
+        if all(
+            col in df.columns
+            for col in [
+                "High",
+                "Low",
+                "Close"
+            ]
+        ):
+
+            high = pd.to_numeric(
+                df["High"],
+                errors="coerce"
+            )
+
+            low = pd.to_numeric(
+                df["Low"],
+                errors="coerce"
+            )
+
+            close_series = pd.to_numeric(
+                df["Close"],
+                errors="coerce"
+            )
+
+            prev_close = (
+                close_series.shift(1)
+            )
+
+            tr1 = high - low
+
+            tr2 = (
+                high - prev_close
+            ).abs()
+
+            tr3 = (
+                low - prev_close
+            ).abs()
+
+            true_range = pd.concat(
+                [
+                    tr1,
+                    tr2,
+                    tr3
+                ],
+                axis=1
+            ).max(axis=1)
+
+            atr_series = (
+                true_range
+                .rolling(
+                    14,
+                    min_periods=5
+                )
+                .mean()
+            )
+
+            atr_candidate = float(
+                atr_series.iloc[-1]
+            )
+
+            if (
+                np.isfinite(atr_candidate)
+                and
+                atr_candidate > 0
+            ):
+
+                atr_value = (
+                    atr_candidate
+                )
+
+    except Exception as e:
+
+        print(
+            "⚠ ATR計算失敗:",
+            e
+        )
+
+    # =====================================================
+    # ATR計算できなかった場合のみ
+    # 既存のatr_ratioをフォールバック
+    # =====================================================
+    if (
+        not np.isfinite(atr_value)
+        or
+        atr_value <= 0
+    ):
+
+        try:
+
+            if "atr_ratio" in df.columns:
+
+                atr_ratio_fallback = float(
+                    df["atr_ratio"].iloc[-1]
+                )
+
+                if (
+                    np.isfinite(
+                        atr_ratio_fallback
+                    )
+                    and
+                    atr_ratio_fallback > 0
+                ):
+
+                    atr_value = (
+                        price
+                        * atr_ratio_fallback
+                        / 100.0
+                    )
+
+        except Exception:
+            pass
+
+    # =====================================================
+    # ATRがどうしても取れない場合
+    # =====================================================
+    #
+    # 固定ATRを勝手に入れるのではなく、
+    # TP/SLを現在価格から一定割合で作る。
+    #
+    # ※これはATRではない。
+    # =====================================================
+    if (
+        not np.isfinite(atr_value)
+        or
+        atr_value <= 0
+    ):
+
+        print(
+            "⚠ ATRを取得できないため"
+            "TP/SLを安全側のフォールバックで計算"
+        )
+
+        atr_ratio_value = 2.0
+
+    else:
+
+        atr_ratio_value = (
+            atr_value
+            / price
+            * 100.0
+        )
+
+    # =====================================================
+    # TP / SL
+    # =====================================================
     take_profit = round(
         price
         * (
-            1
-            + (atr_ratio_value / 100)
-            * ATR_TP_MULTIPLIER
+            1.0
+            +
+            (
+                atr_ratio_value
+                / 100.0
+            )
+            *
+            ATR_TP_MULTIPLIER
         ),
         0
     )
@@ -1207,42 +1483,111 @@ def calc_score(
     stop_loss = round(
         price
         * (
-            1
-            - (atr_ratio_value / 100)
-            * ATR_SL_MULTIPLIER
+            1.0
+            -
+            (
+                atr_ratio_value
+                / 100.0
+            )
+            *
+            ATR_SL_MULTIPLIER
         ),
         0
     )
 
+    # =====================================================
+    # 最終結果
+    # =====================================================
     return {
-        "score": round(ai_score, 1),
+        "score": round(
+            ai_score,
+            1
+        ),
+
         "signal": final_signal,
-        "category": signal_category(final_signal),
-        "nikkei_uptrend": bool(nikkei_uptrend),
+
+        "category": signal_category(
+            final_signal
+        ),
+
+        "nikkei_uptrend": bool(
+            nikkei_uptrend
+        ),
+
         "technical_score": round(
             technical_score_normalized,
             1
         ),
-        "testa_score": round(testa_score, 1),
-        "ret5": round(ret5, 2),
-        "ret20": round(ret20, 2),
-        "ma25_slope5": round(ma25_slope5, 3),
-        "volume_surge": round(volume_surge, 2),
-        "breakout20": round(breakout20, 2),
+
+        "testa_score": round(
+            testa_score,
+            1
+        ),
+
+        "ret5": round(
+            ret5,
+            2
+        ),
+
+        "ret20": round(
+            ret20,
+            2
+        ),
+
+        "ma25_slope5": round(
+            ma25_slope5,
+            3
+        ),
+
+        "volume_surge": round(
+            volume_surge,
+            2
+        ),
+
+        "breakout20": round(
+            breakout20,
+            2
+        ),
+
         "relative_strength": round(
             relative_strength * 100,
             2
         ),
-        "price": round(price, 0),
-        "rsi": round(rsi, 1),
-        "vol": round(vol_ratio, 2),
-        "take_profit": take_profit,
-        "stop_loss": stop_loss,
-        "up_prob": round(up_prob * 100, 1),
-        "flat_prob": round(flat_prob * 100, 1),
-        "down_prob": round(down_prob * 100, 1),
-    }
 
+        "price": round(
+            price,
+            0
+        ),
+
+        "rsi": round(
+            rsi,
+            1
+        ),
+
+        "vol": round(
+            vol_ratio,
+            2
+        ),
+
+        "take_profit": take_profit,
+
+        "stop_loss": stop_loss,
+
+        "up_prob": round(
+            up_percent,
+            1
+        ),
+
+        "flat_prob": round(
+            flat_percent,
+            1
+        ),
+
+        "down_prob": round(
+            down_percent,
+            1
+        ),
+    }
 
 # =========================================================
 # 過去予測の5営業日以内結果判定
