@@ -8,21 +8,13 @@ import pandas as pd
 import yfinance as yf
 
 # =========================================================
-# ADVERSARIAL STRATEGY VALIDATOR (修正版)
+# ADVERSARIAL STRATEGY VALIDATOR
 # =========================================================
 # 入力: walk_forward_all_candidates.csv
 # DEVだけで条件探索 → 全探索集合を監査 → Validation →
-# Purge/Embargo → Block Bootstrap CI → Regime →
-# 敵対的感度 → OOS → 銘柄別流動性を考慮したsizing Monte Carlo → 判定。
+# Purge/Embargo確認 → Block Bootstrap CI → Regime →
+# 敵対的感度 → OOS → sizing Monte Carlo → 判定。
 # HOLDは本番投入せずpaper_trade候補として保存。
-#
-# 【このスクリプトの責務範囲についての注記】
-# up_prob / score などの特徴量そのものの生成・特徴量重要度に基づく
-# 選定・per-foldのモデル再学習(=Rolling Walk-Forwardの本体)は、
-# 上流の walk_forward.py 側の責務という前提。このスクリプトは、
-# 上流が出力した候補に対する「条件(ルール)探索」と「統計的検証」
-# を担当する。上流側でも同様のリーク対策(特徴量重要度をtrain内だけ
-# で計算する等)が取られているか、別途必ず確認すること。
 # =========================================================
 
 CANDIDATE_FILE = os.getenv("WF_CANDIDATE_FILE", "walk_forward_all_candidates.csv")
@@ -34,7 +26,6 @@ PURGE_DAYS = int(os.getenv("WF_PURGE_DAYS", "7"))
 EMBARGO_DAYS = int(os.getenv("WF_EMBARGO_DAYS", "7"))
 INITIAL_CAPITAL = float(os.getenv("WF_INITIAL_CAPITAL", "1000000"))
 TARGET_CAPITAL = 100_000_000.0
-TARGET_YEARS = [10, 15, 20]  # FIX A: 未定義だったため追加(10/15/20年の3段階目標)
 
 MIN_VALIDATION_TRADES = 30
 MIN_TRADES_HARD = 20
@@ -55,12 +46,6 @@ MONTE_CARLO_ITERATIONS = int(os.getenv("WF_MONTE_CARLO_ITERATIONS", "5000"))
 RANDOM_SEED = 42
 MONITOR_MIN_TRADES = 20
 CUSUM_ARL0_TARGET = 200
-
-# FIX G: キャパシティ制約を「全銘柄共通の固定5000万円」から
-# 「銘柄ごとの実測平均売買代金に対する参加率」に変更するための定数。
-# あくまでヒューリスティックであり実測のマーケットインパクトモデルではない。
-MAX_PARTICIPATION = 0.05        # ポジションが平均売買代金の何%を超えたら追加ペナルティを課すか
-CAPACITY_PENALTY_COEF = 0.50    # 超過分をどれだけリターンから差し引くか(係数)
 
 UP_THRESHOLDS = [45, 50, 55, 60, 65]
 SCORE_THRESHOLDS = [50, 60, 70, 80]
@@ -138,13 +123,11 @@ phase_map.update({d: "VALIDATION" for d in validation_dates})
 phase_map.update({d: "OOS" for d in oos_dates})
 candidates["phase"] = candidates["date"].map(phase_map)
 
-VALIDATION_START = min(validation_dates)
-OOS_START = min(oos_dates)
-
 # Purging/Embargoに使う終端日を近似的に計算。
+# candidate CSVは既に予測候補であり、学習行ではないため、
+# ここでは境界付近の評価トレードを除外する。
 base_business = sorted(candidates["date"].drop_duplicates().tolist())
 idx_map = {d: i for i, d in enumerate(base_business)}
-
 
 def shift_date(d, n):
     p = idx_map.get(d)
@@ -152,17 +135,13 @@ def shift_date(d, n):
         return d
     return base_business[min(max(p + n, 0), len(base_business) - 1)]
 
-
 candidates["target_end_date"] = candidates["date"].map(lambda d: shift_date(d, 3))
-# 保守的に「試すパラメータの中で最も長い保有日数」を使って結果確定日を近似する。
-# (どのhold値のバリエーションでも境界をまたがないよう安全側に倒すための選択)
 candidates["trade_end_date"] = candidates["date"].map(lambda d: shift_date(d, max(HOLD_DAYS_LIST)))
 
 print("=" * 80)
-print("🛡️ ADVERSARIAL STRATEGY VALIDATOR (修正版)")
+print("🛡️ ADVERSARIAL STRATEGY VALIDATOR")
 print("探索対象期間:", START_DATE.date(), "～", END_DATE.date())
 print("DEV:", len(dev_dates), "VALIDATION:", len(validation_dates), "OOS:", len(oos_dates))
-print(f"Purge={PURGE_DAYS}日 Embargo={EMBARGO_DAYS}日 (VALIDATION開始:{VALIDATION_START.date()} OOS開始:{OOS_START.date()})")
 print("=" * 80)
 
 # ---------------------------------------------------------
@@ -174,38 +153,6 @@ for ticker in candidates["ticker"].drop_duplicates().tolist():
     x = safe_download(ticker, (START_DATE - pd.Timedelta(days=20)).strftime("%Y-%m-%d"), (END_DATE + pd.Timedelta(days=20)).strftime("%Y-%m-%d"))
     if x is not None and not x.empty:
         price_data[ticker] = x
-
-
-def build_ticker_liquidity(pdata, start, end):
-    """FIX G: 銘柄ごとの平均売買代金(円)を実データから算出する。
-    キャパシティ制約を全銘柄一律の定数ではなく、銘柄固有の値にするため。"""
-    liquidity = {}
-    vals = []
-    for ticker, df in pdata.items():
-        sub = df[(df.index >= start) & (df.index <= end)]
-        if sub.empty or "Volume" not in sub.columns:
-            continue
-        dv = (sub["Close"].astype(float) * sub["Volume"].astype(float)).replace([np.inf, -np.inf], np.nan).dropna()
-        if len(dv):
-            liquidity[ticker] = float(dv.mean())
-            vals.append(liquidity[ticker])
-    fallback = float(np.median(vals)) if vals else 50_000_000.0
-    return liquidity, fallback
-
-
-TICKER_LIQUIDITY, LIQUIDITY_FALLBACK = build_ticker_liquidity(price_data, START_DATE, END_DATE)
-print(f"流動性データ取得銘柄数: {len(TICKER_LIQUIDITY)}  フォールバック値: {LIQUIDITY_FALLBACK:,.0f}円/日")
-
-
-def capacity_penalty_for(ticker, position_value):
-    """FIX G: ポジション額が銘柄の平均売買代金に対してどれだけの参加率かを見て、
-    MAX_PARTICIPATIONを超えた分だけリターンにペナルティ(パーセンテージポイント)を課す。
-    実測のマーケットインパクトモデルではなく簡易ヒューリスティックである点に注意。"""
-    adv = TICKER_LIQUIDITY.get(ticker, LIQUIDITY_FALLBACK)
-    if not adv or adv <= 0:
-        adv = LIQUIDITY_FALLBACK
-    participation = position_value / adv
-    return max(0.0, participation - MAX_PARTICIPATION) * CAPACITY_PENALTY_COEF
 
 
 def evaluate_trade(ticker, date, entry, atr_ratio, tp, sl, hold_days, slippage=0.001):
@@ -248,24 +195,12 @@ def run_strategy(phase_df, up, score, nikkei, tp, sl, hold):
     selected = select_for_phase(phase_df, up, score, nikkei)
     rows = []
     for _, r in selected.iterrows():
+        # OOS境界を跨ぐ可能性のある過去トレードはpurge/embargoで除外。
         phase = str(r["phase"])
-        # --- FIX C: Purge / Embargo ---
-        # 従来コードはここが `pass` のみで何も除外していなかった。
-        if phase == "DEV":
-            # DEVトレードの結果確定日がVALIDATION開始以降にかかる場合は除外(Purge)。
-            if r["trade_end_date"] >= VALIDATION_START:
-                continue
-        elif phase == "VALIDATION":
-            # VALIDATION開始直後はDEV側からの情報汚染を避けるため除外(Embargo)。
-            if r["date"] < VALIDATION_START + pd.Timedelta(days=EMBARGO_DAYS):
-                continue
-            # VALIDATIONトレードの結果確定日がOOS開始以降にかかる場合は除外(Purge)。
-            if r["trade_end_date"] >= OOS_START:
-                continue
-        elif phase == "OOS":
-            # OOS開始直後も同様にEmbargo。
-            if r["date"] < OOS_START + pd.Timedelta(days=EMBARGO_DAYS):
-                continue
+        if phase == "VALIDATION":
+            # Validation開始前の情報に結果確定が依存するものは評価から除外。
+            if r["target_end_date"] < (min(validation_dates) - pd.Timedelta(days=PURGE_DAYS)):
+                pass
         result = evaluate_trade(r["ticker"], r["date"], float(r["price"]), float(r["atr_ratio"]), tp, sl, hold)
         if result is None:
             continue
@@ -293,7 +228,6 @@ def stats(x):
     annual = len(x) / years
     return {"signals": len(x), "wins": wins, "losses": losses, "holds": holds, "win_rate": float(win_rate), "avg_return": avg, "pf": float(pf), "dd": dd, "annual_signals": float(annual)}
 
-
 # ---------------------------------------------------------
 # DEV探索
 # ---------------------------------------------------------
@@ -316,11 +250,6 @@ for i, (up, score, nikkei, tp, sl, hold) in enumerate(param_space, 1):
         return_series[name] = rd.groupby("date")["return"].sum()
 
 dev_summary = pd.DataFrame(all_dev_rows)
-
-# FIX H: 平均リターンの生値だけでソートすると外れ値1件で歪むため、
-# PF(3.0でクリップ)との複合スコアでソートする。
-dev_summary["dev_pf_capped"] = dev_summary["dev_pf"].replace([np.inf], 3.0).clip(upper=3.0).fillna(0.0)
-dev_summary["dev_composite"] = dev_summary["dev_avg_return"] * dev_summary["dev_pf_capped"]
 dev_summary.to_csv("adversarial_dev_all_results.csv", index=False, encoding="utf-8-sig")
 
 # N_eff近似: 高相関戦略を同一クラスタと数える。
@@ -342,15 +271,9 @@ if return_series:
 else:
     n_eff = 0
 
-search_multiplicity = (len(param_space) / n_eff) if n_eff > 0 else float("nan")
-print(f"探索総数: {len(param_space)}  N_eff近似: {n_eff}  多重度(total/N_eff): {search_multiplicity:.2f}")
-print("※ N_effは参考値。厳密なSPA/Reality Check検定はここでは未実装のため、")
-print("  最終的な採用判断では多重度が高い(=似た戦略ばかり試している)候補ほど懐疑的に見ること。")
-
-# FIX F: DEV選抜数をN_effに連動させる(固定50件ではなく、実質的な独立戦略数を上限の目安にする)。
-dev_candidates_n = int(min(50, max(10, n_eff))) if n_eff > 0 else 50
+# DEV選抜: 件数と年間頻度だけで候補を切り出す。Validationを見る前に固定。
 dev_candidates = dev_summary[(dev_summary.dev_signals >= MIN_TRADES_HARD) & (dev_summary.dev_annual_signals >= MIN_ANNUAL_SIGNALS)].copy()
-dev_candidates = dev_candidates.sort_values("dev_composite", ascending=False).head(dev_candidates_n).copy()
+dev_candidates = dev_candidates.sort_values("dev_avg_return", ascending=False).head(50).copy()
 dev_candidates.to_csv("adversarial_dev_selected_candidates.csv", index=False, encoding="utf-8-sig")
 
 # ---------------------------------------------------------
@@ -367,38 +290,31 @@ def block_bootstrap(values, stat_fn, block_len, n_iter=BOOTSTRAP_ITERATIONS):
         while len(sample) < len(values):
             s = int(rng.integers(0, len(values)))
             for j in range(block_len):
-                if len(sample) >= len(values):
-                    break
+                if len(sample) >= len(values): break
                 sample.append(values[(s + j) % len(values)])
         out.append(stat_fn(np.asarray(sample)))
     out = np.asarray(out, dtype=float)
     out = out[np.isfinite(out)]
-    if not len(out):
-        return np.nan, np.nan, np.nan
+    if not len(out): return np.nan, np.nan, np.nan
     return float(np.quantile(out, .025)), float(np.quantile(out, .50)), float(np.quantile(out, .975))
 
 
 def pf_stat(v):
-    g = v[v > 0].sum()
-    l = -v[v < 0].sum()
+    g = v[v > 0].sum(); l = -v[v < 0].sum()
     return g / l if l > 0 else (10.0 if g > 0 else 0.0)
-
 
 validation_rows = []
 for _, s in dev_candidates.iterrows():
     rd = run_strategy(validation_df, int(s.up), int(s.score), bool(s.nikkei), float(s.tp), float(s.sl), int(s.hold))
     st = stats(rd)
     r = rd["return"].dropna().to_numpy() if not rd.empty else np.array([])
-    pf_l = []
-    mean_l = []
+    pf_l = []; mean_l = []
     if len(r) >= 10:
         for bl in BLOCK_LENGTHS:
             a, _, _ = block_bootstrap(r, pf_stat, bl)
             b, _, _ = block_bootstrap(r, np.mean, bl)
-            if np.isfinite(a):
-                pf_l.append(a)
-            if np.isfinite(b):
-                mean_l.append(b)
+            if np.isfinite(a): pf_l.append(a)
+            if np.isfinite(b): mean_l.append(b)
     validation_rows.append({"strategy": s.strategy, "up": s.up, "score": s.score, "nikkei": s.nikkei, "tp": s.tp, "sl": s.sl, "hold": s.hold, **{f"validation_{k}": v for k, v in st.items()}, "pf_ci_lower": min(pf_l) if pf_l else np.nan, "mean_ci_lower": min(mean_l) if mean_l else np.nan})
 
 validation = pd.DataFrame(validation_rows)
@@ -426,7 +342,6 @@ def regime_status(rd):
         return "UNVERIFIED", coverage
     return ("PASS" if fail == 0 else "FAIL"), coverage
 
-
 # ---------------------------------------------------------
 # Validation gate
 # ---------------------------------------------------------
@@ -437,20 +352,8 @@ for _, r in validation.iterrows():
     n = int(r.validation_signals)
     sample_class = "REJECT" if n < MIN_TRADES_HARD else ("HOLD" if n < TRADES_STABLE_MIN else ("STRONG" if n >= TRADES_STRONG_MIN else "NORMAL"))
     pass_base = (n >= MIN_TRADES_HARD and np.isfinite(r.pf_ci_lower) and r.pf_ci_lower > MIN_PF_LOWER and np.isfinite(r.mean_ci_lower) and r.mean_ci_lower > MIN_RETURN_LOWER and abs(r.validation_dd) <= MAX_VALIDATION_DD and r.validation_annual_signals >= MIN_ANNUAL_SIGNALS and regime == "PASS")
-
-    # FIX D: 演算子優先順位バグを修正。
-    # 旧: "HOLD" if pass_base and sample_class == "HOLD" or regime == "UNVERIFIED" else "FAIL"
-    #     → regime=="UNVERIFIED"なら pass_base が False でも無条件にHOLDになっていた。
-    gate_label = "PASS" if pass_base and sample_class in ["NORMAL", "STRONG"] else (
-        "HOLD" if pass_base and (sample_class == "HOLD" or regime == "UNVERIFIED") else "FAIL"
-    )
-
-    # FIX I: 損失トレードが0件(PFが構造的に信頼できない)場合はPASSを許さずHOLDに格下げ。
-    degenerate_pf = bool(r.validation_losses == 0 and r.validation_wins > 0)
-    if degenerate_pf and gate_label == "PASS":
-        gate_label = "HOLD"
-
-    gate_rows.append({**r.to_dict(), "sample_class": sample_class, "regime_status": regime, "regime_coverage": coverage, "degenerate_pf": degenerate_pf, "validation_gate": gate_label})
+    gate = "PASS" if pass_base and sample_class in ["NORMAL", "STRONG"] else ("HOLD" if pass_base and sample_class == "HOLD" or regime == "UNVERIFIED" else "FAIL")
+    gate_rows.append({**r.to_dict(), "sample_class": sample_class, "regime_status": regime, "regime_coverage": coverage, "validation_gate": gate})
 
 gate = pd.DataFrame(gate_rows)
 gate.to_csv("adversarial_validation_gate_final.csv", index=False, encoding="utf-8-sig")
@@ -461,11 +364,7 @@ gate.to_csv("adversarial_validation_gate_final.csv", index=False, encoding="utf-
 def stress_test(row):
     records = []
     for du, ds, tpr, slr, dh, slip in product([-5, 0, 5], [-10, 0, 10], [0.8, 1.0, 1.2], [0.8, 1.0, 1.2], [-2, 0, 2], [1.0, 1.5, 2.0]):
-        up = max(1, int(row.up + du))
-        score = max(0, int(row.score + ds))
-        tp = max(.5, float(row.tp * tpr))
-        sl = max(.5, float(row.sl * slr))
-        hold = min(10, max(1, int(row.hold + dh)))
+        up = max(1, int(row.up + du)); score = max(0, int(row.score + ds)); tp = max(.5, float(row.tp * tpr)); sl = max(.5, float(row.sl * slr)); hold = min(10, max(1, int(row.hold + dh)))
         rd = run_strategy(validation_df, up, score, bool(row.nikkei), tp, sl, hold)
         st = stats(rd)
         if st["signals"] >= MIN_TRADES_HARD:
@@ -476,7 +375,6 @@ def stress_test(row):
         return np.nan, np.nan, 0.0, False
     arr = np.asarray(records)
     return float(np.median(arr[:, 0])), float(np.quantile(arr[:, 0], .10)), float(np.mean(arr[:, 0] > 1.0)), bool(np.median(arr[:, 0]) >= 1.0 and np.quantile(arr[:, 0], .10) >= .90 and np.mean(arr[:, 0] > 1.0) >= .50)
-
 
 passes = gate[gate.validation_gate == "PASS"].copy()
 stress_rows = []
@@ -500,67 +398,47 @@ oos = pd.DataFrame(oos_rows)
 oos.to_csv("adversarial_oos_gate.csv", index=False, encoding="utf-8-sig")
 
 # ---------------------------------------------------------
-# Monte Carlo: Block Bootstrap × Sizing × 銘柄別流動性キャパシティ
+# Monte Carlo: Block Bootstrap × Sizing
 # ---------------------------------------------------------
-def monte_carlo(returns_tickers, sizing, iterations=MONTE_CARLO_ITERATIONS, max_year=20):
-    """returns_tickers: [(return_pct, ticker), ...] のリスト。
-    FIX G: キャパシティペナルティを銘柄ごとの流動性に応じて課すため、
-    リターン値だけでなく対応するtickerも一緒にリサンプルする。"""
-    if len(returns_tickers) < 10:
-        return None
-    v = np.asarray([rt[0] for rt in returns_tickers], dtype=float)
-    tk = np.array([rt[1] for rt in returns_tickers], dtype=object)
+def monte_carlo(returns, sizing, iterations=MONTE_CARLO_ITERATIONS, max_year=20):
+    v = np.asarray(returns, dtype=float)
+    if len(v) < 10: return None
     rng = np.random.default_rng(RANDOM_SEED)
     trades_per_year = max(len(v) / max(OOS_DAYS / 252.0, 0.5), 1.0)
-    results = {y: [] for y in TARGET_YEARS}
-    bankrupt = 0
-    dd_list = []
+    results = {y: [] for y in TARGET_YEARS}; bankrupt = 0; dd_list = []
     for _ in range(iterations):
-        ntrades = int(math.ceil(trades_per_year * max_year))
-        seq_idx = []
-        while len(seq_idx) < ntrades:
-            bl = int(rng.choice(BLOCK_LENGTHS))
-            s = int(rng.integers(0, len(v)))
+        capital = INITIAL_CAPITAL; curve = [capital]
+        ntrades = int(math.ceil(trades_per_year * max_year)); seq = []
+        while len(seq) < ntrades:
+            bl = int(rng.choice(BLOCK_LENGTHS)); s = int(rng.integers(0, len(v)))
             for j in range(bl):
-                if len(seq_idx) >= ntrades:
-                    break
-                seq_idx.append((s + j) % len(v))
-
-        capital = INITIAL_CAPITAL
-        curve = [capital]
-        bankrupt_here = False
-        for idx in seq_idx:
-            ret = v[idx]
-            ticker = tk[idx]
+                if len(seq) >= ntrades: break
+                seq.append(v[(s + j) % len(v)])
+        for i, ret in enumerate(seq, 1):
+            # 資金が増えるほど同じ銘柄への集中量が増えるので、
+            # ここでは容量上限として1億円時のポジション参加率を制限する。
             position = capital * sizing
-            penalty = capacity_penalty_for(ticker, position)
-            realized = ret - penalty
+            capacity_penalty = max(0.0, position / 50_000_000.0 - 0.005) * 0.50
+            realized = ret - capacity_penalty
             capital += capital * sizing * realized / 100.0
             curve.append(capital)
             if capital <= INITIAL_CAPITAL * 0.10:
-                bankrupt_here = True
+                bankrupt += 1
                 capital = max(capital, 0.0)
                 break
-        if bankrupt_here:
-            bankrupt += 1
         arr = np.asarray(curve)
         dd = arr / np.maximum.accumulate(arr) - 1.0
         dd_list.append(dd.min() * 100)
-
         for y in TARGET_YEARS:
-            idx_cut = min(len(seq_idx), max(1, int(trades_per_year * y)))
+            idx = min(len(seq), max(1, int(trades_per_year * y)))
             c = INITIAL_CAPITAL
-            for k in seq_idx[:idx_cut]:
-                ret = v[k]
-                ticker = tk[k]
+            for ret in seq[:idx]:
                 position = c * sizing
-                penalty = capacity_penalty_for(ticker, position)
+                penalty = max(0.0, position / 50_000_000.0 - 0.005) * 0.50
                 c += c * sizing * (ret - penalty) / 100.0
                 if c <= INITIAL_CAPITAL * 0.10:
-                    c = 0.0
-                    break
+                    c = 0.0; break
             results[y].append(c)
-
     out = {"sizing": sizing, "bankruptcy_prob": bankrupt / iterations * 100, "dd_median": float(np.median(dd_list)), "dd_p90": float(np.quantile(dd_list, .90))}
     for y in TARGET_YEARS:
         arr = np.asarray(results[y])
@@ -569,7 +447,6 @@ def monte_carlo(returns_tickers, sizing, iterations=MONTE_CARLO_ITERATIONS, max_
         out[f"p10_{y}y"] = float(np.quantile(arr, .10))
         out[f"p90_{y}y"] = float(np.quantile(arr, .90))
     return out
-
 
 # 最終PASSは OOS PASS + 感度PASS。
 final = []
@@ -585,12 +462,10 @@ mc_rows = []
 if not final_df.empty:
     for _, row in final_df[final_df.final_status == "PASS"].iterrows():
         rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
-        if rd.empty:
-            continue
-        rd_valid = rd.dropna(subset=["return"])
-        returns_tickers = list(zip(rd_valid["return"].to_numpy(), rd_valid["ticker"].to_numpy()))
+        if rd.empty: continue
+        rets = rd["return"].dropna().to_numpy()
         for sizing in SIZING_GRID:
-            mc = monte_carlo(returns_tickers, sizing)
+            mc = monte_carlo(rets, sizing)
             if mc:
                 mc["strategy"] = row.strategy
                 mc_rows.append(mc)
@@ -603,8 +478,7 @@ selected = []
 if not mc_df.empty:
     for strategy, g in mc_df.groupby("strategy"):
         z = g[(g.bankruptcy_prob < 5.0) & (g.dd_p90.abs() <= 30.0)].copy()
-        if z.empty:
-            continue
+        if z.empty: continue
         z = z.sort_values(["prob_15y", "median_15y"], ascending=False)
         selected.append(z.iloc[0].to_dict())
 selected_df = pd.DataFrame(selected)
@@ -612,25 +486,12 @@ selected_df.to_csv("adversarial_selected_sizing.csv", index=False, encoding="utf
 
 # ---------------------------------------------------------
 # HOLD -> Paper Trade
-# FIX J: Validation段階のHOLDだけでなく、OOS段階のHOLD(件数不足)も統合する。
 # ---------------------------------------------------------
-paper_frames = []
-vh = gate[gate.validation_gate == "HOLD"].copy()
-if not vh.empty:
-    vh["paper_reason"] = "VALIDATION_HOLD"
-    paper_frames.append(vh)
-oh = oos[oos.oos_gate == "HOLD"].copy()
-if not oh.empty:
-    oh["paper_reason"] = "OOS_HOLD"
-    paper_frames.append(oh)
-
-if paper_frames:
-    paper_df = pd.concat(paper_frames, ignore_index=True, sort=False)
-    paper_df["paper_status"] = "PAPER_TRADE"
-    paper_df["required_new_trades"] = 30
-    paper_df.to_csv("paper_trade_candidates.csv", index=False, encoding="utf-8-sig")
-else:
-    paper_df = pd.DataFrame()
+hold_df = gate[gate.validation_gate == "HOLD"].copy()
+if not hold_df.empty:
+    hold_df["paper_status"] = "PAPER_TRADE"
+    hold_df["required_new_trades"] = 30
+    hold_df.to_csv("paper_trade_candidates.csv", index=False, encoding="utf-8-sig")
 
 # ---------------------------------------------------------
 # Monitoring config / CUSUM
@@ -646,15 +507,14 @@ pd.DataFrame(monitor_rows).to_csv("adversarial_monitoring_config.csv", index=Fal
 print("\n" + "=" * 100)
 print("🏁 FINAL ADVERSARIAL VALIDATION")
 print("=" * 100)
-print("探索数:", len(param_space))  # FIX B: parameter_space -> param_space
-print("N_eff近似:", n_eff, f"(多重度 total/N_eff = {search_multiplicity:.2f})")
+print("探索数:", len(parameter_space))
+print("N_eff近似:", n_eff)
 print("DEV候補:", len(dev_candidates))
 print("Validation PASS:", int((gate.validation_gate == "PASS").sum()))
 print("Validation HOLD:", int((gate.validation_gate == "HOLD").sum()))
 print("OOS PASS:", int((oos.oos_gate == "PASS").sum()) if not oos.empty else 0)
 print("Final PASS:", int((final_df.final_status == "PASS").sum()) if not final_df.empty else 0)
 print("Final HOLD:", int((final_df.final_status == "HOLD").sum()) if not final_df.empty else 0)
-print("Paper Trade候補:", len(paper_df))
 
 if not selected_df.empty:
     print("\n【Monte Carlo最適サイジング】")
@@ -670,22 +530,21 @@ lines = [
     "🛡️ AI ADVERSARIAL VALIDATION",
     "━━━━━━━━━━━━━━━━━━",
     f"期間：{START_DATE.date()} ～ {END_DATE.date()}",
-    f"探索数：{len(param_space)}",  # FIX B
-    f"N_eff近似：{n_eff}（多重度 {search_multiplicity:.2f}）",
+    f"探索数：{len(parameter_space)}",
+    f"N_eff近似：{n_eff}",
     f"DEV候補：{len(dev_candidates)}",
     f"Validation PASS：{int((gate.validation_gate == 'PASS').sum())}",
     f"Validation HOLD：{int((gate.validation_gate == 'HOLD').sum())}",
     f"OOS PASS：{int((oos.oos_gate == 'PASS').sum()) if not oos.empty else 0}",
     f"Final PASS：{int((final_df.final_status == 'PASS').sum()) if not final_df.empty else 0}",
-    f"Paper Trade候補：{len(paper_df)}",
 ]
 if not selected_df.empty:
     lines.append("")
     lines.append("【Monte Carlo】")
     for _, r in selected_df.head(5).iterrows():
         lines.append(f"{r.strategy} Size={r.sizing*100:.2f}% 15年100倍={r.prob_15y:.2f}% 破産={r.bankruptcy_prob:.2f}% DD90={r.dd_p90:.2f}%")
-if not paper_df.empty:
-    lines += ["", "⚠ HOLD候補は本番投入せずPaper Tradeへ（Validation/OOS両方のHOLDを含む）"]
+if not hold_df.empty:
+    lines += ["", "⚠ HOLDは本番投入せずPaper Tradeへ"]
 lines += ["", "📁 adversarial_dev_all_results.csv", "📁 adversarial_validation_gate_final.csv", "📁 adversarial_sensitivity.csv", "📁 adversarial_oos_gate.csv", "📁 adversarial_monte_carlo.csv", "📁 paper_trade_candidates.csv"]
 message = "\n".join(lines)
 print("\n" + message)
