@@ -32,7 +32,7 @@ def load_strategy_policy():
     default_policy = { 
         "status": "DEFAULT", 
  
-        "POLICY_up_threshold": DEFAULT_POLICY_UP_THRESHOLD, 
+        "up_threshold": DEFAULT_POLICY_UP_THRESHOLD, 
         "min_score_for_buy": DEFAULT_MIN_SCORE_FOR_BUY, 
  
         "nikkei_filter": DEFAULT_NIKKEI_FILTER, 
@@ -104,8 +104,8 @@ def load_strategy_policy():
  
             return default_policy 
  
-        merged["POLICY_up_threshold"] = int( 
-            merged["POLICY_up_threshold"] 
+        merged["up_threshold"] = int( 
+            merged["up_threshold"] 
         ) 
  
         merged["min_score_for_buy"] = int( 
@@ -138,7 +138,7 @@ def load_strategy_policy():
         ) 
         print( 
             "UP:", 
-            merged["POLICY_up_threshold"] 
+            merged["up_threshold"] 
         ) 
         print( 
             "MIN SCORE:", 
@@ -186,7 +186,7 @@ STRATEGY_POLICY = load_strategy_policy()
  
 POLICY_UP_THRESHOLD = ( 
     STRATEGY_POLICY[ 
-        "POLICY_up_threshold" 
+        "up_threshold" 
     ] 
 ) 
  
