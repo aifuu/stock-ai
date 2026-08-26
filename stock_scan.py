@@ -26,6 +26,53 @@ DEFAULT_ATR_TP_MULTIPLIER = 3.0
 DEFAULT_ATR_SL_MULTIPLIER = 1.5 
 DEFAULT_HOLD_DAYS = 5 
  
+
+# =====================
+# 安全なBoolean変換
+#
+# ★重要
+#
+# Python組み込みのbool()は、空文字列以外の文字列を
+# 全てTrueと判定してしまう。
+#
+#   bool("false")  → True (誤り)
+#   bool("0")      → True (誤り)
+#
+# strategy_policy.jsonの"nikkei_filter"が何らかの経路で
+# 文字列型("false"等)になった場合、このバグにより
+# 日経フィルターが意図せずONになってしまう危険がある。
+# 明示的に文字列の中身を見て判定する。
+# =====================
+def parse_bool(value, default=False):
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    if isinstance(value, str):
+
+        text = value.strip().lower()
+
+        if text in (
+            "true",
+            "1",
+            "yes",
+            "on"
+        ):
+            return True
+
+        if text in (
+            "false",
+            "0",
+            "no",
+            "off"
+        ):
+            return False
+
+    return default
+
  
 def load_strategy_policy(): 
  
@@ -112,8 +159,9 @@ def load_strategy_policy():
             merged["min_score_for_buy"] 
         ) 
  
-        merged["nikkei_filter"] = bool( 
-            merged["nikkei_filter"] 
+        merged["nikkei_filter"] = parse_bool( 
+            merged["nikkei_filter"], 
+            DEFAULT_NIKKEI_FILTER 
         ) 
  
         merged["atr_tp_multiplier"] = float( 
