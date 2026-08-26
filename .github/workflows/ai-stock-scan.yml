@@ -307,10 +307,13 @@ jobs:
             || echo "No research changes"
 
 
+          PUSH_SUCCESS=false
+
           for i in 1 2 3; do
 
             if git push; then
               echo "✅ push成功"
+              PUSH_SUCCESS=true
               break
             fi
 
@@ -321,6 +324,11 @@ jobs:
             sleep 5
 
           done
+
+          if [ "$PUSH_SUCCESS" != "true" ]; then
+            echo "❌ 3回ともgit pushに失敗しました"
+            exit 1
+          fi
 
 
   # ==========================================================
@@ -492,10 +500,13 @@ jobs:
             || echo "No production changes"
 
 
+          PUSH_SUCCESS=false
+
           for i in 1 2 3; do
 
             if git push; then
               echo "✅ push成功"
+              PUSH_SUCCESS=true
               break
             fi
 
@@ -506,3 +517,8 @@ jobs:
             sleep 5
 
           done
+
+          if [ "$PUSH_SUCCESS" != "true" ]; then
+            echo "❌ 3回ともgit pushに失敗しました"
+            exit 1
+          fi
