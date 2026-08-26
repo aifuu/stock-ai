@@ -1590,14 +1590,17 @@ def calc_score(
     }
 
 # =========================================================
-# 過去予測の5営業日以内結果判定
+# 過去予測のHOLD_DAYS営業日以内結果判定
 #
 # ★改善点①
 #
-# 「行数が5あるから5日」ではなく、
-# 予測日から5営業日経過したかどうかで判定する。
-# 祝日・データ欠測等で実際の取得行数が5に満たない場合は、
+# 「行数がHOLD_DAYSあるから確定」ではなく、
+# 予測日からHOLD_DAYS営業日経過したかどうかで判定する。
+# 祝日・データ欠測等で実際の取得行数がHOLD_DAYSに満たない場合は、
 # 無理に判定を確定させず「判定保留」として次回に回す。
+#
+# ★修正点: HOLD_DAYSはstrategy_policy.jsonから読み込んだ値を使用。
+#           以前は5固定だったため、ポリシー変更が反映されなかった。
 # =========================================================
 def update_prediction_results():
 
@@ -1702,19 +1705,19 @@ def update_prediction_results():
             continue
 
 
-        # 予測日の翌営業日から5営業日分
+        # 予測日の翌営業日からHOLD_DAYS営業日分
         business_days = pd.bdate_range(
             start=(
                 prediction_date
                 +
                 pd.Timedelta(days=1)
             ),
-            periods=5
+            periods=HOLD_DAYS
         )
 
 
         if business_days[-1] > today:
-            # まだ5営業日経過していない → 判定保留
+            # まだHOLD_DAYS営業日経過していない → 判定保留
             continue
 
 
@@ -1765,19 +1768,20 @@ def update_prediction_results():
 
 
         # ---------------------------------------------------
-        # ★5営業日分のデータが揃っていない場合は判定保留
+        # ★HOLD_DAYS営業日分のデータが揃っていない場合は判定保留
         #
         # 祝日・システム障害等でデータが欠測していると、
-        # 本来5営業日経過していても実データが5行未満のことがある。
+        # 本来HOLD_DAYS営業日経過していても実データが
+        # HOLD_DAYS行未満のことがある。
         # ここで無理にHOLD/TIMEOUT_LOSSに確定させると
         # 「実際には未検証の結果」が成績に混入してしまうため、
         # 次回のcron実行に持ち越す。
         # ---------------------------------------------------
-        if len(data) < 5:
+        if len(data) < HOLD_DAYS:
 
             print(
                 f"{ticker} {prediction_date.date()} "
-                f"判定保留: 営業日データ{len(data)}/5件しか取得できていません"
+                f"判定保留: 営業日データ{len(data)}/{HOLD_DAYS}件しか取得できていません"
             )
 
             continue
@@ -1788,7 +1792,7 @@ def update_prediction_results():
         hold_days = None
 
 
-        check_days = 5
+        check_days = HOLD_DAYS
 
 
         for day_index in range(
@@ -1891,7 +1895,7 @@ def update_prediction_results():
 
 
             if (
-                hold_days >= 5
+                hold_days >= HOLD_DAYS
                 and
                 return_rate < 0
             ):
@@ -4081,7 +4085,7 @@ Profit Factor: {rank_pf_text}
     return f"""
 ━━━━━━━━━━━━━━
 📊 AI実績（買い推奨のみ集計）
-（🔥強い買い・🟢買い / 5営業日判定）
+（🔥強い買い・🟢買い / {HOLD_DAYS}営業日判定）
 ━━━━━━━━━━━━━━
 
 【買い推奨 全体】
