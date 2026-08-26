@@ -4,22 +4,6 @@ from datetime import datetime
 
 import pandas as pd
 
-
-# =========================================================
-# STRATEGY POLICY BUILDER
-#
-# adversarial_final_candidates.csv
-#        ↓
-# 採用可能な戦略を判定
-#        ↓
-# strategy_policy.json
-#
-# 安全方針:
-# - 候補CSVがない/空なら既存policyを変更しない
-# - PASSがない場合も既存policyを変更しない
-# - CSV構造が壊れている場合だけエラー終了する
-# =========================================================
-
 INPUT_FILE = "adversarial_final_candidates.csv"
 POLICY_FILE = "strategy_policy.json"
 
@@ -34,35 +18,19 @@ MIN_VALIDATION_AVG_RETURN = 0.00
 MIN_MC_BANKRUPTCY_PROB = 5.0
 MAX_MC_DD90 = 30.0
 
-
 DEFAULT_POLICY = {
-    "status": "DEFAULT",
-    "updated_at": None,
-    "up_threshold": 50,
-    "min_score_for_buy": 60,
-    "nikkei_filter": False,
-    "atr_tp_multiplier": 3.0,
-    "atr_sl_multiplier": 1.5,
-    "hold_days": 5,
-    "validation_signals": 0,
-    "validation_win_rate": 0.0,
-    "validation_avg_return": 0.0,
-    "validation_pf": 0.0,
-    "validation_dd": 0.0,
-    "oos_signals": 0,
-    "oos_win_rate": 0.0,
-    "oos_avg_return": 0.0,
-    "oos_pf": 0.0,
-    "oos_dd": 0.0,
-    "oos_validation_pf_ratio": 0.0,
-    "mc_sizing": 0.005,
-    "mc_10y_probability": 0.0,
-    "mc_15y_probability": 0.0,
-    "mc_20y_probability": 0.0,
-    "mc_bankruptcy_probability": 0.0,
-    "mc_p90_max_dd": 0.0,
-    "strategy_name": "",
-    "source": "default",
+    "status": "DEFAULT", "updated_at": None,
+    "up_threshold": 50, "min_score_for_buy": 60,
+    "nikkei_filter": False, "atr_tp_multiplier": 3.0,
+    "atr_sl_multiplier": 1.5, "hold_days": 5,
+    "validation_signals": 0, "validation_win_rate": 0.0,
+    "validation_avg_return": 0.0, "validation_pf": 0.0,
+    "validation_dd": 0.0, "oos_signals": 0, "oos_win_rate": 0.0,
+    "oos_avg_return": 0.0, "oos_pf": 0.0, "oos_dd": 0.0,
+    "oos_validation_pf_ratio": 0.0, "mc_sizing": 0.005,
+    "mc_10y_probability": 0.0, "mc_15y_probability": 0.0,
+    "mc_20y_probability": 0.0, "mc_bankruptcy_probability": 0.0,
+    "mc_p90_max_dd": 0.0, "strategy_name": "", "source": "default"
 }
 
 
@@ -95,7 +63,6 @@ def safe_bool(value, default=False):
 def load_existing_policy():
     if not os.path.exists(POLICY_FILE):
         return DEFAULT_POLICY.copy()
-
     try:
         with open(POLICY_FILE, "r", encoding="utf-8") as f:
             policy = json.load(f)
@@ -119,12 +86,9 @@ def keep_existing_policy(reason):
 # =========================================================
 # 入力CSV確認
 # =========================================================
-
 if not os.path.exists(INPUT_FILE):
     keep_existing_policy(f"{INPUT_FILE} がありません")
 
-# 0バイトCSVは pandas.read_csv() が EmptyDataError になるため、
-# 読み込み前にファイルサイズを確認する。
 if os.path.getsize(INPUT_FILE) == 0:
     keep_existing_policy(f"{INPUT_FILE} が空です（0バイト）")
 
@@ -139,30 +103,17 @@ except Exception as e:
 if df.empty:
     keep_existing_policy("候補が0件です")
 
-
-# =========================================================
-# 必須列
-# =========================================================
+# adversarial_strategy_validator.py の実際の出力名は
+# oos_val_pf_ratio。内部policy名は oos_validation_pf_ratio なので統一する。
+if "oos_validation_pf_ratio" not in df.columns and "oos_val_pf_ratio" in df.columns:
+    df["oos_validation_pf_ratio"] = df["oos_val_pf_ratio"]
 
 required_columns = [
-    "final_status",
-    "up_threshold",
-    "score_threshold",
-    "nikkei_filter",
-    "tp_multiplier",
-    "sl_multiplier",
-    "hold_days",
-    "validation_signals",
-    "validation_win_rate",
-    "validation_avg_return",
-    "validation_pf",
-    "validation_dd",
-    "oos_signals",
-    "oos_win_rate",
-    "oos_avg_return",
-    "oos_pf",
-    "oos_dd",
-    "oos_validation_pf_ratio",
+    "final_status", "up_threshold", "score_threshold", "nikkei_filter",
+    "tp_multiplier", "sl_multiplier", "hold_days", "validation_signals",
+    "validation_win_rate", "validation_avg_return", "validation_pf",
+    "validation_dd", "oos_signals", "oos_win_rate", "oos_avg_return",
+    "oos_pf", "oos_dd", "oos_validation_pf_ratio",
 ]
 
 missing = [col for col in required_columns if col not in df.columns]
@@ -172,65 +123,26 @@ if missing:
         print(" -", col)
     raise SystemExit(1)
 
-
-# =========================================================
-# 型変換
-# =========================================================
-
 numeric_columns = [
-    "up_threshold",
-    "score_threshold",
-    "tp_multiplier",
-    "sl_multiplier",
-    "hold_days",
-    "validation_signals",
-    "validation_win_rate",
-    "validation_avg_return",
-    "validation_pf",
-    "validation_dd",
-    "oos_signals",
-    "oos_win_rate",
-    "oos_avg_return",
-    "oos_pf",
-    "oos_dd",
+    "up_threshold", "score_threshold", "tp_multiplier", "sl_multiplier",
+    "hold_days", "validation_signals", "validation_win_rate",
+    "validation_avg_return", "validation_pf", "validation_dd",
+    "oos_signals", "oos_win_rate", "oos_avg_return", "oos_pf", "oos_dd",
     "oos_validation_pf_ratio",
 ]
-
 for col in numeric_columns:
     df[col] = pd.to_numeric(df[col], errors="coerce")
-
 df["nikkei_filter"] = df["nikkei_filter"].apply(safe_bool)
 
-mc_columns = [
-    "sizing",
-    "prob_10y",
-    "prob_15y",
-    "prob_20y",
-    "bankruptcy_prob",
-    "p90_max_dd",
-]
+mc_columns = ["sizing", "prob_10y", "prob_15y", "prob_20y", "bankruptcy_prob", "p90_max_dd"]
 mc_columns_exist = all(col in df.columns for col in mc_columns)
-
 if not mc_columns_exist:
     print("⚠ Monte Carlo列がありません")
     print("Monte Carlo条件なしでは自動採用しません")
 
-
-# =========================================================
-# PASS候補
-# =========================================================
-
-approved = df[
-    df["final_status"].astype(str).str.upper().eq("PASS")
-].copy()
-
+approved = df[df["final_status"].astype(str).str.upper().eq("PASS")].copy()
 if approved.empty:
     keep_existing_policy("PASS候補なし")
-
-
-# =========================================================
-# Validation Gate
-# =========================================================
 
 approved = approved[
     (approved["validation_signals"] >= MIN_VALIDATION_TRADES)
@@ -239,22 +151,12 @@ approved = approved[
     & (approved["validation_dd"].abs() <= MAX_VALIDATION_DD)
 ]
 
-
-# =========================================================
-# OOS Gate
-# =========================================================
-
 approved = approved[
     (approved["oos_signals"] >= MIN_OOS_TRADES)
     & (approved["oos_pf"] >= MIN_OOS_PF)
     & (approved["oos_avg_return"] > MIN_OOS_AVG_RETURN)
     & (approved["oos_validation_pf_ratio"] >= MIN_OOS_TO_VALIDATION_PF)
 ]
-
-
-# =========================================================
-# Monte Carlo Gate
-# =========================================================
 
 if mc_columns_exist:
     approved = approved[
@@ -265,23 +167,12 @@ if mc_columns_exist:
 if approved.empty:
     keep_existing_policy("最終採用条件を満たす戦略なし")
 
-
-# =========================================================
-# 安定性優先ランキング
-# =========================================================
-
 approved = approved.sort_values(
     ["oos_pf", "oos_avg_return", "validation_pf", "validation_signals"],
     ascending=[False, False, False, False],
 ).reset_index(drop=True)
-
 best = approved.iloc[0]
 old_policy = load_existing_policy()
-
-
-# =========================================================
-# 新policy
-# =========================================================
 
 new_policy = {
     "status": "APPROVED",
@@ -312,11 +203,6 @@ new_policy = {
     "strategy_name": str(best.get("strategy", "")),
     "source": "adversarial_strategy_validator",
 }
-
-
-# =========================================================
-# policy保存
-# =========================================================
 
 try:
     with open(POLICY_FILE, "w", encoding="utf-8") as f:
