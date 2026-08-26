@@ -354,14 +354,37 @@ jobs:
       # --------------------------------------------------------
       # Checkout
       #
-      # research jobがstrategy_policy.jsonをcommitした後の
+      # researchジョブが直前にデフォルトブランチへpushした
       # 最新状態を取得する。
       # --------------------------------------------------------
-      - name: Checkout latest repository
+      - name: Checkout latest default branch
         uses: actions/checkout@v4
 
         with:
           fetch-depth: 0
+
+      - name: Sync latest default branch
+        run: |
+
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+
+          echo "===== DEFAULT BRANCH ====="
+          echo "$DEFAULT_BRANCH"
+
+          git fetch origin "$DEFAULT_BRANCH"
+
+          git reset --hard "origin/$DEFAULT_BRANCH"
+
+          echo "===== CURRENT COMMIT ====="
+          git log -1 --oneline
+
+          echo "===== ACTIVE POLICY ====="
+
+          if [ -f strategy_policy.json ]; then
+            cat strategy_policy.json
+          else
+            echo "⚠ strategy_policy.jsonなし"
+          fi
 
 
       # --------------------------------------------------------
