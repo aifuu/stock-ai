@@ -1,143 +1,120 @@
 name: AI Stock Scan + Auto Strategy Validation
 
 on:
-
-  # ==========================================
-  # 平日 8:30 JST
-  # UTCでは23:30（前日）
-  # ==========================================
   schedule:
     - cron: '30 23 * * 1-5'
-
-  # ==========================================
-  # 手動実行
-  # ==========================================
   workflow_dispatch:
 
-
-# ==============================================================
-# ★修正①: push権限を明示
-#
-# デフォルトのGITHUB_TOKENは組織/リポジトリ設定によっては
-# 読み取り専用になっており、その場合 git push が403で失敗する。
-# ここでcontents: writeを明示して確実にpushできるようにする。
-# ==============================================================
 permissions:
   contents: write
 
-
-# ==============================================================
-# ★修正②: 同時実行の衝突防止
-#
-# 手動実行とスケジュール実行が重なったり、前回の実行が
-# 終わる前に次のcronが走ると、2つのジョブが同時に同じ
-# ブランチへpushしようとして片方が失敗する。
-# 同じワークフローの実行は1つずつ順番に処理し、
-# 実行中のジョブを取り消さない(cancel-in-progress: false)。
-# ==============================================================
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
-
 jobs:
-
-  # ==========================================================
-  # ① 研究・検証
-  #
-  # walk_forward
-  # ↓
-  # adversarial
-  # ↓
-  # strategy_policy
-  #
-  # ここではまだstock_scanを実行しない。
-  # ==========================================================
   research:
-
     runs-on: ubuntu-latest
-
     timeout-minutes: 180
 
-
     steps:
-
-      # --------------------------------------------------------
-      # Checkout
-      # --------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
-
         with:
           fetch-depth: 0
 
-
-      # --------------------------------------------------------
-      # Python
-      # --------------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
-
         with:
           python-version: '3.11'
 
-
-      # --------------------------------------------------------
-      # pip
-      # --------------------------------------------------------
       - name: Upgrade pip
         run: |
           python -m pip install --upgrade pip
 
-
-      # --------------------------------------------------------
-      # Install
-      # --------------------------------------------------------
       - name: Install dependencies
         run: |
-          pip install \
-            yfinance \
-            pandas \
-            numpy \
-            requests \
-            scikit-learn \
-            joblib
+          pip install yfinance pandas numpy requests scikit-learn joblib
 
+      # ========================================================
+      # 100銘柄ユニバース同期
+      #
+      # sync_ticker_universe.py が stock_scan.py のTICKERSを読み、
+      # 追加銘柄を足して100銘柄に統一し、walk_forward.pyにも
+      # 同じTICKERSを反映する。
+      # ========================================================
+      - name: Sync 100 ticker universe
+        run: |
+          python sync_ticker_universe.py
 
-      # --------------------------------------------------------
-      # Python構文チェック
-      # --------------------------------------------------------
+      # ========================================================
+      # 100銘柄になっていることを強制確認
+      # ========================================================
+      - name: Verify 100 ticker universe
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          def read_tickers(path):
+              tree = ast.parse(
+                  Path(path).read_text(encoding="utf-8"),
+                  filename=path,
+              )
+              for node in tree.body:
+                  if isinstance(node, ast.Assign):
+                      for target in node.targets:
+                          if isinstance(target, ast.Name) and target.id == "TICKERS":
+                              value = ast.literal_eval(node.value)
+                              return value
+              raise RuntimeError(f"{path}: TICKERSが見つかりません")
+
+          stock_tickers = read_tickers("stock_scan.py")
+          wf_tickers = read_tickers("walk_forward.py")
+
+          print("stock_scan.py 銘柄数  =", len(stock_tickers))
+          print("walk_forward.py 銘柄数=", len(wf_tickers))
+
+          if len(stock_tickers) != 100:
+              raise SystemExit(
+                  f"❌ stock_scan.py が100銘柄ではありません: {len(stock_tickers)}"
+              )
+
+          if len(wf_tickers) != 100:
+              raise SystemExit(
+                  f"❌ walk_forward.py が100銘柄ではありません: {len(wf_tickers)}"
+              )
+
+          if stock_tickers != wf_tickers:
+              raise SystemExit(
+                  "❌ stock_scan.py と walk_forward.py のTICKERSが一致していません"
+              )
+
+          if len(set(stock_tickers)) != 100:
+              raise SystemExit(
+                  "❌ 重複銘柄があります"
+              )
+
+          print("✅ 100銘柄・重複なし・2ファイル完全一致")
+          PY
+
       - name: Python syntax check
         run: |
-
+          python -m py_compile sync_ticker_universe.py
           python -m py_compile walk_forward.py
-
           python -m py_compile adversarial_strategy_validator.py
-
           python -m py_compile build_strategy_policy.py
-
           python -m py_compile stock_scan.py
 
-
-      # --------------------------------------------------------
-      # Walk Forward
-      # --------------------------------------------------------
       - name: Run Walk Forward
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-
         run: |
           python walk_forward.py
 
-
-      # --------------------------------------------------------
-      # 全候補CSV確認
-      # --------------------------------------------------------
       - name: Check Walk Forward candidates
         run: |
-
           echo "===== FILE CHECK ====="
-
           ls -lh walk_forward_all_candidates.csv
 
           python - <<'PY'
@@ -153,9 +130,7 @@ jobs:
 
           df = pd.read_csv(file)
 
-          print(
-              f"✅ 全候補CSV確認: {len(df)} rows"
-          )
+          print(f"✅ 全候補CSV確認: {len(df)} rows")
 
           if len(df) == 0:
               raise SystemExit(
@@ -163,57 +138,30 @@ jobs:
               )
           PY
 
-
-      # --------------------------------------------------------
-      # Adversarial Validation
-      # --------------------------------------------------------
       - name: Run Adversarial Validation
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-
         run: |
           python adversarial_strategy_validator.py
 
-
-      # --------------------------------------------------------
-      # Policy Builder
-      #
-      # PASSがなければ既存policyを変更しない。
-      # --------------------------------------------------------
       - name: Build strategy policy
         run: |
           python build_strategy_policy.py
 
-
-      # --------------------------------------------------------
-      # Policy確認
-      # --------------------------------------------------------
       - name: Check strategy policy
         run: |
-
           echo "===== strategy_policy.json ====="
-
           if [ -f strategy_policy.json ]; then
             cat strategy_policy.json
           else
             echo "⚠ strategy_policy.json がありません"
           fi
 
-
-      # --------------------------------------------------------
-      # Research成果物をartifact保存
-      #
-      # Git commit前にも残しておく。
-      # --------------------------------------------------------
       - name: Upload research artifacts
         uses: actions/upload-artifact@v4
-
         with:
-
           name: strategy-research-${{ github.run_id }}
-
           if-no-files-found: warn
-
           path: |
             walk_forward_results.csv
             walk_forward_all_candidates.csv
@@ -222,7 +170,6 @@ jobs:
             walk_forward_strategy_phase_comparison.csv
             walk_forward_monthly.csv
             walk_forward_yearly.csv
-
             adversarial_dev_all_results.csv
             adversarial_dev_selected_candidates.csv
             adversarial_validation_gate.csv
@@ -233,84 +180,42 @@ jobs:
             adversarial_final_candidates.csv
             paper_trade_candidates.csv
             adversarial_monitoring_config.csv
-
             strategy_policy.json
             feature_importances.csv
 
-
-      # --------------------------------------------------------
-      # Research成果をGitHubへ保存
-      #
-      # ★修正③: push失敗時のリトライ
-      #
-      # commit後、リモート側に他の変更が入っていると
-      # 単純な git push は一度失敗するだけでジョブごと
-      # 落ちてしまう。pull --rebase を挟んで最大3回まで
-      # リトライすることで、一時的な競合による失敗を防ぐ。
-      # --------------------------------------------------------
       - name: Commit research results
         run: |
-
           git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
 
-          git config --global user.email \
-            "github-actions@github.com"
-
-
+          git add stock_scan.py || true
+          git add walk_forward.py || true
           git add walk_forward_results.csv || true
-
           git add walk_forward_all_candidates.csv || true
-
           git add walk_forward_strategy_comparison.csv || true
-
           git add walk_forward_strategy_details.csv || true
-
           git add walk_forward_strategy_phase_comparison.csv || true
-
           git add walk_forward_monthly.csv || true
-
           git add walk_forward_yearly.csv || true
-
-
           git add adversarial_dev_all_results.csv || true
-
           git add adversarial_dev_selected_candidates.csv || true
-
           git add adversarial_validation_gate.csv || true
-
           git add adversarial_sensitivity.csv || true
-
           git add adversarial_oos_gate.csv || true
-
           git add adversarial_monte_carlo.csv || true
-
           git add adversarial_selected_sizing.csv || true
-
           git add adversarial_final_candidates.csv || true
-
           git add paper_trade_candidates.csv || true
-
           git add adversarial_monitoring_config.csv || true
-
-
           git add strategy_policy.json || true
-
           git add feature_importances.csv || true
+          git add -u
 
-
-          git add \
-            -u
-
-
-          git commit \
-            -m "Update strategy validation policy" \
-            || echo "No research changes"
-
+          git commit -m "Update 100 ticker strategy validation" || echo "No research changes"
 
           PUSH_SUCCESS=false
 
           for i in 1 2 3; do
-
             if git push; then
               echo "✅ push成功"
               PUSH_SUCCESS=true
@@ -318,11 +223,8 @@ jobs:
             fi
 
             echo "⚠ push失敗、リモートの変更を取り込んで再試行 ($i/3)"
-
             git pull --rebase origin "${GITHUB_REF_NAME}"
-
             sleep 5
-
           done
 
           if [ "$PUSH_SUCCESS" != "true" ]; then
@@ -330,49 +232,27 @@ jobs:
             exit 1
           fi
 
-
-  # ==========================================================
-  # ② 本番AIスキャン
-  #
-  # researchが完全成功した場合だけ実行。
-  #
-  # strategy_policy.jsonをstock_scan.pyが読む。
-  # ==========================================================
   production:
-
     needs:
       - research
 
-
     runs-on: ubuntu-latest
-
     timeout-minutes: 30
 
-
     steps:
-
-      # --------------------------------------------------------
-      # Checkout
-      #
-      # researchジョブが直前にデフォルトブランチへpushした
-      # 最新状態を取得する。
-      # --------------------------------------------------------
       - name: Checkout latest default branch
         uses: actions/checkout@v4
-
         with:
           fetch-depth: 0
 
       - name: Sync latest default branch
         run: |
-
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
 
           echo "===== DEFAULT BRANCH ====="
           echo "$DEFAULT_BRANCH"
 
           git fetch origin "$DEFAULT_BRANCH"
-
           git reset --hard "origin/$DEFAULT_BRANCH"
 
           echo "===== CURRENT COMMIT ====="
@@ -386,85 +266,79 @@ jobs:
             echo "⚠ strategy_policy.jsonなし"
           fi
 
+      # ========================================================
+      # production側でも100銘柄を再確認
+      # ========================================================
+      - name: Verify production ticker universe
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
 
-      # --------------------------------------------------------
-      # Python
-      # --------------------------------------------------------
+          def read_tickers(path):
+              tree = ast.parse(
+                  Path(path).read_text(encoding="utf-8"),
+                  filename=path,
+              )
+              for node in tree.body:
+                  if isinstance(node, ast.Assign):
+                      for target in node.targets:
+                          if isinstance(target, ast.Name) and target.id == "TICKERS":
+                              return ast.literal_eval(node.value)
+              raise RuntimeError(f"{path}: TICKERSが見つかりません")
+
+          stock_tickers = read_tickers("stock_scan.py")
+
+          print("本番銘柄数:", len(stock_tickers))
+
+          if len(stock_tickers) != 100:
+              raise SystemExit(
+                  f"❌ 本番stock_scan.pyが100銘柄ではありません: {len(stock_tickers)}"
+              )
+
+          if len(set(stock_tickers)) != 100:
+              raise SystemExit(
+                  "❌ 本番銘柄リストに重複があります"
+              )
+
+          print("✅ 本番100銘柄確認完了")
+          PY
+
       - name: Setup Python
         uses: actions/setup-python@v5
-
         with:
           python-version: '3.11'
 
-
-      # --------------------------------------------------------
-      # Install
-      # --------------------------------------------------------
       - name: Install dependencies
         run: |
-          pip install \
-            yfinance \
-            pandas \
-            numpy \
-            requests \
-            scikit-learn \
-            joblib
+          pip install yfinance pandas numpy requests scikit-learn joblib
 
-
-      # --------------------------------------------------------
-      # Syntax check
-      # --------------------------------------------------------
       - name: Python syntax check
         run: |
-
           python -m py_compile stock_scan.py
 
-
-      # --------------------------------------------------------
-      # Policy確認
-      # --------------------------------------------------------
       - name: Show active strategy policy
         run: |
-
           echo "======================================"
-
           echo "🤖 ACTIVE STRATEGY POLICY"
-
           echo "======================================"
-
 
           if [ -f strategy_policy.json ]; then
-
             cat strategy_policy.json
-
           else
-
             echo "⚠ strategy_policy.jsonなし"
-
             echo "stock_scan.pyのデフォルト設定を使用"
-
           fi
 
-
-      # --------------------------------------------------------
-      # 本番株スキャン
-      # --------------------------------------------------------
       - name: Run Stock Scan
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-
         run: |
           python stock_scan.py
 
-
-      # --------------------------------------------------------
-      # 成果物確認
-      # --------------------------------------------------------
       - name: Check production files
         run: |
-
           echo "===== PRODUCTION FILES ====="
-
           ls -lh \
             prediction_history.csv \
             train_data.csv \
@@ -472,19 +346,11 @@ jobs:
             feature_importances.csv \
             2>/dev/null || true
 
-
-      # --------------------------------------------------------
-      # Production artifact
-      # --------------------------------------------------------
       - name: Upload production artifacts
         uses: actions/upload-artifact@v4
-
         with:
-
           name: production-${{ github.run_id }}
-
           if-no-files-found: warn
-
           path: |
             prediction_history.csv
             train_data.csv
@@ -492,41 +358,22 @@ jobs:
             feature_importances.csv
             strategy_policy.json
 
-
-      # --------------------------------------------------------
-      # Production成果保存
-      #
-      # ★修正③: push失敗時のリトライ(researchジョブと同様)
-      # --------------------------------------------------------
       - name: Commit production results
         run: |
-
           git config --global user.name "github-actions"
-
-          git config --global user.email \
-            "github-actions@github.com"
-
+          git config --global user.email "github-actions@github.com"
 
           git add prediction_history.csv || true
-
           git add train_data.csv || true
-
           git add model.pkl || true
-
           git add feature_importances.csv || true
-
           git add strategy_policy.json || true
 
-
-          git commit \
-            -m "Update AI stock scan results" \
-            || echo "No production changes"
-
+          git commit -m "Update AI stock scan results" || echo "No production changes"
 
           PUSH_SUCCESS=false
 
           for i in 1 2 3; do
-
             if git push; then
               echo "✅ push成功"
               PUSH_SUCCESS=true
@@ -534,11 +381,8 @@ jobs:
             fi
 
             echo "⚠ push失敗、リモートの変更を取り込んで再試行 ($i/3)"
-
             git pull --rebase origin "${GITHUB_REF_NAME}"
-
             sleep 5
-
           done
 
           if [ "$PUSH_SUCCESS" != "true" ]; then
