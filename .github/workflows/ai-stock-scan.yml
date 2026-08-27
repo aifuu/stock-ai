@@ -36,9 +36,6 @@ jobs:
         run: |
           pip install yfinance pandas numpy requests scikit-learn joblib
 
-      # ========================================================
-      # 100銘柄ユニバース同期
-      # ========================================================
       - name: Sync 100 ticker universe
         run: |
           python sync_ticker_universe.py
@@ -50,10 +47,7 @@ jobs:
           from pathlib import Path
 
           def read_tickers(path):
-              tree = ast.parse(
-                  Path(path).read_text(encoding="utf-8"),
-                  filename=path,
-              )
+              tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
               for node in tree.body:
                   if isinstance(node, ast.Assign):
                       for target in node.targets:
@@ -68,24 +62,13 @@ jobs:
           print("walk_forward.py 銘柄数=", len(wf_tickers))
 
           if len(stock_tickers) != 100:
-              raise SystemExit(
-                  f"❌ stock_scan.py が100銘柄ではありません: {len(stock_tickers)}"
-              )
-
+              raise SystemExit(f"❌ stock_scan.py が100銘柄ではありません: {len(stock_tickers)}")
           if len(wf_tickers) != 100:
-              raise SystemExit(
-                  f"❌ walk_forward.py が100銘柄ではありません: {len(wf_tickers)}"
-              )
-
+              raise SystemExit(f"❌ walk_forward.py が100銘柄ではありません: {len(wf_tickers)}")
           if stock_tickers != wf_tickers:
-              raise SystemExit(
-                  "❌ stock_scan.py と walk_forward.py のTICKERSが一致していません"
-              )
-
+              raise SystemExit("❌ stock_scan.py と walk_forward.py のTICKERSが一致していません")
           if len(set(stock_tickers)) != 100:
-              raise SystemExit(
-                  "❌ 重複銘柄があります"
-              )
+              raise SystemExit("❌ 重複銘柄があります")
 
           print("✅ 100銘柄・重複なし・2ファイル完全一致")
           PY
@@ -98,13 +81,8 @@ jobs:
           python -m py_compile adversarial_strategy_validator.py
           python -m py_compile build_strategy_policy.py
           python -m py_compile stock_scan.py
+          python -m py_compile discord_pretty_runner.py
 
-      # ========================================================
-      # 高速Walk Forward
-      #
-      # walk_forward.py本体は研究ロジックを維持。
-      # fast runnerが実行時だけ軽量化する。
-      # ========================================================
       - name: Run Walk Forward (fast)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -118,26 +96,16 @@ jobs:
         run: |
           echo "===== FILE CHECK ====="
           ls -lh walk_forward_all_candidates.csv
-
           python - <<'PY'
           import os
           import pandas as pd
-
           file = "walk_forward_all_candidates.csv"
-
           if not os.path.exists(file):
-              raise SystemExit(
-                  "❌ walk_forward_all_candidates.csv がありません"
-              )
-
+              raise SystemExit("❌ walk_forward_all_candidates.csv がありません")
           df = pd.read_csv(file)
-
           print(f"✅ 全候補CSV確認: {len(df)} rows")
-
           if len(df) == 0:
-              raise SystemExit(
-                  "❌ walk_forward_all_candidates.csv が0件です"
-              )
+              raise SystemExit("❌ walk_forward_all_candidates.csv が0件です")
           PY
 
       - name: Run Adversarial Validation
@@ -190,10 +158,10 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-
           git add stock_scan.py || true
           git add walk_forward.py || true
           git add walk_forward_fast_runner.py || true
+          git add discord_pretty_runner.py || true
           git add walk_forward_results.csv || true
           git add walk_forward_all_candidates.csv || true
           git add walk_forward_strategy_comparison.csv || true
@@ -214,23 +182,18 @@ jobs:
           git add strategy_policy.json || true
           git add feature_importances.csv || true
           git add -u
-
           git commit -m "Update 100 ticker strategy validation" || echo "No research changes"
-
           PUSH_SUCCESS=false
-
           for i in 1 2 3; do
             if git push; then
               echo "✅ push成功"
               PUSH_SUCCESS=true
               break
             fi
-
             echo "⚠ push失敗、リモートの変更を取り込んで再試行 ($i/3)"
             git pull --rebase origin "${GITHUB_REF_NAME}"
             sleep 5
           done
-
           if [ "$PUSH_SUCCESS" != "true" ]; then
             echo "❌ 3回ともgit pushに失敗しました"
             exit 1
@@ -239,7 +202,6 @@ jobs:
   production:
     needs:
       - research
-
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -252,18 +214,13 @@ jobs:
       - name: Sync latest default branch
         run: |
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-
           echo "===== DEFAULT BRANCH ====="
           echo "$DEFAULT_BRANCH"
-
           git fetch origin "$DEFAULT_BRANCH"
           git reset --hard "origin/$DEFAULT_BRANCH"
-
           echo "===== CURRENT COMMIT ====="
           git log -1 --oneline
-
           echo "===== ACTIVE POLICY ====="
-
           if [ -f strategy_policy.json ]; then
             cat strategy_policy.json
           else
@@ -275,33 +232,20 @@ jobs:
           python - <<'PY'
           import ast
           from pathlib import Path
-
           def read_tickers(path):
-              tree = ast.parse(
-                  Path(path).read_text(encoding="utf-8"),
-                  filename=path,
-              )
+              tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
               for node in tree.body:
                   if isinstance(node, ast.Assign):
                       for target in node.targets:
                           if isinstance(target, ast.Name) and target.id == "TICKERS":
                               return ast.literal_eval(node.value)
               raise RuntimeError(f"{path}: TICKERSが見つかりません")
-
           stock_tickers = read_tickers("stock_scan.py")
-
           print("本番銘柄数:", len(stock_tickers))
-
           if len(stock_tickers) != 100:
-              raise SystemExit(
-                  f"❌ 本番stock_scan.pyが100銘柄ではありません: {len(stock_tickers)}"
-              )
-
+              raise SystemExit(f"❌ 本番stock_scan.pyが100銘柄ではありません: {len(stock_tickers)}")
           if len(set(stock_tickers)) != 100:
-              raise SystemExit(
-                  "❌ 本番銘柄リストに重複があります"
-              )
-
+              raise SystemExit("❌ 本番銘柄リストに重複があります")
           print("✅ 本番100銘柄確認完了")
           PY
 
@@ -317,13 +261,13 @@ jobs:
       - name: Python syntax check
         run: |
           python -m py_compile stock_scan.py
+          python -m py_compile discord_pretty_runner.py
 
       - name: Show active strategy policy
         run: |
           echo "======================================"
           echo "🤖 ACTIVE STRATEGY POLICY"
           echo "======================================"
-
           if [ -f strategy_policy.json ]; then
             cat strategy_policy.json
           else
@@ -335,17 +279,12 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          python stock_scan.py
+          python discord_pretty_runner.py
 
       - name: Check production files
         run: |
           echo "===== PRODUCTION FILES ====="
-          ls -lh \
-            prediction_history.csv \
-            train_data.csv \
-            model.pkl \
-            feature_importances.csv \
-            2>/dev/null || true
+          ls -lh prediction_history.csv train_data.csv model.pkl feature_importances.csv 2>/dev/null || true
 
       - name: Upload production artifacts
         uses: actions/upload-artifact@v4
@@ -363,29 +302,23 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-
           git add prediction_history.csv || true
           git add train_data.csv || true
           git add model.pkl || true
           git add feature_importances.csv || true
           git add strategy_policy.json || true
-
           git commit -m "Update AI stock scan results" || echo "No production changes"
-
           PUSH_SUCCESS=false
-
           for i in 1 2 3; do
             if git push; then
               echo "✅ push成功"
               PUSH_SUCCESS=true
               break
             fi
-
             echo "⚠ push失敗、リモートの変更を取り込んで再試行 ($i/3)"
             git pull --rebase origin "${GITHUB_REF_NAME}"
             sleep 5
           done
-
           if [ "$PUSH_SUCCESS" != "true" ]; then
             echo "❌ 3回ともgit pushに失敗しました"
             exit 1
