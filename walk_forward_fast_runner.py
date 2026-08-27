@@ -2,12 +2,12 @@
 """
 WALK-FORWARD高速実行ラッパー
 
-walk_forward.py 本体を直接書き換えず、実行時だけ高速化する。
-内部の特定空白に依存した文字列置換は行わない。
+walk_forward.py 本体を直接変更せず、実行時だけ高速化する。
+特定の空白・改行に依存したパッチは行わない。
 
 高速化:
 - 再学習間隔 20 -> 40営業日
-- RandomForest 300 -> 150 trees
+- RandomForest 300 -> 最大150 trees
 - 1回のfitに渡す学習データを最大75,000行へ決定論的サンプリング
 - evaluate_trade の結果をキャッシュ
 - 進捗表示を10営業日ごとにする
@@ -16,8 +16,8 @@ walk_forward.py 本体を直接書き換えず、実行時だけ高速化する�
 from pathlib import Path
 import re
 import runpy
-import numpy as np
 
+import numpy as np
 from sklearn import ensemble
 
 BASE_FILE = Path(__file__).resolve().with_name("walk_forward.py")
@@ -25,40 +25,45 @@ TEMP_FILE = Path(__file__).resolve().with_name(".walk_forward_fast_tmp.py")
 
 
 # =========================================================
-# RandomForest高速版
+# 純正RandomForestを使った安全な高速ラッパー
 # =========================================================
 
-OriginalRandomForestClassifier = ensemble.RandomForestClassifier
+_ORIGINAL_RF = ensemble.RandomForestClassifier
 
 
-class FastRandomForestClassifier(OriginalRandomForestClassifier):
-    """大規模学習時だけ決定論的に学習行数を制限する。"""
+def FastRandomForestClassifier(*args, **kwargs):
+    """
+    walk_forward.py からはRandomForestClassifierとして呼ばれるが、
+    純正scikit-learn estimatorを生成して返す。
+    そのためsklearnのEstimator互換性を壊さない。
+    """
 
-    MAX_TRAIN_ROWS = 75000
-    FAST_N_ESTIMATORS = 150
+    kwargs["n_estimators"] = min(
+        int(kwargs.get("n_estimators", 150)),
+        150,
+    )
 
-    def __init__(self, *args, **kwargs):
-        kwargs["n_estimators"] = min(
-            int(kwargs.get("n_estimators", self.FAST_N_ESTIMATORS)),
-            self.FAST_N_ESTIMATORS,
-        )
-        super().__init__(*args, **kwargs)
+    original_fit = _ORIGINAL_RF.fit
+    model = _ORIGINAL_RF(*args, **kwargs)
 
-    def fit(self, X, y, sample_weight=None):
+    max_train_rows = 75000
+
+    def fast_fit(X, y, sample_weight=None, **fit_kwargs):
         n_rows = len(X)
 
-        if n_rows > self.MAX_TRAIN_ROWS:
+        if n_rows > max_train_rows:
             rng = np.random.RandomState(42)
+
             idx = np.sort(
                 rng.choice(
                     n_rows,
-                    size=self.MAX_TRAIN_ROWS,
+                    size=max_train_rows,
                     replace=False,
                 )
             )
 
-            X = X.iloc[idx] if hasattr(X, "iloc") else X[idx]
-            y = y.iloc[idx] if hasattr(y, "iloc") else y[idx]
+            X2 = X.iloc[idx] if hasattr(X, "iloc") else X[idx]
+            y2 = y.iloc[idx] if hasattr(y, "iloc") else y[idx]
 
             if sample_weight is not None:
                 sample_weight = (
@@ -68,33 +73,48 @@ class FastRandomForestClassifier(OriginalRandomForestClassifier):
                 )
 
             print(
-                f"  ⚡ RF学習行数を {n_rows} -> "
-                f"{self.MAX_TRAIN_ROWS} に制限"
+                f"  ⚡ RF学習行数 {n_rows:,} -> "
+                f"{max_train_rows:,}"
             )
 
-        return super().fit(
+            return original_fit(
+                model,
+                X2,
+                y2,
+                sample_weight=sample_weight,
+                **fit_kwargs,
+            )
+
+        return original_fit(
+            model,
             X,
             y,
             sample_weight=sample_weight,
+            **fit_kwargs,
         )
 
+    model.fit = fast_fit
+    return model
 
-# walk_forward.py の
-# from sklearn.ensemble import RandomForestClassifier
-# が参照するクラスを実行前に差し替える。
+
+# walk_forward.py の import 後に参照されるクラス名を差し替える。
 ensemble.RandomForestClassifier = FastRandomForestClassifier
 
 
 def patch_source(source: str) -> str:
-    """元コードの構造を大きく変更せず、軽量化用の小さな変更だけを施す。"""
+    """walk_forward.pyの文字列構造に依存しない最小限の高速化パッチ。"""
 
     # ---------------------------------------------------------
-    # 再学習間隔
+    # 再学習間隔: 20 -> 40
     # ---------------------------------------------------------
-    source2, count = re.subn(
+    pattern = (
         r'(REFIT_EVERY_TRADING_DAYS\s*=\s*int\(\s*'
         r'os\.getenv\(\s*["\']WF_REFIT_EVERY_TRADING_DAYS["\']\s*,\s*)'
-        r'["\']20["\']',
+        r'["\']20["\']'
+    )
+
+    source, count = re.subn(
+        pattern,
         r'\1"40"',
         source,
         count=1,
@@ -102,37 +122,33 @@ def patch_source(source: str) -> str:
     )
 
     if count == 1:
-        source = source2
         print("  ✅ 再学習間隔 20→40営業日")
     else:
-        print("  ℹ 再学習間隔の既定値置換は不要")
+        print("  ℹ 再学習間隔は元コードを維持")
 
     # ---------------------------------------------------------
-    # 進捗表示
-    # 元コード側が別形式でも失敗しないよう、これは任意。
+    # 進捗表示: 20 -> 10
     # ---------------------------------------------------------
-    source2, count = re.subn(
+    source, count = re.subn(
         r'if\s+pos\s*%\s*20\s*==\s*0\s*:',
         'if pos % 10 == 0:',
         source,
         count=1,
     )
+
     if count == 1:
-        source = source2
         print("  ✅ 進捗表示 20→10営業日")
 
     # ---------------------------------------------------------
     # evaluate_trade キャッシュ
-    # STARTマーカーが見つからなくても実行自体は可能にする。
     # ---------------------------------------------------------
     if "_FAST_TRADE_CACHE" not in source:
         cache_block = '''\n# =========================================================\n# FAST RUNNER: evaluate_trade キャッシュ\n# =========================================================\n\n_FAST_ORIGINAL_EVALUATE_TRADE = evaluate_trade\n_FAST_TRADE_CACHE = {}\n\ndef evaluate_trade(day_df, entry_date, entry_price, take_profit, stop_loss):\n    key = (\n        id(day_df),\n        str(pd.Timestamp(entry_date)),\n        float(entry_price),\n        float(take_profit),\n        float(stop_loss),\n    )\n\n    if key not in _FAST_TRADE_CACHE:\n        _FAST_TRADE_CACHE[key] = _FAST_ORIGINAL_EVALUATE_TRADE(\n            day_df,\n            entry_date,\n            entry_price,\n            take_profit,\n            stop_loss,\n        )\n\n    return _FAST_TRADE_CACHE[key]\n\n'''
 
-        # main実行直前の一般的な if __name__ ブロックを狙う。
-        main_pattern = r'(?m)^if\s+__name__\s*==\s*["\']__main__["\']\s*:\s*$'
+        # 通常のPythonエントリポイント直前に差し込む。
         patched, count = re.subn(
-            main_pattern,
-            cache_block + '\nif __name__ == "__main__":',
+            r'(?m)^if\s+__name__\s*==\s*["\']__main__["\']\s*:\s*$',
+            cache_block + 'if __name__ == "__main__":',
             source,
             count=1,
         )
@@ -141,7 +157,7 @@ def patch_source(source: str) -> str:
             source = patched
             print("  ✅ evaluate_trade結果をキャッシュ")
         else:
-            print("  ⚠ evaluate_tradeキャッシュ挿入をスキップ")
+            print("  ⚠ evaluate_tradeキャッシュは未適用")
 
     return source
 
@@ -158,7 +174,6 @@ def main() -> None:
 
     patched = patch_source(source)
 
-    # 構文チェック
     compile(
         patched,
         str(TEMP_FILE),
@@ -176,7 +191,9 @@ def main() -> None:
         print("🚀 WALK-FORWARD FAST RUNNER")
         print("===========================================")
         print("元ファイル: walk_forward.py")
-        print("高速化: RF150 / 最大学習75,000行 / 再学習40日")
+        print("RF: 最大150本")
+        print("学習: 最大75,000行/fit")
+        print("再学習: 40営業日")
         print("")
 
         runpy.run_path(
