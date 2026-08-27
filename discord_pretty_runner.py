@@ -1,6 +1,5 @@
 """
 Discord表示改善用ランナー
-
 stock_scan.py の計算・判定ロジックは変更せず、実行時だけDiscord送信部分を
 Embed形式＋日本語表示に差し替える。
 """
@@ -17,7 +16,6 @@ WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 
 
 def pretty_content(msg):
-    """既存メッセージを読みやすい日本語表記へ変換する。"""
     replacements = [
         ("⏰ JST:", "🕐 実行時刻："),
         ("📈 日経225トレンド判定", "🇯🇵 市場環境｜日経225"),
@@ -60,7 +58,6 @@ def pretty_content(msg):
         ("勝ち:", "勝ち："),
         ("負け:", "負け："),
         ("HOLD:", "保留："),
-        ("強い買い", "強い買い"),
         ("買わない", "見送り"),
         ("監視(拮抗)", "監視｜判断が拮抗"),
         ("監視(日経下落/レンジ)", "監視｜日経が上昇トレンドではない"),
@@ -71,8 +68,6 @@ def pretty_content(msg):
     ]
     for old, new in replacements:
         msg = msg.replace(old, new)
-
-    # 見出しを整理
     msg = msg.replace("━━━━━━━━━━━━━━\n", "")
     msg = msg.replace("━━━━━━━━━━━━━━━━━━\n", "")
     msg = re.sub(r"\n{4,}", "\n\n", msg)
@@ -83,10 +78,7 @@ def send_pretty(msg):
     if not WEBHOOK_URL:
         print("❌ Webhookなし")
         return
-
     content = pretty_content(msg)
-
-    # Discord Embedのdescriptionは4096文字まで。長い場合は通常contentへ分割。
     if len(content) <= 3900:
         payload = {
             "embeds": [{
@@ -96,10 +88,8 @@ def send_pretty(msg):
             }]
         }
     else:
-        # 既存のTOP_N=3程度なら通常ここには入るが、安全に分割する。
         chunks = [content[i:i + 1900] for i in range(0, len(content), 1900)]
         payload = {"content": "🤖 AI株スキャン｜日本語レポート\n" + "\n\n".join(chunks)}
-
     try:
         r = requests.post(WEBHOOK_URL, json=payload, timeout=30)
         print("Discord status =", r.status_code)
@@ -114,11 +104,9 @@ def send_pretty(msg):
 
 def build_source():
     source = BASE.read_text(encoding="utf-8")
-
-    # stock_scan.py の send(msg) 関数だけを実行時差し替え。
     pattern = re.compile(
-        r"(?ms)^def send\(msg\):\n.*?(?=^# =========================================================\n# 銘柄)")
-
+        r"(?ms)^def send\(msg\):\n.*?(?=^# =========================================================\n# 銘柄)"
+    )
     replacement = '''def send(msg):
     send_pretty(msg)
 
@@ -126,18 +114,20 @@ def build_source():
 # =========================================================
 # 銘柄
 '''
-
     source, count = pattern.subn(replacement, source, count=1)
     if count != 1:
         raise RuntimeError("stock_scan.py の send() 差し替え位置を特定できません")
-
     return source
 
 
 if __name__ == "__main__":
     TMP.write_text(build_source(), encoding="utf-8")
     try:
-        runpy.run_path(str(TMP), run_name="__main__")
+        runpy.run_path(
+            str(TMP),
+            run_name="__main__",
+            init_globals={"send_pretty": send_pretty},
+        )
     finally:
         try:
             TMP.unlink()
