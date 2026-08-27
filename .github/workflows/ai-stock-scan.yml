@@ -38,18 +38,11 @@ jobs:
 
       # ========================================================
       # 100銘柄ユニバース同期
-      #
-      # sync_ticker_universe.py が stock_scan.py のTICKERSを読み、
-      # 追加銘柄を足して100銘柄に統一し、walk_forward.pyにも
-      # 同じTICKERSを反映する。
       # ========================================================
       - name: Sync 100 ticker universe
         run: |
           python sync_ticker_universe.py
 
-      # ========================================================
-      # 100銘柄になっていることを強制確認
-      # ========================================================
       - name: Verify 100 ticker universe
         run: |
           python - <<'PY'
@@ -65,8 +58,7 @@ jobs:
                   if isinstance(node, ast.Assign):
                       for target in node.targets:
                           if isinstance(target, ast.Name) and target.id == "TICKERS":
-                              value = ast.literal_eval(node.value)
-                              return value
+                              return ast.literal_eval(node.value)
               raise RuntimeError(f"{path}: TICKERSが見つかりません")
 
           stock_tickers = read_tickers("stock_scan.py")
@@ -102,15 +94,25 @@ jobs:
         run: |
           python -m py_compile sync_ticker_universe.py
           python -m py_compile walk_forward.py
+          python -m py_compile walk_forward_fast_runner.py
           python -m py_compile adversarial_strategy_validator.py
           python -m py_compile build_strategy_policy.py
           python -m py_compile stock_scan.py
 
-      - name: Run Walk Forward
+      # ========================================================
+      # 高速Walk Forward
+      #
+      # walk_forward.py本体は研究ロジックを維持。
+      # fast runnerが実行時だけ軽量化する。
+      # ========================================================
+      - name: Run Walk Forward (fast)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          WF_REFIT_EVERY_TRADING_DAYS: '40'
+          WF_N_ESTIMATORS: '150'
+          WF_MAX_TRAIN_ROWS_PER_TICKER: '750'
         run: |
-          python walk_forward.py
+          python walk_forward_fast_runner.py
 
       - name: Check Walk Forward candidates
         run: |
@@ -182,6 +184,7 @@ jobs:
             adversarial_monitoring_config.csv
             strategy_policy.json
             feature_importances.csv
+            walk_forward_fast_runner.py
 
       - name: Commit research results
         run: |
@@ -190,6 +193,7 @@ jobs:
 
           git add stock_scan.py || true
           git add walk_forward.py || true
+          git add walk_forward_fast_runner.py || true
           git add walk_forward_results.csv || true
           git add walk_forward_all_candidates.csv || true
           git add walk_forward_strategy_comparison.csv || true
@@ -266,9 +270,6 @@ jobs:
             echo "⚠ strategy_policy.jsonなし"
           fi
 
-      # ========================================================
-      # production側でも100銘柄を再確認
-      # ========================================================
       - name: Verify production ticker universe
         run: |
           python - <<'PY'
