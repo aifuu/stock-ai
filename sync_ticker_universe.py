@@ -7,9 +7,12 @@ stock_scan.py の TICKERS を正（source of truth）として、
 walk_forward.py の TICKERS を完全一致させる。
 
 改善点:
-  1. ハードコードされていた「94→100銘柄」前提を撤廃し、
+  1. ハードコードされた銘柄数前提を撤廃し、
      現在の銘柄数と追加後の銘柄数を動的に検証・表示する
-  2. ticker のフォーマット検証（例: 4桁数字+".T"）を追加
+  2. ticker のフォーマット検証を追加
+     ・通常コード: 4桁数字 + .T
+     ・新しい形式のコード: 英数字4文字 + .T
+       例: 285A.T
   3. 書き込み前に AST として再パース可能か検証してから
      アトミックに書き込む（壊れたファイルで上書きしない）
   4. 上書き前に .bak バックアップを自動作成
@@ -17,7 +20,7 @@ walk_forward.py の TICKERS を完全一致させる。
      このファイル自身の場所基準に解決
   6. 重複銘柄・フォーマット不正銘柄を明示的に報告
   7. コマンドライン引数でファイルパス・追加銘柄・目標数を
-     指定可能に（デフォルトは元スクリプトと同じ挙動）
+     指定可能に
 =========================================================
 """
 
@@ -41,7 +44,10 @@ DEFAULT_EXTRA_TICKERS = [
     "6098.T",  # リクルートHD
 ]
 
-TICKER_PATTERN = re.compile(r"^\d{4}\.T$")
+# 東証系ティッカー:
+#   通常の4桁数字だけでなく、285A.Tのような
+#   英字を含む新形式も許可する。
+TICKER_PATTERN = re.compile(r"^[0-9A-Z]{4}\.T$")
 
 
 def extract_tickers(path: Path) -> list[str]:
@@ -73,7 +79,9 @@ def validate_tickers(tickers: list[str]) -> None:
     invalid = [t for t in tickers if not TICKER_PATTERN.match(t)]
     if invalid:
         raise RuntimeError(
-            f"銘柄コードのフォーマットが不正です（例: 9432.T）: {invalid}"
+            "銘柄コードのフォーマットが不正です "
+            "（4文字の英数字 + .T を許可。例: 9432.T / 285A.T）: "
+            f"{invalid}"
         )
 
     seen = set()
@@ -87,7 +95,7 @@ def validate_tickers(tickers: list[str]) -> None:
 
 
 def replace_tickers(path: Path, tickers: list[str], *, backup: bool = True) -> None:
-    """TICKERS = [...] を新しいリストに書き換える（アトミック書き込み）。"""
+    """TICKERS = [...] を新しいリストに書き換える。"""
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
 
@@ -107,12 +115,19 @@ def replace_tickers(path: Path, tickers: list[str], *, backup: bool = True) -> N
     start = target_node.value.lineno - 1
     end = target_node.value.end_lineno
 
-    replacement = "TICKERS = [\n" + "".join(f'    "{t}",\n' for t in tickers) + "]"
+    replacement = "TICKERS = [\n" + "".join(
+        f'    "{t}",\n' for t in tickers
+    ) + "]"
 
     lines = source.splitlines(keepends=True)
-    new_source = "".join(lines[:start]) + replacement + "\n" + "".join(lines[end:])
+    new_source = (
+        "".join(lines[:start])
+        + replacement
+        + "\n"
+        + "".join(lines[end:])
+    )
 
-    # 書き込み前に構文が壊れていないか検証する
+    # 書き込み前に構文が壊れていないか検証
     try:
         ast.parse(new_source, filename=str(path))
     except SyntaxError as e:
@@ -124,7 +139,7 @@ def replace_tickers(path: Path, tickers: list[str], *, backup: bool = True) -> N
         backup_path = path.with_suffix(path.suffix + ".bak")
         backup_path.write_text(source, encoding="utf-8")
 
-    # アトミックに書き込む（同一ファイルシステム前提）
+    # アトミック書き込み
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(new_source, encoding="utf-8")
     tmp_path.replace(path)
@@ -143,6 +158,7 @@ def sync(
 
     # 重複を除去しつつ現在の順番を維持
     merged = list(dict.fromkeys(base_tickers))
+
     for ticker in extra_tickers:
         if ticker not in merged:
             merged.append(ticker)
@@ -156,53 +172,98 @@ def sync(
             f"→ 実際{len(merged)}銘柄（重複や既存分を除いた結果）"
         )
 
-    replace_tickers(base_file, merged, backup=backup)
-    replace_tickers(wf_file, merged, backup=backup)
+    replace_tickers(
+        base_file,
+        merged,
+        backup=backup,
+    )
+
+    replace_tickers(
+        wf_file,
+        merged,
+        backup=backup,
+    )
 
     final_base = extract_tickers(base_file)
     final_wf = extract_tickers(wf_file)
 
-    print(f"✅ 銘柄ユニバース同期完了: {before_count} → {len(final_base)}銘柄")
-    print("  stock_scan.py   =", len(final_base))
-    print("  walk_forward.py =", len(final_wf))
+    print(
+        f"✅ 銘柄ユニバース同期完了: "
+        f"{before_count} → {len(final_base)}銘柄"
+    )
+
+    print(
+        "  stock_scan.py   =",
+        len(final_base),
+    )
+
+    print(
+        "  walk_forward.py =",
+        len(final_wf),
+    )
 
     if final_base != final_wf:
         raise RuntimeError(
-            "❌ stock_scan.py と walk_forward.py の銘柄順・内容が一致していません"
+            "❌ stock_scan.py と walk_forward.py の"
+            "銘柄順・内容が一致していません"
         )
 
-    print("✅ 2ファイルのTICKERS完全一致")
+    print(
+        "✅ 2ファイルのTICKERS完全一致"
+    )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="銘柄ユニバース同期スクリプト")
-    parser.add_argument("--base-file", type=Path, default=DEFAULT_BASE_FILE)
-    parser.add_argument("--wf-file", type=Path, default=DEFAULT_WF_FILE)
+    parser = argparse.ArgumentParser(
+        description="銘柄ユニバース同期スクリプト"
+    )
+
+    parser.add_argument(
+        "--base-file",
+        type=Path,
+        default=DEFAULT_BASE_FILE,
+    )
+
+    parser.add_argument(
+        "--wf-file",
+        type=Path,
+        default=DEFAULT_WF_FILE,
+    )
+
     parser.add_argument(
         "--extra-ticker",
         action="append",
         dest="extra_tickers",
         default=None,
-        help="追加する銘柄コード（複数指定可）。未指定時はデフォルト6銘柄を使用",
+        help=(
+            "追加する銘柄コード（複数指定可）。"
+            "未指定時はデフォルト6銘柄を使用"
+        ),
     )
+
     parser.add_argument(
         "--target-count",
         type=int,
         default=None,
         help="最終的な銘柄数の期待値（省略時はチェックしない）",
     )
+
     parser.add_argument(
         "--no-backup",
         action="store_true",
         help="書き換え前の .bak バックアップ作成を無効化",
     )
+
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
     extra_tickers = (
-        args.extra_tickers if args.extra_tickers is not None else DEFAULT_EXTRA_TICKERS
+        args.extra_tickers
+        if args.extra_tickers is not None
+        else DEFAULT_EXTRA_TICKERS
     )
 
     try:
@@ -213,8 +274,12 @@ def main() -> int:
             target_count=args.target_count,
             backup=not args.no_backup,
         )
-    except Exception as e:  # noqa: BLE001
-        print(f"❌ 失敗: {e}", file=sys.stderr)
+
+    except Exception as e:
+        print(
+            f"❌ 失敗: {e}",
+            file=sys.stderr,
+        )
         return 1
 
     return 0
