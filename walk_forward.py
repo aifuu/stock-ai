@@ -2682,6 +2682,53 @@ if not symbol_data:
  
  
 # =========================================================
+# ★診断: 銘柄数 → 取得成功数のファネル
+#
+# 「銘柄数100 ≠ 検証件数100」問題の切り分け用。
+# まずここで、TICKERSに定義した銘柄のうち何件が
+# 実際にprepare_symbol_data()を通過したか(データ長不足・
+# 取得失敗等で脱落していないか)を明示する。
+# =========================================================
+ 
+missing_tickers = [
+    t
+    for t in TICKERS
+    if t not in symbol_data
+]
+ 
+print("")
+print(
+    "=" * 60
+)
+ 
+print(
+    "📊 銘柄ファネル(1/2): データ取得・特徴量作成"
+)
+ 
+print(
+    "=" * 60
+)
+ 
+print(
+    f"対象銘柄数(TICKERS)        = {len(TICKERS)}"
+)
+ 
+print(
+    f"データ取得・特徴量作成成功 = {len(symbol_data)}"
+)
+ 
+print(
+    f"脱落銘柄数                 = {len(missing_tickers)}"
+)
+ 
+if missing_tickers:
+ 
+    print(
+        f"脱落した銘柄: {missing_tickers}"
+    )
+ 
+ 
+# =========================================================
 # 予測対象日
 # =========================================================
  
@@ -3410,6 +3457,79 @@ print(
 print(
     f"候補件数: "
     f"{len(candidate_df)}"
+)
+ 
+ 
+# =========================================================
+# ★診断: 候補ファネル(2/2)
+#
+# 「候補件数」の内訳を、
+#   ・実際にシグナルが1回でも出た銘柄数(重複脱落の有無)
+#   ・DEV/VALIDATION/OOSフェーズ別の生シグナル件数
+#     (戦略条件で絞る"前"の、素の候補数)
+# に分解する。ここでVALIDATION/OOSの生シグナルが
+# 極端に少なければ、戦略条件(UP確率・日経フィルター等)より
+# 前の段階(データ取得・流動性フィルター・ウォームアップ期間の
+# 取り方等)で候補が落ちている可能性が高い。
+# =========================================================
+ 
+candidate_phase = (
+    candidate_df["date"]
+    .map(
+        phase_by_date
+    )
+    .fillna("UNKNOWN")
+)
+ 
+phase_counts = (
+    candidate_phase
+    .value_counts()
+)
+ 
+unique_tickers_in_candidates = (
+    candidate_df["ticker"]
+    .nunique()
+)
+ 
+print("")
+print(
+    "=" * 60
+)
+ 
+print(
+    "📊 候補ファネル(2/2): 戦略条件で絞る前の生シグナル"
+)
+ 
+print(
+    "=" * 60
+)
+ 
+print(
+    f"候補に登場したユニーク銘柄数 = "
+    f"{unique_tickers_in_candidates} / {len(TICKERS)}"
+)
+ 
+for phase_name in [
+    "DEV",
+    "VALIDATION",
+    "OOS",
+    "UNKNOWN"
+]:
+ 
+    print(
+        f"  {phase_name:10s}: "
+        f"{int(phase_counts.get(phase_name, 0))}件"
+    )
+ 
+print(
+    "  ※ここでの件数は、UP確率しきい値・日経フィルター・"
+    "テスタ型モメンタム等の戦略条件を適用する前の、"
+    "素の候補数(全銘柄・全日・TOP_N制限なし)です。"
+)
+ 
+print(
+    "  ※各strategyごとのVALIDATION通過件数は、この後の"
+    "「VALIDATIONランキング」の signals 列で確認できます。"
 )
  
  
