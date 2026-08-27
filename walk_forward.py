@@ -127,22 +127,52 @@ TEST_WARMUP_DAYS = int(
  
  
 # =========================================================
-# 再学習間隔
+# 高速化設定
+#
+# ★100銘柄化に伴う高速化対応
+#
+# ① 再学習間隔: 20営業日 → 40営業日
+#    再学習回数を約半分にする。
+#
+# ② MAX_TRAIN_ROWS_PER_TICKER: 1銘柄あたり学習に使う
+#    最大履歴を「全期間」ではなく「直近750営業日」に制限する
+#    ローリング窓方式。100銘柄 × 750日 ≈ 最大7.5万件に圧縮
+#    (全期間だと100銘柄で18万件超になっていた)。
 # =========================================================
  
 REFIT_EVERY_TRADING_DAYS = int(
     os.getenv(
         "WF_REFIT_EVERY_TRADING_DAYS",
-        "20"
+        "40"
+    )
+)
+ 
+MAX_TRAIN_ROWS_PER_TICKER = int(
+    os.getenv(
+        "WF_MAX_TRAIN_ROWS_PER_TICKER",
+        "750"
     )
 )
  
  
 # =========================================================
 # RandomForest
+#
+# ★N_ESTIMATORS: 300 → 150
+#
+# ウォークフォワード内の候補探索(24条件比較)では、
+# 木の本数を減らして再学習コストを抑える。
+# 最終確認(採用判定)を行う際は、精度優先で
+# WF_N_ESTIMATORS=300・WF_REFIT_EVERY_TRADING_DAYS=20 に
+# 戻して実行すること。
 # =========================================================
  
-N_ESTIMATORS = 300
+N_ESTIMATORS = int(
+    os.getenv(
+        "WF_N_ESTIMATORS",
+        "150"
+    )
+)
  
 MAX_DEPTH = 7
  
@@ -1883,6 +1913,18 @@ def calculate_signal(
 # (バックテスト期間の終端に近い等)は、
 # 中途半端な結果(HOLD/TIMEOUT_LOSS)として確定させず
 # NO_DATA として集計から除外する。
+#
+# ★高速化
+#
+# 以前は evaluate_strategy_variant() 側(24条件の比較ループ)
+# から、各条件でTOP_Nに選ばれた候補に対して都度呼び出して
+# いたため、同じ(日付, 銘柄)の組み合わせが複数の条件で重複
+# して選ばれるたびに、最大24回まで同じ計算を繰り返していた。
+# 現在はウォークフォワードの候補生成時(1日1回、全銘柄分)に
+# 1回だけ計算し、candidate_history に結果を保存しておき、
+# evaluate_strategy_variant() 側はその結果を再利用するだけに
+# 変更した。検証ロジック自体(TP/SL判定・NO_DATA除外)は
+# 変更していない。
 # =========================================================
  
 def evaluate_trade(
@@ -2439,6 +2481,16 @@ print(
 )
  
 print(
+    f"RandomForest本数: "
+    f"{N_ESTIMATORS}"
+)
+ 
+print(
+    f"学習データ上限(1銘柄あたり): "
+    f"{MAX_TRAIN_ROWS_PER_TICKER}営業日"
+)
+ 
+print(
     f"ATR TP: "
     f"{ATR_TP_MULTIPLIER}x"
 )
@@ -2780,6 +2832,11 @@ print(
 #
 # ここでは「候補を全部保存」。
 # 条件の比較は後段で行う。
+#
+# ★高速化: 売買結果(evaluate_trade)はここで候補ごとに
+# 1回だけ計算し、candidate_history に含めて保存する。
+# evaluate_strategy_variant() 側は24条件の比較で
+# この結果を再利用するだけにする(重複計算をなくす)。
 # =========================================================
  
 candidate_history = []
@@ -2797,13 +2854,14 @@ for pos, prediction_date in enumerate(
         prediction_date
     )
  
-    if pos % 20 == 0:
+    if pos % 10 == 0:
  
         print(
             f"進捗: "
             f"{pos + 1}/"
             f"{len(prediction_dates)} "
-            f"{prediction_date.date()}"
+            f"{prediction_date.date()} "
+            f"候補累計={len(candidate_history)}"
         )
  
  
@@ -2867,6 +2925,31 @@ for pos, prediction_date in enumerate(
                 ]
                 .copy()
             )
+ 
+ 
+            # =================================================
+            # 高速化:
+            # 1銘柄あたり直近750営業日だけ学習に使用
+            #
+            # 全期間(拡大窓)ではなく、直近
+            # MAX_TRAIN_ROWS_PER_TICKER件のみを使うローリング窓に
+            # 変更。100銘柄合計で最大18万件超あった学習データを
+            # 数万件規模まで圧縮し、再学習のたびのコストを抑える。
+            # =================================================
+ 
+            if (
+                len(usable_prior)
+                >
+                MAX_TRAIN_ROWS_PER_TICKER
+            ):
+ 
+                usable_prior = (
+                    usable_prior
+                    .tail(
+                        MAX_TRAIN_ROWS_PER_TICKER
+                    )
+                    .copy()
+                )
  
  
             if usable_prior.empty:
@@ -3144,9 +3227,40 @@ for pos, prediction_date in enumerate(
  
     # =====================================================
     # 全候補保存
+    #
+    # ★高速化: 売買結果を候補生成時に1回だけ計算
+    #
+    # 24種類の戦略比較では、この結果を再利用する。
     # =====================================================
  
     for candidate in candidates:
+ 
+        candidate_ticker = candidate[
+            "ticker"
+        ]
+ 
+        candidate_df = symbol_data[
+            candidate_ticker
+        ]
+ 
+        (
+            trade_result,
+            trade_return,
+            trade_hold_days,
+            trade_exit_price
+        ) = evaluate_trade(
+            candidate_df,
+            candidate["date"],
+            candidate["price"],
+            candidate["take_profit"],
+            candidate["stop_loss"]
+        )
+ 
+        # 5営業日分が揃っていない場合は除外
+        if trade_result == "NO_DATA":
+ 
+            continue
+ 
  
         candidate_history.append(
             {
@@ -3156,9 +3270,7 @@ for pos, prediction_date in enumerate(
                     ],
  
                 "ticker":
-                    candidate[
-                        "ticker"
-                    ],
+                    candidate_ticker,
  
                 "company":
                     candidate[
@@ -3241,6 +3353,28 @@ for pos, prediction_date in enumerate(
                             "vol"
                         ]
                     ),
+ 
+                # =================================================
+                # ここを追加: 事前計算した売買結果
+                # =================================================
+ 
+                "result":
+                    trade_result,
+ 
+                "return":
+                    float(
+                        trade_return
+                    ),
+ 
+                "hold_days":
+                    int(
+                        trade_hold_days
+                    ),
+ 
+                "exit_price":
+                    float(
+                        trade_exit_price
+                    ),
             }
         )
  
@@ -3287,6 +3421,12 @@ print(
 # testa_threshold を追加。None ならモメンタムフィルターなし
 # (BASELINE)、数値ならその値以上の momentum_score を持つ
 # 候補だけを「買い」とみなす。
+#
+# ★高速化
+#
+# 売買結果(result/return/hold_days/exit_price)は
+# candidate_df に事前計算済みのため、ここでは
+# evaluate_trade() を呼び出さず、そのまま再利用する。
 # =========================================================
  
 def evaluate_strategy_variant(
@@ -3418,8 +3558,15 @@ def evaluate_strategy_variant(
  
  
         # -------------------------------------------------
-        # 売買結果
+        # 売買結果: 事前計算済みの結果を使用
         # -------------------------------------------------
+ 
+        testa_label = (
+            "BASE"
+            if testa_threshold is None
+            else f"TESTA{testa_threshold}"
+        )
+ 
  
         for rank, (_, candidate) in enumerate(
             selected.iterrows(),
@@ -3430,48 +3577,6 @@ def evaluate_strategy_variant(
                 candidate[
                     "ticker"
                 ]
-            )
- 
- 
-            if ticker not in symbol_data:
- 
-                continue
- 
- 
-            df = (
-                symbol_data[
-                    ticker
-                ]
-            )
- 
- 
-            (
-                result,
-                ret,
-                hold_days,
-                exit_price
-            ) = evaluate_trade(
-                df,
-                prediction_date,
-                candidate["price"],
-                candidate[
-                    "take_profit"
-                ],
-                candidate[
-                    "stop_loss"
-                ]
-            )
- 
- 
-            if result == "NO_DATA":
- 
-                continue
- 
- 
-            testa_label = (
-                "BASE"
-                if testa_threshold is None
-                else f"TESTA{testa_threshold}"
             )
  
  
@@ -3536,17 +3641,29 @@ def evaluate_strategy_variant(
                             "stop_loss"
                         ],
  
+                    # =============================================
+                    # ここからは事前計算済みの結果を使用
+                    # =============================================
+ 
                     "result":
-                        result,
+                        candidate[
+                            "result"
+                        ],
  
                     "return":
-                        ret,
+                        candidate[
+                            "return"
+                        ],
  
                     "hold_days":
-                        hold_days,
+                        candidate[
+                            "hold_days"
+                        ],
  
                     "exit_price":
-                        exit_price,
+                        candidate[
+                            "exit_price"
+                        ],
  
                     "phase":
                         phase_by_date.get(
