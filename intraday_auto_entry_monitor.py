@@ -2,14 +2,20 @@
 intraday_auto_entry_monitor.py
 
 毎営業日、日足AIのTOP3候補を使い、9:15〜10:00の5分足で
-「寄り後チャート確認→最初に条件成立した1銘柄」の買いシグナルを自動判定する。
+「寄り後チャート確認→その日最初に条件成立した1銘柄」の買いシグナルを自動判定する。
 
-注意:
-- このスクリプトは証券会社へ注文を発注しない。
-- Discordへ「買いシグナル / TP / SL」を通知するだけ。
-- 実売買を行う場合は別途、証券会社APIとの接続と注文管理が必要。
+このスクリプトは証券会社へ発注せず、Discordへシグナルを通知するだけ。
+
+3段階比較:
+1. STANDARD: AI65 / 確率55 / 出来高1.0
+2. RELAXED:  AI60 / 確率52 / 出来高0.9
+3. LOOSE:    AI55 / 確率50 / 出来高0.8
+
+共通条件: VWAP上、寄りGU上限5%、ATR TP/SL。
+EMA5>EMA20は必須ではなく、3段階とも「EMAの位置関係は参考情報」とする。
 """
 
+import json
 import os
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
@@ -18,7 +24,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from common import is_tse_trading_day, send, TICKERS, COMPANY_NAMES
+from common import is_tse_trading_day, send, COMPANY_NAMES
 
 JST = ZoneInfo("Asia/Tokyo")
 HISTORY_FILE = os.getenv("TOP3_HISTORY_FILE", "prediction_history.csv")
@@ -26,27 +32,51 @@ ENTRY_START = dtime(9, 15)
 ENTRY_END = dtime(10, 0)
 FORCED_EXIT = dtime(15, 25)
 TOP_N = 3
-MIN_SCORE = float(os.getenv("AUTO_ENTRY_MIN_SCORE", "70"))
-MIN_UP_PROB = float(os.getenv("AUTO_ENTRY_MIN_UP_PROB", "60"))
-MIN_VOL_RATIO = float(os.getenv("AUTO_ENTRY_MIN_VOL_RATIO", "1.2"))
-MAX_GAP_PCT = float(os.getenv("AUTO_ENTRY_MAX_GAP", "3.0"))
 ATR_PERIOD = 14
 ATR_TP = float(os.getenv("AUTO_ENTRY_ATR_TP", "2.0"))
 ATR_SL = float(os.getenv("AUTO_ENTRY_ATR_SL", "1.0"))
+MAX_GAP_PCT = float(os.getenv("AUTO_ENTRY_MAX_GAP", "5.0"))
 STATE_FILE = "intraday_auto_entry_state.json"
+
+STRATEGIES = {
+    "STANDARD": {"min_score": 65.0, "min_up_prob": 55.0, "min_vol_ratio": 1.0},
+    "RELAXED": {"min_score": 60.0, "min_up_prob": 52.0, "min_vol_ratio": 0.9},
+    "LOOSE": {"min_score": 55.0, "min_up_prob": 50.0, "min_vol_ratio": 0.8},
+}
+
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
 
 
 def load_top3(trade_date):
     df = pd.read_csv(HISTORY_FILE, encoding="utf-8-sig")
-    if df.empty:
+    if df.empty or "date" not in df.columns or "ticker" not in df.columns or "score" not in df.columns:
         return pd.DataFrame()
-    for c in ["score", "probability"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["score"] = pd.to_numeric(df["score"], errors="coerce")
+    if "probability" in df.columns:
+        df["probability"] = pd.to_numeric(df["probability"], errors="coerce")
+    else:
+        df["probability"] = np.nan
+
     day = df[df["date"].dt.date == trade_date].copy()
+    day = day.dropna(subset=["ticker", "score"])
     if day.empty:
-        return pd.DataFrame()
+        return day
+
     day = day.sort_values("score", ascending=False).drop_duplicates("ticker")
     day["calc_rank"] = day["score"].rank(method="first", ascending=False)
     return day[day["calc_rank"] <= TOP_N].copy()
@@ -62,11 +92,15 @@ def download_5m(ticker):
         return None
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    needed = ["Open", "High", "Low", "Close", "Volume"]
+    if any(c not in df.columns for c in needed):
+        return None
+
     idx = pd.to_datetime(df.index)
     if getattr(idx, "tz", None) is not None:
         idx = idx.tz_convert(JST).tz_localize(None)
     else:
-        idx = idx.tz_localize(JST).tz_localize(None)
+        idx = idx.tz_localize("UTC").tz_convert(JST).tz_localize(None)
     df.index = idx
     return df.sort_index()
 
@@ -75,12 +109,15 @@ def indicators(df):
     x = df.copy()
     for c in ["Open", "High", "Low", "Close", "Volume"]:
         x[c] = pd.to_numeric(x[c], errors="coerce")
+
     typical = (x["High"] + x["Low"] + x["Close"]) / 3.0
-    x["vwap"] = (typical * x["Volume"]).cumsum() / x["Volume"].replace(0, np.nan).cumsum()
+    cum_vol = x["Volume"].replace(0, np.nan).cumsum()
+    x["vwap"] = (typical * x["Volume"]).cumsum() / cum_vol
     x["ema5"] = x["Close"].ewm(span=5, adjust=False).mean()
     x["ema20"] = x["Close"].ewm(span=20, adjust=False).mean()
     x["vol_ma20"] = x["Volume"].rolling(20, min_periods=5).mean()
     x["vol_ratio"] = x["Volume"] / x["vol_ma20"].replace(0, np.nan)
+
     prev = x["Close"].shift(1)
     tr = pd.concat([
         x["High"] - x["Low"],
@@ -98,50 +135,46 @@ def previous_close(df, trade_date):
     return float(hist["Close"].iloc[-1])
 
 
-def find_entry(df, row, trade_date, now):
+def find_entry(df, row, trade_date, now, config):
     x = indicators(df)
     today = x[x.index.date == trade_date]
-    if today.empty:
+    if today.empty or now.time() < ENTRY_START:
         return None
+
     window = today[(today.index.time >= ENTRY_START) & (today.index.time <= ENTRY_END)]
-    if now.time() < ENTRY_START:
-        return None
     window = window[window.index <= now.replace(tzinfo=None)]
     if len(window) < 2:
         return None
 
     score = float(row.get("score", np.nan))
-    prob = float(row.get("probability", np.nan)) if "probability" in row else np.nan
-    if not np.isfinite(score) or score < MIN_SCORE:
+    prob = float(row.get("probability", np.nan)) if pd.notna(row.get("probability", np.nan)) else np.nan
+    if not np.isfinite(score) or score < config["min_score"]:
         return None
-    if np.isfinite(prob) and prob < MIN_UP_PROB:
+    if np.isfinite(prob) and prob < config["min_up_prob"]:
         return None
 
     prev_close = previous_close(x, trade_date)
     first_open = float(today["Open"].iloc[0])
+    gap = np.nan
     if prev_close > 0:
-        gap = (first_open / prev_close - 1) * 100
+        gap = (first_open / prev_close - 1.0) * 100.0
         if gap > MAX_GAP_PCT:
             return None
-    else:
-        gap = np.nan
 
-    # 最新の確定足までを使い、次の5分足始値で入る。
+    # 確定済み足の次の足始値でエントリー。未来情報リークを避ける。
     for i in range(len(window) - 1):
         bar = window.iloc[i]
         nxt = window.iloc[i + 1]
-        ok = (
-            float(bar["Close"]) > float(bar["vwap"])
-            and float(bar["ema5"]) > float(bar["ema20"])
-            and pd.notna(bar["vol_ratio"])
-            and float(bar["vol_ratio"]) >= MIN_VOL_RATIO
-        )
-        if not ok:
+        cond_vwap = float(bar["Close"]) > float(bar["vwap"])
+        cond_volume = pd.notna(bar["vol_ratio"]) and float(bar["vol_ratio"]) >= config["min_vol_ratio"]
+        if not (cond_vwap and cond_volume):
             continue
+
         atr = float(bar["atr"]) if pd.notna(bar["atr"]) and float(bar["atr"]) > 0 else float(bar["Close"]) * 0.005
         entry_price = float(nxt["Open"])
         tp = entry_price + ATR_TP * atr
         sl = entry_price - ATR_SL * atr
+        ema_bull = float(bar["ema5"]) > float(bar["ema20"])
         return {
             "entry_time": nxt.name.strftime("%H:%M"),
             "entry_price": entry_price,
@@ -151,6 +184,7 @@ def find_entry(df, row, trade_date, now):
             "probability": prob,
             "gap_pct": gap,
             "vol_ratio": float(bar["vol_ratio"]),
+            "ema_bull": ema_bull,
         }
     return None
 
@@ -162,60 +196,63 @@ def main():
         print("東証休場日のため終了")
         return
     if now.time() < ENTRY_START or now.time() > FORCED_EXIT:
-        print(f"現在時刻 {now:%H:%M} は自動エントリー監視時間外")
+        print(f"現在時刻 {now:%H:%M} は自動監視時間外")
         return
 
     top3 = load_top3(trade_date)
     if top3.empty:
-        msg = f"⚠ TOP3履歴なし {now:%Y-%m-%d}"
-        print(msg)
-        send(msg)
+        print("本日のTOP3履歴なし")
         return
 
-    for _, row in top3.sort_values("calc_rank").iterrows():
-        ticker = str(row["ticker"])
-        df = download_5m(ticker)
-        if df is None:
-            continue
-        entry = find_entry(df, row, trade_date, now)
-        if entry is None:
-            continue
-
-        state = {
-            "date": str(trade_date),
-            "ticker": ticker,
-            "entry_time": entry["entry_time"],
-        }
-        if os.path.exists(STATE_FILE):
-            try:
-                old = pd.read_json(STATE_FILE, typ="series").to_dict()
-                if old.get("date") == state["date"]:
-                    print("本日は既にシグナル通知済み")
-                    return
-            except Exception:
-                pass
-
-        pd.Series(state).to_json(STATE_FILE, force_ascii=False)
-        name = COMPANY_NAMES.get(ticker, "")
-        prob_text = f"{entry['probability']:.1f}%" if np.isfinite(entry["probability"]) else "N/A"
-        msg = (
-            "🚨 自動デイトレ買いシグナル\n"
-            f"日付: {trade_date}\n"
-            f"TOP{int(row['calc_rank'])}: {ticker} {name}\n"
-            f"AIスコア: {entry['score']:.1f}\n"
-            f"上昇確率: {prob_text}\n"
-            f"エントリー予定: {entry['entry_time']} 次の5分足始値\n"
-            f"想定買値: {entry['entry_price']:.1f}\n"
-            f"TP: {entry['tp']:.1f} / SL: {entry['sl']:.1f}\n"
-            f"寄りギャップ: {entry['gap_pct']:+.2f}%\n"
-            "条件: VWAP上 / EMA5>EMA20 / 出来高倍率>=1.2\n"
-            "※この通知は発注ではありません。"
-        )
-        print(msg)
-        send(msg)
+    state = load_state()
+    if state.get("date") == str(trade_date) and state.get("signaled"):
+        print("本日は既にシグナル通知済み")
         return
 
-    print("現時点ではTOP3にエントリー条件成立なし")
+    # 3段階を厳しめ→緩めの順で確認し、最初に成立した1銘柄だけ通知。
+    for strategy_name, config in STRATEGIES.items():
+        for _, row in top3.sort_values("calc_rank").iterrows():
+            ticker = str(row["ticker"])
+            df = download_5m(ticker)
+            if df is None:
+                continue
+            entry = find_entry(df, row, trade_date, now, config)
+            if entry is None:
+                continue
+
+            state = {
+                "date": str(trade_date),
+                "signaled": True,
+                "strategy": strategy_name,
+                "ticker": ticker,
+                "rank": int(row["calc_rank"]),
+                "entry_time": entry["entry_time"],
+            }
+            save_state(state)
+
+            name = COMPANY_NAMES.get(ticker, "")
+            prob_text = f"{entry['probability']:.1f}%" if np.isfinite(entry["probability"]) else "N/A"
+            ema_text = "EMA5>EMA20" if entry["ema_bull"] else "EMA5<=EMA20"
+            msg = (
+                "🚨 自動デイトレ買いシグナル\n"
+                f"日付: {trade_date}\n"
+                f"検証段階: {strategy_name}\n"
+                f"TOP{int(row['calc_rank'])}: {ticker} {name}\n"
+                f"AIスコア: {entry['score']:.1f}\n"
+                f"上昇確率: {prob_text}\n"
+                f"エントリー予定: {entry['entry_time']} 次の5分足始値\n"
+                f"想定買値: {entry['entry_price']:.1f}\n"
+                f"TP: {entry['tp']:.1f} / SL: {entry['sl']:.1f}\n"
+                f"寄りギャップ: {entry['gap_pct']:+.2f}%\n"
+                f"出来高倍率: {entry['vol_ratio']:.2f} / {ema_text}\n"
+                "共通条件: VWAP上 / 寄りGU上限5%\n"
+                "※この通知は発注ではありません。"
+            )
+            print(msg)
+            send(msg)
+            return
+
+    print("3段階すべてで現時点のエントリー条件は未成立")
 
 
 if __name__ == "__main__":
