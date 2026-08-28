@@ -1,11 +1,9 @@
 name: 毎日TOP3 5分足 3段階自動エントリー監視
 
 on:
-  schedule:
-    # JST 09:15〜09:55 = UTC 00:15〜00:55
-    - cron: '15-55/5 0 * * 1-5'
-    # JST 10:00 = UTC 01:00。最終判定
-    - cron: '0 1 * * 1-5'
+  workflow_run:
+    workflows: ["AI Stock Scan + Auto Strategy Validation"]
+    types: [completed]
   workflow_dispatch: {}
 
 permissions:
@@ -13,11 +11,16 @@ permissions:
 
 jobs:
   auto-entry-monitor:
+    # AI Stock Scan + Auto Strategy Validation が成功した日だけ自動起動。
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
-      - name: Checkout
+      - name: Checkout latest main
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,15 +32,55 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests jpholiday
 
-      - name: Run 3-stage automatic TOP3 5m monitor
+      - name: Wait until JST 09:15
+        run: |
+          python - <<'PY'
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          jst = ZoneInfo('Asia/Tokyo')
+          while True:
+              now = datetime.now(jst)
+              target = now.replace(hour=9, minute=15, second=0, microsecond=0)
+              if now >= target:
+                  break
+              seconds = max(1, int((target - now).total_seconds()))
+              print(f'現在JST={now:%Y-%m-%d %H:%M:%S} / 9:15まで約{seconds}秒')
+              time.sleep(min(seconds, 60))
+          PY
+
+      - name: Monitor every 5 minutes from JST 09:15 to 10:00
         env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           TOP3_HISTORY_FILE: prediction_history.csv
           AUTO_ENTRY_ATR_TP: '2.0'
           AUTO_ENTRY_ATR_SL: '1.0'
           AUTO_ENTRY_MAX_GAP: '5.0'
-        run: python intraday_auto_entry_monitor.py
+        run: |
+          python - <<'PY'
+          import subprocess
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          jst = ZoneInfo('Asia/Tokyo')
+          last_date = None
+          while True:
+              now = datetime.now(jst)
+              if now.time().hour > 10 or (now.time().hour == 10 and now.time().minute > 5):
+                  print('10:05を過ぎたため監視終了')
+                  break
+
+              print(f'===== auto entry check {now:%Y-%m-%d %H:%M:%S} JST =====')
+              subprocess.run(['python', 'intraday_auto_entry_monitor.py'], check=False)
+
+              # 1日に1回シグナルが出た場合は次のループでもスクリプト側で停止。
+              time.sleep(300)
+          PY
 
       - name: Persist daily signal state
+        if: always()
         run: |
           if [ -f intraday_auto_entry_state.json ]; then
             git config user.name 'github-actions[bot]'
