@@ -31,6 +31,7 @@ MAX_CONSECUTIVE_LOSSES = int(os.getenv("AI_MAX_CONSECUTIVE_LOSSES", "3"))
 MONTHLY_TARGET = float(os.getenv("AI_MONTHLY_TARGET", "0.05"))
 LOCK_RISK_AFTER_TARGET = os.getenv("AI_LOCK_RISK_AFTER_TARGET", "true").lower() == "true"
 LOCKED_RISK_MULTIPLIER = float(os.getenv("AI_LOCKED_RISK_MULTIPLIER", "0.5"))
+CONSECUTIVE_NEGATIVE_MONTH_STOP = int(os.getenv("AI_CONSECUTIVE_NEGATIVE_MONTH_STOP", "2"))
 
 DEFAULT_POLICY = {
     "status": "DEFAULT",
@@ -77,6 +78,8 @@ def default_risk_state():
         "open_positions": 0,
         "positions": {},
         "consecutive_losses": 0,
+        "consecutive_negative_months": 0,
+        "monthly_stop": False,
         "risk_locked": False,
         "trading_enabled": True,
         "stop_reason": "",
@@ -90,6 +93,44 @@ def save_risk_state(state):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
+def _completed_negative_month_streak():
+    """確定済みの買い推奨取引だけから連続マイナス月を計算する。
+
+    当月は途中経過なので自動停止判定には含めない。
+    result が確定している行だけを対象にし、監視シグナルは対象外。
+    """
+    if not os.path.exists(PREDICTION_HISTORY_FILE):
+        return 0
+    try:
+        df = pd.read_csv(PREDICTION_HISTORY_FILE)
+        if df.empty or "date" not in df.columns or "result" not in df.columns or "return" not in df.columns:
+            return 0
+        if "category" in df.columns:
+            df = df[df["category"].astype(str).str.lower().eq("buy")]
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["return"] = pd.to_numeric(df["return"], errors="coerce")
+        df["result"] = df["result"].astype(str).str.strip()
+        df = df[df["date"].notna() & df["return"].notna() & df["result"].ne("")]
+        if df.empty:
+            return 0
+        current_month = now_jst().strftime("%Y-%m")
+        df["month"] = df["date"].dt.strftime("%Y-%m")
+        df = df[df["month"] < current_month]
+        if df.empty:
+            return 0
+        monthly = df.groupby("month")["return"].sum().sort_index()
+        streak = 0
+        for value in reversed(monthly.tolist()):
+            if float(value) < 0:
+                streak += 1
+            else:
+                break
+        return streak
+    except Exception as e:
+        print(f"⚠ 月間連続マイナス判定失敗: {e}")
+        return 0
+
+
 def _sync_state(state):
     today = now_jst().strftime("%Y-%m-%d")
     month = now_jst().strftime("%Y-%m")
@@ -98,8 +139,8 @@ def _sync_state(state):
         state["day_start_capital"] = float(state.get("capital", INITIAL_CAPITAL))
         state["daily_pnl"] = 0.0
         state["consecutive_losses"] = 0
-        state["trading_enabled"] = True
-        state["stop_reason"] = ""
+        state["trading_enabled"] = not bool(state.get("monthly_stop", False))
+        state["stop_reason"] = "月間連続マイナス停止" if state.get("monthly_stop", False) else ""
     if state.get("month") != month:
         state["month"] = month
         state["month_start_capital"] = float(state.get("capital", INITIAL_CAPITAL))
@@ -108,6 +149,8 @@ def _sync_state(state):
         state["positions"] = {}
     state["open_positions"] = len(state["positions"])
     state["consecutive_losses"] = int(state.get("consecutive_losses", 0))
+    state["consecutive_negative_months"] = int(state.get("consecutive_negative_months", 0))
+    state["monthly_stop"] = bool(state.get("monthly_stop", False))
     return state
 
 
@@ -170,6 +213,16 @@ def calculate_position_size(capital, entry_price, stop_loss, open_value=0.0, sta
 
 def build_position_plan(capital, ticker, entry_price, take_profit, stop_loss):
     state = _sync_state(load_risk_state())
+    if len(state["positions"]) >= MAX_POSITIONS:
+        return {
+            "ticker": ticker,
+            "shares": 0,
+            "entry_price": float(entry_price),
+            "take_profit": float(take_profit),
+            "stop_loss": float(stop_loss),
+            "position_value": 0.0,
+            "max_loss": 0.0,
+        }
     open_value = sum(float(p.get("value", 0.0)) for p in state["positions"].values())
     shares = calculate_position_size(capital, entry_price, stop_loss, open_value, state)
     position_value = shares * float(entry_price)
@@ -185,27 +238,22 @@ def build_position_plan(capital, ticker, entry_price, take_profit, stop_loss):
     }
 
 
-def _performance_pf(df):
-    if df.empty or "return" not in df.columns:
-        return None
-    returns = pd.to_numeric(df["return"], errors="coerce").dropna()
-    if returns.empty:
-        return None
-    gross_profit = returns[returns > 0].sum()
-    gross_loss = -returns[returns < 0].sum()
-    if gross_loss <= 0:
-        return float("inf") if gross_profit > 0 else 0.0
-    return float(gross_profit / gross_loss)
-
-
 def risk_check():
     state = _sync_state(load_risk_state())
     capital = float(state.get("capital", INITIAL_CAPITAL))
     reason = state.get("stop_reason", "")
-    enabled = bool(state.get("trading_enabled", True))
+    enabled = bool(state.get("trading_enabled", True)) and not bool(state.get("monthly_stop", False))
     daily_start = float(state.get("day_start_capital", capital))
     daily_pnl = capital - daily_start
     state["daily_pnl"] = daily_pnl
+
+    negative_streak = _completed_negative_month_streak()
+    state["consecutive_negative_months"] = negative_streak
+    if negative_streak >= CONSECUTIVE_NEGATIVE_MONTH_STOP:
+        state["monthly_stop"] = True
+        enabled = False
+        reason = f"{negative_streak}ヶ月連続マイナス"
+
     if daily_start > 0 and daily_pnl / daily_start <= -DAILY_STOP_LOSS:
         enabled = False
         reason = "日次損失上限"
@@ -222,6 +270,7 @@ def risk_check():
     month_start = float(state.get("month_start_capital", capital))
     if LOCK_RISK_AFTER_TARGET and month_start > 0 and capital / month_start - 1.0 >= MONTHLY_TARGET:
         state["risk_locked"] = True
+
     state["trading_enabled"] = enabled
     state["stop_reason"] = reason
     state["open_positions"] = len(state.get("positions", {}))
@@ -236,6 +285,9 @@ def risk_check():
         "drawdown": current_drawdown(capital),
         "risk_per_trade": current_risk_per_trade(state),
         "consecutive_losses": state["consecutive_losses"],
+        "consecutive_negative_months": state["consecutive_negative_months"],
+        "monthly_stop": state["monthly_stop"],
+        "max_positions": MAX_POSITIONS,
     }
 
 
@@ -308,6 +360,8 @@ def risk_status_text():
         f"利用可能資金: {check['available_cash']:,.0f}円\n"
         f"保有: {check['open_positions']}/{MAX_POSITIONS}\n"
         f"DD: {check['drawdown'] * 100:.2f}%\n"
-        f"1回リスク: {check['risk_per_trade'] * 100:.2f}%"
+        f"1回リスク: {check['risk_per_trade'] * 100:.2f}%\n"
+        f"連敗: {check['consecutive_losses']}\n"
+        f"連続マイナス月: {check['consecutive_negative_months']}ヶ月"
         + (f"\n停止理由: {check['reason']}" if check["reason"] else "")
     )
