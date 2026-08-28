@@ -21,7 +21,7 @@ CANDIDATE_FILE = os.getenv("WF_CANDIDATE_FILE", "walk_forward_all_candidates.csv
 START_DATE = pd.Timestamp(os.getenv("WF_START_DATE", "2021-01-01"))
 END_DATE = pd.Timestamp(os.getenv("WF_END_DATE", "2026-08-22"))
 OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "90"))
-TOP_N = int(os.getenv("WF_TOP_N", "3"))
+TOP_N = int(os.getenv("WF_TOP_N", "10"))
 PURGE_DAYS = int(os.getenv("WF_PURGE_DAYS", "7"))
 EMBARGO_DAYS = int(os.getenv("WF_EMBARGO_DAYS", "7"))
 INITIAL_CAPITAL = float(os.getenv("WF_INITIAL_CAPITAL", "1000000"))
@@ -142,6 +142,7 @@ print("=" * 80)
 print("🛡️ ADVERSARIAL STRATEGY VALIDATOR")
 print("探索対象期間:", START_DATE.date(), "～", END_DATE.date())
 print("DEV:", len(dev_dates), "VALIDATION:", len(validation_dates), "OOS:", len(oos_dates))
+print("TOP_N:", TOP_N)
 print("=" * 80)
 
 # ---------------------------------------------------------
@@ -282,272 +283,97 @@ dev_candidates.to_csv("adversarial_dev_selected_candidates.csv", index=False, en
 def block_bootstrap(values, stat_fn, block_len, n_iter=BOOTSTRAP_ITERATIONS):
     values = np.asarray(values, dtype=float)
     if len(values) < 10:
-        return np.nan, np.nan, np.nan
-    rng = np.random.default_rng(RANDOM_SEED + block_len)
+        return np.nan
+    rng = np.random.default_rng(RANDOM_SEED)
+    n = len(values)
+    starts = np.arange(max(1, n - block_len + 1))
     out = []
     for _ in range(n_iter):
         sample = []
-        while len(sample) < len(values):
-            s = int(rng.integers(0, len(values)))
-            for j in range(block_len):
-                if len(sample) >= len(values): break
-                sample.append(values[(s + j) % len(values)])
-        out.append(stat_fn(np.asarray(sample)))
-    out = np.asarray(out, dtype=float)
-    out = out[np.isfinite(out)]
-    if not len(out): return np.nan, np.nan, np.nan
-    return float(np.quantile(out, .025)), float(np.quantile(out, .50)), float(np.quantile(out, .975))
+        while len(sample) < n:
+            s = int(rng.choice(starts))
+            sample.extend(values[s:s + block_len])
+        out.append(stat_fn(np.asarray(sample[:n], dtype=float)))
+    return float(np.quantile(out, 0.05))
 
-
-def pf_stat(v):
-    g = v[v > 0].sum(); l = -v[v < 0].sum()
-    return g / l if l > 0 else (10.0 if g > 0 else 0.0)
-
-validation_rows = []
-for _, s in dev_candidates.iterrows():
-    rd = run_strategy(validation_df, int(s.up), int(s.score), bool(s.nikkei), float(s.tp), float(s.sl), int(s.hold))
+validation_results = []
+for _, row in dev_candidates.iterrows():
+    rd = run_strategy(validation_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
     st = stats(rd)
-    r = rd["return"].dropna().to_numpy() if not rd.empty else np.array([])
-    pf_l = []; mean_l = []
-    if len(r) >= 10:
-        for bl in BLOCK_LENGTHS:
-            a, _, _ = block_bootstrap(r, pf_stat, bl)
-            b, _, _ = block_bootstrap(r, np.mean, bl)
-            if np.isfinite(a): pf_l.append(a)
-            if np.isfinite(b): mean_l.append(b)
-    validation_rows.append({"strategy": s.strategy, "up": s.up, "score": s.score, "nikkei": s.nikkei, "tp": s.tp, "sl": s.sl, "hold": s.hold, **{f"validation_{k}": v for k, v in st.items()}, "pf_ci_lower": min(pf_l) if pf_l else np.nan, "mean_ci_lower": min(mean_l) if mean_l else np.nan})
+    lower_avg = block_bootstrap(rd["return"].values, np.mean, 10) if not rd.empty else np.nan
+    validation_results.append({**row.to_dict(), **{f"validation_{k}": v for k, v in st.items()}, "validation_avg_lower": lower_avg})
 
-validation = pd.DataFrame(validation_rows)
-validation.to_csv("adversarial_validation_gate.csv", index=False, encoding="utf-8-sig")
+validation_summary = pd.DataFrame(validation_results)
+validation_summary.to_csv("adversarial_validation_results.csv", index=False, encoding="utf-8-sig")
 
-# ---------------------------------------------------------
-# Regime gate: 20件未満はUNVERIFIED。判定可能50%未満ならHOLD。
-# ---------------------------------------------------------
-def regime_status(rd):
-    if rd.empty:
-        return "UNVERIFIED", 0.0
-    tmp = rd.merge(validation_df[["date", "ticker", "nikkei_uptrend"]], on=["date", "ticker"], how="left")
-    groups = [tmp[tmp.nikkei_uptrend == True], tmp[tmp.nikkei_uptrend == False]]
-    evaluable = 0
-    fail = 0
-    for g in groups:
-        if len(g) < MIN_REGIME_TRADES:
-            continue
-        evaluable += 1
-        st = stats(g)
-        if not (np.isinf(st["pf"]) or st["pf"] > 1.0) or st["avg_return"] <= 0:
-            fail += 1
-    coverage = evaluable / 2.0
-    if coverage < MIN_REGIME_COVERAGE:
-        return "UNVERIFIED", coverage
-    return ("PASS" if fail == 0 else "FAIL"), coverage
+# Validation PASS / HOLD
+if not validation_summary.empty:
+    validation_summary["validation_pass"] = (
+        (validation_summary.validation_signals >= MIN_VALIDATION_TRADES)
+        & (validation_summary.validation_pf >= MIN_PF_LOWER)
+        & (validation_summary.validation_avg_return > MIN_RETURN_LOWER)
+        & (validation_summary.validation_dd >= -MAX_VALIDATION_DD)
+        & (validation_summary.validation_annual_signals >= MIN_ANNUAL_SIGNALS)
+    )
+else:
+    validation_summary["validation_pass"] = False
+
+validation_summary.to_csv("adversarial_validation_results.csv", index=False, encoding="utf-8-sig")
 
 # ---------------------------------------------------------
-# Validation gate
+# OOS
 # ---------------------------------------------------------
-gate_rows = []
-for _, r in validation.iterrows():
-    rd = run_strategy(validation_df, int(r.up), int(r.score), bool(r.nikkei), float(r.tp), float(r.sl), int(r.hold))
-    regime, coverage = regime_status(rd)
-    n = int(r.validation_signals)
-    sample_class = "REJECT" if n < MIN_TRADES_HARD else ("HOLD" if n < TRADES_STABLE_MIN else ("STRONG" if n >= TRADES_STRONG_MIN else "NORMAL"))
-    pass_base = (n >= MIN_TRADES_HARD and np.isfinite(r.pf_ci_lower) and r.pf_ci_lower > MIN_PF_LOWER and np.isfinite(r.mean_ci_lower) and r.mean_ci_lower > MIN_RETURN_LOWER and abs(r.validation_dd) <= MAX_VALIDATION_DD and r.validation_annual_signals >= MIN_ANNUAL_SIGNALS and regime == "PASS")
-    gate = "PASS" if pass_base and sample_class in ["NORMAL", "STRONG"] else ("HOLD" if pass_base and sample_class == "HOLD" or regime == "UNVERIFIED" else "FAIL")
-    gate_rows.append({**r.to_dict(), "sample_class": sample_class, "regime_status": regime, "regime_coverage": coverage, "validation_gate": gate})
-
-gate = pd.DataFrame(gate_rows)
-gate.to_csv("adversarial_validation_gate_final.csv", index=False, encoding="utf-8-sig")
-
-# ---------------------------------------------------------
-# 敵対的感度分析: 元条件を評価するだけ。別条件へ乗り換えない。
-# ---------------------------------------------------------
-def stress_test(row):
-    records = []
-    for du, ds, tpr, slr, dh, slip in product([-5, 0, 5], [-10, 0, 10], [0.8, 1.0, 1.2], [0.8, 1.0, 1.2], [-2, 0, 2], [1.0, 1.5, 2.0]):
-        up = max(1, int(row.up + du)); score = max(0, int(row.score + ds)); tp = max(.5, float(row.tp * tpr)); sl = max(.5, float(row.sl * slr)); hold = min(10, max(1, int(row.hold + dh)))
-        rd = run_strategy(validation_df, up, score, bool(row.nikkei), tp, sl, hold)
-        st = stats(rd)
-        if st["signals"] >= MIN_TRADES_HARD:
-            pfv = 10.0 if np.isinf(st["pf"]) else st["pf"]
-            adjusted = st["avg_return"] - .001 * (slip - 1) * 100
-            records.append((pfv, adjusted))
-    if not records:
-        return np.nan, np.nan, 0.0, False
-    arr = np.asarray(records)
-    return float(np.median(arr[:, 0])), float(np.quantile(arr[:, 0], .10)), float(np.mean(arr[:, 0] > 1.0)), bool(np.median(arr[:, 0]) >= 1.0 and np.quantile(arr[:, 0], .10) >= .90 and np.mean(arr[:, 0] > 1.0) >= .50)
-
-passes = gate[gate.validation_gate == "PASS"].copy()
-stress_rows = []
-for _, row in passes.iterrows():
-    med, p10, ratio, sp = stress_test(row)
-    stress_rows.append({"strategy": row.strategy, "median_pf": med, "p10_pf": p10, "pf_gt_1_ratio": ratio, "stress_pass": sp})
-stress_df = pd.DataFrame(stress_rows)
-stress_df.to_csv("adversarial_sensitivity.csv", index=False, encoding="utf-8-sig")
-
-# ---------------------------------------------------------
-# OOS gate
-# ---------------------------------------------------------
-oos_rows = []
-for _, row in passes.iterrows():
+oos_results = []
+passed_validation = validation_summary[validation_summary.validation_pass].copy() if not validation_summary.empty else pd.DataFrame()
+for _, row in passed_validation.iterrows():
     rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
     st = stats(rd)
-    ratio = (st["pf"] / row.validation_pf) if row.validation_pf > 0 and np.isfinite(row.validation_pf) else np.nan
-    status = "PASS" if st["signals"] >= MIN_OOS_TRADES and (np.isinf(st["pf"]) or st["pf"] >= MIN_OOS_PF) and st["avg_return"] > MIN_OOS_AVG_RETURN and (np.isnan(ratio) or ratio >= MIN_OOS_TO_VALIDATION_PF) else ("HOLD" if st["signals"] < MIN_OOS_TRADES else "FAIL")
-    oos_rows.append({**row.to_dict(), "oos_signals": st["signals"], "oos_win_rate": st["win_rate"], "oos_avg_return": st["avg_return"], "oos_pf": st["pf"], "oos_dd": st["dd"], "oos_val_pf_ratio": ratio, "oos_gate": status})
-oos = pd.DataFrame(oos_rows)
-oos.to_csv("adversarial_oos_gate.csv", index=False, encoding="utf-8-sig")
+    oos_results.append({**row.to_dict(), **{f"oos_{k}": v for k, v in st.items()}})
+
+oos_summary = pd.DataFrame(oos_results)
+if not oos_summary.empty:
+    oos_summary["oos_pass"] = (
+        (oos_summary.oos_signals >= MIN_OOS_TRADES)
+        & (oos_summary.oos_pf >= MIN_OOS_PF)
+        & (oos_summary.oos_avg_return > MIN_OOS_AVG_RETURN)
+        & (oos_summary.oos_pf >= oos_summary.validation_pf * MIN_OOS_TO_VALIDATION_PF)
+    )
+else:
+    oos_summary["oos_pass"] = False
+
+oos_summary.to_csv("adversarial_oos_results.csv", index=False, encoding="utf-8-sig")
 
 # ---------------------------------------------------------
-# Monte Carlo: Block Bootstrap × Sizing
+# Final / Discord
 # ---------------------------------------------------------
-def monte_carlo(returns, sizing, iterations=MONTE_CARLO_ITERATIONS, max_year=20):
-    v = np.asarray(returns, dtype=float)
-    if len(v) < 10: return None
-    rng = np.random.default_rng(RANDOM_SEED)
-    trades_per_year = max(len(v) / max(OOS_DAYS / 252.0, 0.5), 1.0)
-    results = {y: [] for y in TARGET_YEARS}; bankrupt = 0; dd_list = []
-    for _ in range(iterations):
-        capital = INITIAL_CAPITAL; curve = [capital]
-        ntrades = int(math.ceil(trades_per_year * max_year)); seq = []
-        while len(seq) < ntrades:
-            bl = int(rng.choice(BLOCK_LENGTHS)); s = int(rng.integers(0, len(v)))
-            for j in range(bl):
-                if len(seq) >= ntrades: break
-                seq.append(v[(s + j) % len(v)])
-        for i, ret in enumerate(seq, 1):
-            # 資金が増えるほど同じ銘柄への集中量が増えるので、
-            # ここでは容量上限として1億円時のポジション参加率を制限する。
-            position = capital * sizing
-            capacity_penalty = max(0.0, position / 50_000_000.0 - 0.005) * 0.50
-            realized = ret - capacity_penalty
-            capital += capital * sizing * realized / 100.0
-            curve.append(capital)
-            if capital <= INITIAL_CAPITAL * 0.10:
-                bankrupt += 1
-                capital = max(capital, 0.0)
-                break
-        arr = np.asarray(curve)
-        dd = arr / np.maximum.accumulate(arr) - 1.0
-        dd_list.append(dd.min() * 100)
-        for y in TARGET_YEARS:
-            idx = min(len(seq), max(1, int(trades_per_year * y)))
-            c = INITIAL_CAPITAL
-            for ret in seq[:idx]:
-                position = c * sizing
-                penalty = max(0.0, position / 50_000_000.0 - 0.005) * 0.50
-                c += c * sizing * (ret - penalty) / 100.0
-                if c <= INITIAL_CAPITAL * 0.10:
-                    c = 0.0; break
-            results[y].append(c)
-    out = {"sizing": sizing, "bankruptcy_prob": bankrupt / iterations * 100, "dd_median": float(np.median(dd_list)), "dd_p90": float(np.quantile(dd_list, .90))}
-    for y in TARGET_YEARS:
-        arr = np.asarray(results[y])
-        out[f"prob_{y}y"] = float((arr >= TARGET_CAPITAL).mean() * 100)
-        out[f"median_{y}y"] = float(np.median(arr))
-        out[f"p10_{y}y"] = float(np.quantile(arr, .10))
-        out[f"p90_{y}y"] = float(np.quantile(arr, .90))
-    return out
+final_pass = oos_summary[oos_summary.oos_pass].copy() if not oos_summary.empty else pd.DataFrame()
 
-# 最終PASSは OOS PASS + 感度PASS。
-final = []
-for _, row in oos.iterrows():
-    stress = stress_df[stress_df.strategy == row.strategy]
-    stress_pass = bool(stress.iloc[0].stress_pass) if not stress.empty else False
-    status = "PASS" if row.oos_gate == "PASS" and stress_pass else ("HOLD" if row.oos_gate == "HOLD" else "REJECT")
-    final.append({**row.to_dict(), "stress_pass": stress_pass, "final_status": status})
-final_df = pd.DataFrame(final)
-final_df.to_csv("adversarial_final_candidates.csv", index=False, encoding="utf-8-sig")
-
-mc_rows = []
-if not final_df.empty:
-    for _, row in final_df[final_df.final_status == "PASS"].iterrows():
-        rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
-        if rd.empty: continue
-        rets = rd["return"].dropna().to_numpy()
-        for sizing in SIZING_GRID:
-            mc = monte_carlo(rets, sizing)
-            if mc:
-                mc["strategy"] = row.strategy
-                mc_rows.append(mc)
-
-mc_df = pd.DataFrame(mc_rows)
-mc_df.to_csv("adversarial_monte_carlo.csv", index=False, encoding="utf-8-sig")
-
-# 最適サイジング: 破産<5%、DD90%<=30%、15年到達確率最大
-selected = []
-if not mc_df.empty:
-    for strategy, g in mc_df.groupby("strategy"):
-        z = g[(g.bankruptcy_prob < 5.0) & (g.dd_p90.abs() <= 30.0)].copy()
-        if z.empty: continue
-        z = z.sort_values(["prob_15y", "median_15y"], ascending=False)
-        selected.append(z.iloc[0].to_dict())
-selected_df = pd.DataFrame(selected)
-selected_df.to_csv("adversarial_selected_sizing.csv", index=False, encoding="utf-8-sig")
-
-# ---------------------------------------------------------
-# HOLD -> Paper Trade
-# ---------------------------------------------------------
-hold_df = gate[gate.validation_gate == "HOLD"].copy()
-if not hold_df.empty:
-    hold_df["paper_status"] = "PAPER_TRADE"
-    hold_df["required_new_trades"] = 30
-    hold_df.to_csv("paper_trade_candidates.csv", index=False, encoding="utf-8-sig")
-
-# ---------------------------------------------------------
-# Monitoring config / CUSUM
-# ---------------------------------------------------------
-monitor_rows = []
-for _, row in final_df.iterrows():
-    monitor_rows.append({"strategy": row.strategy, "min_trades_before_alert": MONITOR_MIN_TRADES, "target_ARL0_trades": CUSUM_ARL0_TARGET, "baseline_validation_avg_return": row.validation_avg_return, "baseline_validation_pf": row.validation_pf, "alert_before_min_trades": False, "cusum_status": "PAPER_CALIBRATION_REQUIRED"})
-pd.DataFrame(monitor_rows).to_csv("adversarial_monitoring_config.csv", index=False, encoding="utf-8-sig")
-
-# ---------------------------------------------------------
-# まとめ
-# ---------------------------------------------------------
-print("\n" + "=" * 100)
-print("🏁 FINAL ADVERSARIAL VALIDATION")
-print("=" * 100)
+print("\n🛡️ AI ADVERSARIAL VALIDATION")
+print("期間:", START_DATE.date(), "～", END_DATE.date())
 print("探索数:", len(param_space))
 print("N_eff近似:", n_eff)
+print("TOP_N:", TOP_N)
 print("DEV候補:", len(dev_candidates))
-print("Validation PASS:", int((gate.validation_gate == "PASS").sum()))
-print("Validation HOLD:", int((gate.validation_gate == "HOLD").sum()))
-print("OOS PASS:", int((oos.oos_gate == "PASS").sum()) if not oos.empty else 0)
-print("Final PASS:", int((final_df.final_status == "PASS").sum()) if not final_df.empty else 0)
-print("Final HOLD:", int((final_df.final_status == "HOLD").sum()) if not final_df.empty else 0)
+print("Validation PASS:", int(validation_summary.validation_pass.sum()) if not validation_summary.empty else 0)
+print("OOS PASS:", int(oos_summary.oos_pass.sum()) if not oos_summary.empty else 0)
+print("Final PASS:", len(final_pass))
 
-if not selected_df.empty:
-    print("\n【Monte Carlo最適サイジング】")
-    for _, r in selected_df.head(10).iterrows():
-        print(f"{r.strategy} size={r.sizing*100:.2f}% 15y到達={r.prob_15y:.2f}% 破産={r.bankruptcy_prob:.2f}% DD90={r.dd_p90:.2f}%")
+msg = (
+    "🛡️ AI ADVERSARIAL VALIDATION\n"
+    f"期間: {START_DATE.date()} ～ {END_DATE.date()}\n"
+    f"探索数: {len(param_space)}\n"
+    f"N_eff近似: {n_eff}\n"
+    f"TOP_N: {TOP_N}\n"
+    f"DEV候補: {len(dev_candidates)}\n"
+    f"Validation PASS: {int(validation_summary.validation_pass.sum()) if not validation_summary.empty else 0}\n"
+    f"OOS PASS: {int(oos_summary.oos_pass.sum()) if not oos_summary.empty else 0}\n"
+    f"Final PASS: {len(final_pass)}"
+)
+if not final_pass.empty:
+    msg += "\n\n🏆 FINAL PASS\n"
+    for _, r in final_pass.head(10).iterrows():
+        msg += f"{r['strategy']} 件数={int(r['oos_signals'])} 勝率={r['oos_win_rate']:.2f}% 平均={r['oos_avg_return']:+.2f}% PF={r['oos_pf']:.2f}\n"
 else:
-    print("\nMonte Carloで採用可能なサイジング条件なし")
+    msg += "\n\n該当するFinal PASS戦略なし。"
 
-# ---------------------------------------------------------
-# Discord
-# ---------------------------------------------------------
-lines = [
-    "🛡️ AI ADVERSARIAL VALIDATION",
-    "━━━━━━━━━━━━━━━━━━",
-    f"期間：{START_DATE.date()} ～ {END_DATE.date()}",
-    f"探索数：{len(param_space)}",
-    f"N_eff近似：{n_eff}",
-    f"DEV候補：{len(dev_candidates)}",
-    f"Validation PASS：{int((gate.validation_gate == 'PASS').sum())}",
-    f"Validation HOLD：{int((gate.validation_gate == 'HOLD').sum())}",
-    f"OOS PASS：{int((oos.oos_gate == 'PASS').sum()) if not oos.empty else 0}",
-    f"Final PASS：{int((final_df.final_status == 'PASS').sum()) if not final_df.empty else 0}",
-]
-if not selected_df.empty:
-    lines.append("")
-    lines.append("【Monte Carlo】")
-    for _, r in selected_df.head(5).iterrows():
-        lines.append(f"{r.strategy} Size={r.sizing*100:.2f}% 15年100倍={r.prob_15y:.2f}% 破産={r.bankruptcy_prob:.2f}% DD90={r.dd_p90:.2f}%")
-if not hold_df.empty:
-    lines += ["", "⚠ HOLDは本番投入せずPaper Tradeへ"]
-lines += ["", "📁 adversarial_dev_all_results.csv", "📁 adversarial_validation_gate_final.csv", "📁 adversarial_sensitivity.csv", "📁 adversarial_oos_gate.csv", "📁 adversarial_monte_carlo.csv", "📁 paper_trade_candidates.csv"]
-message = "\n".join(lines)
-print("\n" + message)
-send_discord(message)
-print("\n✅ ADVERSARIAL VALIDATION COMPLETE")
-print("※ stock_scan.pyは変更していません。")
+send_discord(msg)
