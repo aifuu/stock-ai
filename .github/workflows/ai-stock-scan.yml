@@ -28,11 +28,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-
       - name: Install dependencies
-        run: pip install yfinance pandas numpy requests scikit-learn joblib
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
       - name: Sync 100 ticker universe
         run: python sync_ticker_universe.py
@@ -42,7 +41,6 @@ jobs:
           python - <<'PY'
           import ast
           from pathlib import Path
-
           def read_tickers(path):
               tree = ast.parse(Path(path).read_text(encoding='utf-8'), filename=path)
               for node in tree.body:
@@ -51,20 +49,15 @@ jobs:
                           if isinstance(target, ast.Name) and target.id == 'TICKERS':
                               return ast.literal_eval(node.value)
               raise RuntimeError(f'{path}: TICKERSが見つかりません')
-
           stock_tickers = read_tickers('stock_scan.py')
           wf_tickers = read_tickers('walk_forward.py')
-          print('stock_scan.py 銘柄数  =', len(stock_tickers))
-          print('walk_forward.py 銘柄数=', len(wf_tickers))
-          if len(stock_tickers) != 100:
-              raise SystemExit(f'❌ stock_scan.py が100銘柄ではありません: {len(stock_tickers)}')
-          if len(wf_tickers) != 100:
-              raise SystemExit(f'❌ walk_forward.py が100銘柄ではありません: {len(wf_tickers)}')
+          if len(stock_tickers) != 100 or len(wf_tickers) != 100:
+              raise SystemExit(f'❌ 銘柄数不正: stock={len(stock_tickers)}, wf={len(wf_tickers)}')
           if stock_tickers != wf_tickers:
               raise SystemExit('❌ stock_scan.py と walk_forward.py のTICKERSが一致していません')
           if len(set(stock_tickers)) != 100:
               raise SystemExit('❌ 重複銘柄があります')
-          print('✅ 100銘柄・重複なし・2ファイル完全一致')
+          print('✅ 100銘柄・重複なし・完全一致')
           PY
 
       - name: Python syntax check
@@ -75,10 +68,10 @@ jobs:
           python -m py_compile walk_forward_discord_pretty_runner.py
           python -m py_compile adversarial_strategy_validator.py
           python -m py_compile build_strategy_policy.py
-          python -m py_compile stock_scan.py
-          python -m py_compile discord_pretty_runner.py
           python -m py_compile intraday_strategy_backtest.py
           python -m py_compile build_intraday_policy.py
+          python -m py_compile stock_scan.py
+          python -m py_compile discord_pretty_runner.py
           python -m py_compile intraday_auto_entry_monitor.py
           python -m py_compile intraday_exit_monitor.py
 
@@ -95,10 +88,9 @@ jobs:
           test -s walk_forward_all_candidates.csv
           python - <<'PY'
           import pandas as pd
-          file = 'walk_forward_all_candidates.csv'
-          df = pd.read_csv(file)
-          print(f'✅ 全候補CSV確認: {len(df)} rows')
-          if len(df) == 0:
+          df = pd.read_csv('walk_forward_all_candidates.csv')
+          print(f'✅ 全候補CSV: {len(df)} rows')
+          if df.empty:
               raise SystemExit('❌ walk_forward_all_candidates.csv が0件です')
           PY
 
@@ -110,34 +102,10 @@ jobs:
       - name: Build 5-day strategy policy
         run: python build_strategy_policy.py
 
-      - name: Run intraday strategy comparison
-        env:
-          TOP3_HISTORY_FILE: prediction_history.csv
-          IS_MIN_TRADES: '10'
-          AUTO_ENTRY_ATR_TP: '2.0'
-          AUTO_ENTRY_ATR_SL: '1.0'
-          AUTO_ENTRY_MAX_GAP: '5.0'
-        run: python intraday_strategy_backtest.py
-
-      - name: Build intraday strategy policy
-        env:
-          ID_MIN_TRADES: '10'
-          ID_MIN_PF: '1.0'
-          ID_MIN_AVG_RETURN: '0.0'
-          AUTO_ENTRY_ATR_TP: '2.0'
-          AUTO_ENTRY_ATR_SL: '1.0'
-        run: python build_intraday_policy.py
-
-      - name: Check combined policies
-        run: |
-          echo '===== strategy_policy.json ====='
-          test -s strategy_policy.json
-          cat strategy_policy.json
-
       - name: Upload research artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: strategy-research-${{ github.run_id }}
+          name: research-${{ github.run_id }}
           if-no-files-found: warn
           path: |
             walk_forward_results.csv
@@ -159,55 +127,27 @@ jobs:
             adversarial_monitoring_config.csv
             strategy_policy.json
             feature_importances.csv
-            intraday_strategy_comparison.csv
-            intraday_3stage_summary.csv
-            intraday_top3_backtest_STANDARD.csv
-            intraday_top3_backtest_RELAXED.csv
-            intraday_top3_backtest_LOOSE.csv
-            intraday_top3_equity_STANDARD.csv
-            intraday_top3_equity_RELAXED.csv
-            intraday_top3_equity_LOOSE.csv
 
       - name: Commit research results safely
         run: |
           set -e
           git config user.name 'github-actions'
           git config user.email 'github-actions@github.com'
-
-          git add stock_scan.py walk_forward.py walk_forward_fast_runner.py \
-            walk_forward_discord_pretty_runner.py discord_pretty_runner.py \
-            walk_forward_results.csv walk_forward_all_candidates.csv \
-            walk_forward_strategy_comparison.csv walk_forward_strategy_details.csv \
-            walk_forward_strategy_phase_comparison.csv walk_forward_monthly.csv \
-            walk_forward_yearly.csv adversarial_dev_all_results.csv \
-            adversarial_dev_selected_candidates.csv adversarial_validation_gate.csv \
-            adversarial_sensitivity.csv adversarial_oos_gate.csv \
-            adversarial_monte_carlo.csv adversarial_selected_sizing.csv \
-            adversarial_final_candidates.csv paper_trade_candidates.csv \
-            adversarial_monitoring_config.csv strategy_policy.json feature_importances.csv \
-            intraday_strategy_comparison.csv intraday_3stage_summary.csv \
-            intraday_top3_backtest_STANDARD.csv intraday_top3_backtest_RELAXED.csv \
-            intraday_top3_backtest_LOOSE.csv intraday_top3_equity_STANDARD.csv \
-            intraday_top3_equity_RELAXED.csv intraday_top3_equity_LOOSE.csv 2>/dev/null || true
+          git add stock_scan.py walk_forward.py walk_forward_fast_runner.py walk_forward_discord_pretty_runner.py discord_pretty_runner.py || true
+          git add walk_forward_results.csv walk_forward_all_candidates.csv walk_forward_strategy_comparison.csv walk_forward_strategy_details.csv walk_forward_strategy_phase_comparison.csv walk_forward_monthly.csv walk_forward_yearly.csv || true
+          git add adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_gate.csv adversarial_sensitivity.csv adversarial_oos_gate.csv adversarial_monte_carlo.csv adversarial_selected_sizing.csv adversarial_final_candidates.csv paper_trade_candidates.csv adversarial_monitoring_config.csv strategy_policy.json feature_importances.csv || true
           git add -u
-          git commit -m 'Update strategy validation and intraday policy' || echo 'No research changes to commit'
-
+          git commit -m 'Update research strategy results' || echo 'No research changes to commit'
           for i in 1 2 3 4 5; do
             git fetch origin main
-            git rebase origin/main || {
-              echo '⚠️ rebase conflict; abort and refresh workspace'
-              git rebase --abort || true
-              git reset --hard origin/main
-              exit 1
-            }
+            git rebase origin/main
             if git push origin HEAD:main; then
               echo '✅ research push成功'
               exit 0
             fi
-            echo "⚠️ push競合、再同期して再試行: $i/5"
+            echo "⚠️ research push競合、再試行: $i/5"
             sleep $((i * 3))
           done
-          echo '❌ research push失敗'
           exit 1
 
   production:
@@ -216,10 +156,16 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout latest default branch
+      - name: Checkout latest main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
+
+      - name: Sync latest main
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -227,14 +173,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
-
-      - name: Sync latest default branch
         run: |
-          git fetch origin main
-          git reset --hard origin/main
-          echo '===== ACTIVE POLICY ====='
-          test -s strategy_policy.json && cat strategy_policy.json || true
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
       - name: Verify production ticker universe
         run: |
@@ -242,53 +183,58 @@ jobs:
           import ast
           from pathlib import Path
           tree = ast.parse(Path('stock_scan.py').read_text(encoding='utf-8'))
+          tickers = None
           for node in tree.body:
               if isinstance(node, ast.Assign):
                   for target in node.targets:
                       if isinstance(target, ast.Name) and target.id == 'TICKERS':
                           tickers = ast.literal_eval(node.value)
-                          break
-                  else:
-                      continue
-                  break
-          else:
-              raise SystemExit('TICKERSが見つかりません')
+          if tickers is None:
+              raise SystemExit('❌ TICKERSが見つかりません')
           if len(tickers) != 100 or len(set(tickers)) != 100:
               raise SystemExit(f'❌ 本番銘柄数/重複不正: {len(tickers)}')
           print('✅ 本番100銘柄確認完了')
           PY
 
-      - name: Python syntax check
-        run: |
-          python -m py_compile stock_scan.py
-          python -m py_compile discord_pretty_runner.py
-          python -m py_compile intraday_auto_entry_monitor.py
-          python -m py_compile intraday_exit_monitor.py
-
-      - name: Run Stock Scan
+      - name: Run latest morning AI Stock Scan
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          TOP_N: '20'
         run: python discord_pretty_runner.py
 
-      - name: Check production files
+      - name: Verify today's prediction history
         run: |
-          ls -lh prediction_history.csv train_data.csv model.pkl feature_importances.csv 2>/dev/null || true
+          test -s prediction_history.csv
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import pandas as pd
+          today = datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y-%m-%d')
+          df = pd.read_csv('prediction_history.csv', encoding='utf-8-sig')
+          if 'date' not in df.columns:
+              raise SystemExit('❌ prediction_history.csv にdate列がありません')
+          day = df[df['date'].astype(str) == today]
+          print(f'✅ 今日({today})のAI履歴: {len(day)} rows')
+          if day.empty:
+              raise SystemExit('❌ 今日のAI履歴がありません')
+          top3 = day.sort_values('score', ascending=False).head(3)
+          print('===== TODAY TOP3 =====')
+          print(top3[['ticker','score','probability']].to_string(index=False))
+          if len(top3) < 3:
+              raise SystemExit('❌ 今日のTOP3を作れません')
+          PY
 
-      - name: Commit production state safely
+      - name: Commit latest production state safely
         run: |
           set -e
           git config user.name 'github-actions'
           git config user.email 'github-actions@github.com'
           git add prediction_history.csv train_data.csv model.pkl feature_importances.csv risk_state.json 2>/dev/null || true
           git add -u
-          git commit -m 'Update production state' || echo 'No production changes to commit'
+          git commit -m 'Update latest morning AI scan state' || echo 'No production changes to commit'
           for i in 1 2 3 4 5; do
             git fetch origin main
-            git rebase origin/main || {
-              git rebase --abort || true
-              echo '⚠️ production rebase conflict'
-              exit 1
-            }
+            git rebase origin/main
             if git push origin HEAD:main; then
               echo '✅ production push成功'
               exit 0
@@ -296,7 +242,6 @@ jobs:
             echo "⚠️ production push競合、再試行: $i/5"
             sleep $((i * 3))
           done
-          echo '❌ production push失敗'
           exit 1
 
       - name: Upload production artifacts
@@ -310,5 +255,121 @@ jobs:
             model.pkl
             feature_importances.csv
             strategy_policy.json
+
+  intraday_validation:
+    needs: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync latest main
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Syntax check
+        run: |
+          python -m py_compile intraday_strategy_backtest.py
+          python -m py_compile build_intraday_policy.py
+
+      - name: Verify today's TOP3 before intraday validation
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import pandas as pd
+          today = datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y-%m-%d')
+          df = pd.read_csv('prediction_history.csv', encoding='utf-8-sig')
+          day = df[df['date'].astype(str) == today].sort_values('score', ascending=False).head(3)
+          print('===== VALIDATION TOP3 =====')
+          print(day[['ticker','score','probability']].to_string(index=False))
+          if len(day) < 3:
+              raise SystemExit('❌ 今日のTOP3が不足しています')
+          PY
+
+      - name: Run three-stage intraday validation on latest TOP3
+        env:
+          TOP3_HISTORY_FILE: prediction_history.csv
+          IS_START_DATE: ${{ format('{0}', github.event.repository.updated_at) }}
+          IS_END_DATE: ${{ format('{0}', github.event.repository.updated_at) }}
+          IS_MIN_TRADES: '10'
+          AUTO_ENTRY_ATR_TP: '2.0'
+          AUTO_ENTRY_ATR_SL: '1.0'
+          AUTO_ENTRY_MAX_GAP: '5.0'
+        run: |
+          # 当日のTOP3を必ず含む履歴を使う。ただし5分足バックテストは
+          # 利用可能な履歴期間全体から取得できる範囲で検証する。
+          unset IS_START_DATE
+          unset IS_END_DATE
+          python intraday_strategy_backtest.py
+
+      - name: Select best intraday strategy
+        env:
+          ID_MIN_TRADES: '10'
+          ID_MIN_PF: '1.0'
+          ID_MIN_AVG_RETURN: '0.0'
+          AUTO_ENTRY_ATR_TP: '2.0'
+          AUTO_ENTRY_ATR_SL: '1.0'
+        run: python build_intraday_policy.py
+
+      - name: Show selected intraday policy
+        run: |
+          echo '===== SELECTED INTRADAY POLICY ====='
+          python - <<'PY'
+          import json
+          with open('strategy_policy.json', encoding='utf-8') as f:
+              p = json.load(f)
+          keys = ['intraday_strategy','intraday_min_score','intraday_min_up_prob','intraday_min_vol_ratio','intraday_atr_tp','intraday_atr_sl','intraday_trades','intraday_pf','intraday_win_rate','intraday_avg_return_pct','intraday_total_return_pct','intraday_max_dd_pct']
+          for k in keys:
+              if k in p:
+                  print(f'{k}: {p[k]}')
+          PY
+
+      - name: Upload intraday validation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: intraday-validation-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
             intraday_strategy_comparison.csv
             intraday_3stage_summary.csv
+            intraday_trades_STANDARD.csv
+            intraday_trades_RELAXED.csv
+            intraday_trades_LOOSE.csv
+            strategy_policy.json
+
+      - name: Commit intraday policy safely
+        run: |
+          set -e
+          git config user.name 'github-actions'
+          git config user.email 'github-actions@github.com'
+          git add strategy_policy.json intraday_strategy_comparison.csv intraday_3stage_summary.csv intraday_trades_STANDARD.csv intraday_trades_RELAXED.csv intraday_trades_LOOSE.csv 2>/dev/null || true
+          git add -u
+          git commit -m 'Update latest intraday strategy policy' || echo 'No intraday policy changes to commit'
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              echo '✅ intraday policy push成功'
+              exit 0
+            fi
+            echo "⚠️ intraday policy push競合、再試行: $i/5"
+            sleep $((i * 3))
+          done
+          exit 1
