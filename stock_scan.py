@@ -4002,6 +4002,742 @@ send(
     final_message
 )
 
+# =========================================================
+# 月間損益監視・1年間ペーパートレード評価
+#
+# ★1年間の検証用
+#
+# 機能:
+# 1. 月別損益を集計
+# 2. 当月がプラスかマイナスか判定
+# 3. マイナス月をDiscord警告
+# 4. 2か月連続マイナスを強警告
+# 5. 月間勝率 / PF / 平均利益率を表示
+# 6. live_monthly_performance.csv 保存
+#
+# 注意:
+# 実注文は一切行わない
+# =========================================================
+
+MONTHLY_NEGATIVE_ALERT = True
+
+# 2か月連続マイナスなら強警告
+CONSECUTIVE_NEGATIVE_MONTH_ALERT = 2
+
+# 月間評価に必要な最低確定取引数
+MIN_MONTHLY_TRADES_FOR_RELIABLE_ALERT = 5
+
+
+def calculate_monthly_paper_performance():
+
+    if not os.path.exists(
+        HISTORY_FILE
+    ):
+
+        return pd.DataFrame()
+
+
+    try:
+
+        df = pd.read_csv(
+            HISTORY_FILE
+        )
+
+    except Exception as e:
+
+        print(
+            f"⚠ 月間評価読み込み失敗: {e}"
+        )
+
+        return pd.DataFrame()
+
+
+    if df.empty:
+
+        return pd.DataFrame()
+
+
+    required_columns = [
+        "date",
+        "ticker",
+        "category",
+        "result",
+        "return",
+    ]
+
+
+    for col in required_columns:
+
+        if col not in df.columns:
+
+            print(
+                f"⚠ 月間評価に必要な列不足: {col}"
+            )
+
+            return pd.DataFrame()
+
+
+    # -----------------------------------------------------
+    # 買い推奨だけを評価
+    # -----------------------------------------------------
+
+    df = df[
+        df["category"]
+        ==
+        "buy"
+    ].copy()
+
+
+    if df.empty:
+
+        return pd.DataFrame()
+
+
+    df["date"] = pd.to_datetime(
+        df["date"],
+        errors="coerce"
+    )
+
+
+    df["return"] = pd.to_numeric(
+        df["return"],
+        errors="coerce"
+    )
+
+
+    df["result"] = (
+        df["result"]
+        .astype(str)
+        .str.strip()
+    )
+
+
+    df = df.dropna(
+        subset=[
+            "date",
+            "return"
+        ]
+    ).copy()
+
+
+    if df.empty:
+
+        return pd.DataFrame()
+
+
+    # -----------------------------------------------------
+    # 確定済み取引のみ
+    # -----------------------------------------------------
+
+    df = df[
+        df["result"].isin(
+            [
+                "WIN",
+                "LOSS",
+                "TIMEOUT_LOSS",
+                "HOLD",
+            ]
+        )
+    ].copy()
+
+
+    if df.empty:
+
+        return pd.DataFrame()
+
+
+    df["month"] = (
+        df["date"]
+        .dt
+        .to_period("M")
+        .astype(str)
+    )
+
+
+    rows = []
+
+
+    for month, group in (
+        df.groupby("month")
+    ):
+
+        decided = group[
+            group["result"].isin(
+                [
+                    "WIN",
+                    "LOSS",
+                    "TIMEOUT_LOSS"
+                ]
+            )
+        ].copy()
+
+
+        wins = int(
+            (
+                decided["result"]
+                ==
+                "WIN"
+            ).sum()
+        )
+
+
+        losses = int(
+            decided[
+                "result"
+            ].isin(
+                [
+                    "LOSS",
+                    "TIMEOUT_LOSS"
+                ]
+            ).sum()
+        )
+
+
+        trades = (
+            wins
+            +
+            losses
+        )
+
+
+        returns = pd.to_numeric(
+            decided["return"],
+            errors="coerce"
+        ).dropna()
+
+
+        total_return = float(
+            returns.sum()
+        ) if len(returns) > 0 else 0.0
+
+
+        avg_return = float(
+            returns.mean()
+        ) if len(returns) > 0 else 0.0
+
+
+        if wins > 0:
+
+            win_returns = returns[
+                returns > 0
+            ]
+
+        else:
+
+            win_returns = pd.Series(
+                dtype=float
+            )
+
+
+        if losses > 0:
+
+            loss_returns = returns[
+                returns < 0
+            ]
+
+        else:
+
+            loss_returns = pd.Series(
+                dtype=float
+            )
+
+
+        gross_profit = float(
+            win_returns.sum()
+        ) if len(win_returns) > 0 else 0.0
+
+
+        gross_loss = float(
+            -loss_returns.sum()
+        ) if len(loss_returns) > 0 else 0.0
+
+
+        if gross_loss > 0:
+
+            pf = (
+                gross_profit
+                /
+                gross_loss
+            )
+
+        elif gross_profit > 0:
+
+            pf = np.inf
+
+        else:
+
+            pf = 0.0
+
+
+        win_rate = (
+            wins
+            /
+            trades
+            *
+            100
+            if trades > 0
+            else 0.0
+        )
+
+
+        holds = int(
+            (
+                group["result"]
+                ==
+                "HOLD"
+            ).sum()
+        )
+
+
+        rows.append(
+            {
+                "month":
+                    month,
+
+                "trades":
+                    trades,
+
+                "wins":
+                    wins,
+
+                "losses":
+                    losses,
+
+                "holds":
+                    holds,
+
+                "win_rate":
+                    win_rate,
+
+                "avg_return":
+                    avg_return,
+
+                "total_return":
+                    total_return,
+
+                "profit_factor":
+                    pf,
+            }
+        )
+
+
+    monthly_df = pd.DataFrame(
+        rows
+    )
+
+
+    if monthly_df.empty:
+
+        return monthly_df
+
+
+    monthly_df = (
+        monthly_df
+        .sort_values(
+            "month"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+
+    # -----------------------------------------------------
+    # 月間プラス / マイナス
+    # -----------------------------------------------------
+
+    monthly_df["monthly_status"] = np.where(
+        monthly_df["total_return"] > 0,
+        "PLUS",
+        np.where(
+            monthly_df["total_return"] < 0,
+            "MINUS",
+            "FLAT"
+        )
+    )
+
+
+    # -----------------------------------------------------
+    # 連続マイナス月
+    # -----------------------------------------------------
+
+    consecutive = 0
+    consecutive_values = []
+
+
+    for status in (
+        monthly_df["monthly_status"]
+    ):
+
+        if status == "MINUS":
+
+            consecutive += 1
+
+        else:
+
+            consecutive = 0
+
+
+        consecutive_values.append(
+            consecutive
+        )
+
+
+    monthly_df[
+        "consecutive_negative_months"
+    ] = consecutive_values
+
+
+    return monthly_df
+
+
+def save_monthly_paper_report():
+
+    monthly_df = (
+        calculate_monthly_paper_performance()
+    )
+
+
+    if monthly_df.empty:
+
+        print(
+            "⚠ 月間ペーパー実績: データなし"
+        )
+
+        return monthly_df
+
+
+    output_file = (
+        "paper_monthly_performance.csv"
+    )
+
+
+    monthly_df.to_csv(
+        output_file,
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+
+    print(
+        f"✅ 月間ペーパー実績保存: "
+        f"{output_file}"
+    )
+
+
+    return monthly_df
+
+
+def build_monthly_alert():
+
+    monthly_df = (
+        calculate_monthly_paper_performance()
+    )
+
+
+    if monthly_df.empty:
+
+        return (
+            "📊 月間ペーパー実績\n"
+            "まだ確定取引がありません"
+        )
+
+
+    latest = (
+        monthly_df.iloc[-1]
+    )
+
+
+    month = (
+        latest["month"]
+    )
+
+
+    trades = int(
+        latest["trades"]
+    )
+
+
+    wins = int(
+        latest["wins"]
+    )
+
+
+    losses = int(
+        latest["losses"]
+    )
+
+
+    win_rate = float(
+        latest["win_rate"]
+    )
+
+
+    avg_return = float(
+        latest["avg_return"]
+    )
+
+
+    total_return = float(
+        latest["total_return"]
+    )
+
+
+    pf = latest[
+        "profit_factor"
+    ]
+
+
+    if np.isinf(pf):
+
+        pf_display = "inf"
+
+    else:
+
+        pf_display = (
+            f"{float(pf):.2f}"
+        )
+
+
+    consecutive_negative = int(
+        latest[
+            "consecutive_negative_months"
+        ]
+    )
+
+
+    if total_return > 0:
+
+        status_text = (
+            "🟢 月間プラス"
+        )
+
+    elif total_return < 0:
+
+        status_text = (
+            "🔴 月間マイナス"
+        )
+
+    else:
+
+        status_text = (
+            "🟡 月間±0"
+        )
+
+
+    lines = []
+
+    lines.append(
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
+    lines.append(
+        "📅 月間ペーパー実績"
+    )
+
+    lines.append(
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
+    lines.append(
+        f"対象月: {month}"
+    )
+
+    lines.append(
+        f"状態: {status_text}"
+    )
+
+    lines.append(
+        f"確定取引: {trades}件"
+    )
+
+    lines.append(
+        f"WINS: {wins}件"
+    )
+
+    lines.append(
+        f"LOSSES: {losses}件"
+    )
+
+    lines.append(
+        f"勝率: {win_rate:.1f}%"
+    )
+
+    lines.append(
+        f"平均利益率: {avg_return:+.2f}%"
+    )
+
+    lines.append(
+        f"月間合計: {total_return:+.2f}%"
+    )
+
+    lines.append(
+        f"PF: {pf_display}"
+    )
+
+    lines.append(
+        f"連続マイナス月: "
+        f"{consecutive_negative}ヶ月"
+    )
+
+
+    # -----------------------------------------------------
+    # 少数サンプル注意
+    # -----------------------------------------------------
+
+    if (
+        trades
+        <
+        MIN_MONTHLY_TRADES_FOR_RELIABLE_ALERT
+    ):
+
+        lines.append(
+            ""
+        )
+
+        lines.append(
+            "⚠️ 確定取引が少ないため"
+        )
+
+        lines.append(
+            "月間成績は参考値です"
+        )
+
+
+    # -----------------------------------------------------
+    # マイナス月警告
+    # -----------------------------------------------------
+
+    if (
+        MONTHLY_NEGATIVE_ALERT
+        and
+        total_return < 0
+    ):
+
+        lines.append(
+            ""
+        )
+
+        lines.append(
+            "⚠️⚠️⚠️ 月間損失警告"
+        )
+
+        lines.append(
+            "今月はペーパー収支がマイナスです"
+        )
+
+
+    # -----------------------------------------------------
+    # 連続マイナス警告
+    # -----------------------------------------------------
+
+    if (
+        consecutive_negative
+        >=
+        CONSECUTIVE_NEGATIVE_MONTH_ALERT
+    ):
+
+        lines.append(
+            ""
+        )
+
+        lines.append(
+            "🚨🚨🚨 戦略劣化警告"
+        )
+
+        lines.append(
+            f"{consecutive_negative}"
+            "ヶ月連続マイナスです"
+        )
+
+        lines.append(
+            "実運用への移行は停止してください"
+        )
+
+
+    # -----------------------------------------------------
+    # 直近3か月
+    # -----------------------------------------------------
+
+    recent = (
+        monthly_df
+        .tail(3)
+    )
+
+
+    lines.append(
+        ""
+    )
+
+    lines.append(
+        "【直近3ヶ月】"
+    )
+
+
+    for _, row in (
+        recent.iterrows()
+    ):
+
+        row_pf = row[
+            "profit_factor"
+        ]
+
+
+        if np.isinf(
+            row_pf
+        ):
+
+            row_pf_text = "inf"
+
+        else:
+
+            row_pf_text = (
+                f"{float(row_pf):.2f}"
+            )
+
+
+        lines.append(
+            f"{row['month']} "
+            f"件数={int(row['trades'])} "
+            f"勝率={row['win_rate']:.1f}% "
+            f"月間={row['total_return']:+.2f}% "
+            f"PF={row_pf_text}"
+        )
+
+
+    return "\n".join(
+        lines
+    )
+
+
+# =========================================================
+# 月間評価実行
+# =========================================================
+
+monthly_paper_df = (
+    save_monthly_paper_report()
+)
+
+
+monthly_alert_message = (
+    build_monthly_alert()
+)
+
+
+print("")
+print(
+    monthly_alert_message
+)
+
+
+# =========================================================
+# Discordへ月間評価を送信
+# =========================================================
+
+send(
+    monthly_alert_message
+)
+
 
 print("")
 print(
