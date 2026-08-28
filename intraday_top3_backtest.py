@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, time as dtime
+from datetime import time as dtime
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,7 @@ import yfinance as yf
 #
 # 重要
 #   Yahoo Finance の intraday データには長期取得制限があるため、
-#   このスクリプトは「利用可能な5分足期間」だけを検証する。
+#   デフォルトは直近の実行可能性が高い期間に設定している。
 #   2021～2026 の長期検証を行う場合は、5分足の過去データCSVを
 #   INTRADAY_DIR に置く方式へ切り替えられる。
 #
@@ -30,7 +30,9 @@ import yfinance as yf
 HISTORY_FILE = os.getenv("TOP3_HISTORY_FILE", "prediction_history.csv")
 INTRADAY_DIR = os.getenv("INTRADAY_DIR", "intraday_data")
 
-START_DATE = pd.Timestamp(os.getenv("IT_START_DATE", "2026-01-01"))
+# Yahoo Financeの5分足を直接使う場合に合わせた初期値。
+# 長期データCSVを置く場合は環境変数で自由に変更可能。
+START_DATE = pd.Timestamp(os.getenv("IT_START_DATE", "2026-08-01"))
 END_DATE = pd.Timestamp(os.getenv("IT_END_DATE", "2026-08-22"))
 
 TOP_N = 3
@@ -224,7 +226,10 @@ def get_previous_close(ticker, trade_date):
             return np.nan
         if isinstance(d.columns, pd.MultiIndex):
             d.columns = d.columns.get_level_values(0)
-        d.index = pd.to_datetime(d.index).tz_localize(None)
+        idx = pd.to_datetime(d.index)
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_convert("Asia/Tokyo").tz_localize(None)
+        d.index = idx
         d = d[d.index < trade_date]
         if d.empty:
             return np.nan
@@ -394,7 +399,6 @@ def backtest():
     out = out.sort_values(["date", "rank", "ticker"]).reset_index(drop=True)
 
     # 1営業日につき「最初に条件成立したTOP3の1銘柄」だけ実際に売買する。
-    # これは資金をTOP3へ分割せず、毎日1トレードに寄せたい場合の仕様。
     trades = out[out["status"] == "TRADE"].copy()
     selected = (
         trades.sort_values(["date", "rank", "entry_time"])
