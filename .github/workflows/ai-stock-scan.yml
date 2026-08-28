@@ -78,6 +78,7 @@ jobs:
           python -m py_compile sync_ticker_universe.py
           python -m py_compile walk_forward.py
           python -m py_compile walk_forward_fast_runner.py
+          python -m py_compile walk_forward_discord_pretty_runner.py
           python -m py_compile adversarial_strategy_validator.py
           python -m py_compile build_strategy_policy.py
           python -m py_compile stock_scan.py
@@ -90,7 +91,7 @@ jobs:
           WF_N_ESTIMATORS: '150'
           WF_MAX_TRAIN_ROWS_PER_TICKER: '750'
         run: |
-          python walk_forward_fast_runner.py
+          python walk_forward_discord_pretty_runner.py
 
       - name: Check Walk Forward candidates
         run: |
@@ -153,6 +154,7 @@ jobs:
             strategy_policy.json
             feature_importances.csv
             walk_forward_fast_runner.py
+            walk_forward_discord_pretty_runner.py
 
       - name: Commit research results
         run: |
@@ -161,6 +163,7 @@ jobs:
           git add stock_scan.py || true
           git add walk_forward.py || true
           git add walk_forward_fast_runner.py || true
+          git add walk_forward_discord_pretty_runner.py || true
           git add discord_pretty_runner.py || true
           git add walk_forward_results.csv || true
           git add walk_forward_all_candidates.csv || true
@@ -297,29 +300,3 @@ jobs:
             model.pkl
             feature_importances.csv
             strategy_policy.json
-
-      - name: Commit production results
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git add prediction_history.csv || true
-          git add train_data.csv || true
-          git add model.pkl || true
-          git add feature_importances.csv || true
-          git add strategy_policy.json || true
-          git commit -m "Update AI stock scan results" || echo "No production changes"
-          PUSH_SUCCESS=false
-          for i in 1 2 3; do
-            if git push; then
-              echo "✅ push成功"
-              PUSH_SUCCESS=true
-              break
-            fi
-            echo "⚠ push失敗、リモートの変更を取り込んで再試行 ($i/3)"
-            git pull --rebase origin "${GITHUB_REF_NAME}"
-            sleep 5
-          done
-          if [ "$PUSH_SUCCESS" != "true" ]; then
-            echo "❌ 3回ともgit pushに失敗しました"
-            exit 1
-          fi
