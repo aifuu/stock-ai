@@ -104,16 +104,20 @@ def send_pretty(msg):
 
 def build_source():
     source = BASE.read_text(encoding="utf-8")
+
+    # stock_scan.py の send() は複数行定義になっているため、
+    # 「def send(msg):」という完全一致に依存せず、関数本体から
+    # 次の「# 銘柄」セクション直前までを安全に差し替える。
     pattern = re.compile(
-        r"(?ms)^def send\(msg\):\n.*?(?=^# =========================================================\n# 銘柄)"
+        r"(?ms)^def\s+send\s*\(\s*[^)]*\s*\):\s*.*?(?=^#\s*=+\n#\s*銘柄\s*$)"
     )
-    replacement = '''def send(msg):
-    send_pretty(msg)
+
+    replacement = '''def send(message):
+    send_pretty(message)
 
 
-# =========================================================
-# 銘柄
 '''
+
     source, count = pattern.subn(replacement, source, count=1)
     if count != 1:
         raise RuntimeError("stock_scan.py の send() 差し替え位置を特定できません")
