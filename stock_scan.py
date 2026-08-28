@@ -3412,7 +3412,7 @@ results = sorted(
 TOP_N = int(
     os.getenv(
         "TOP_N",
-        "3"
+        "20"
     )
 )
 
