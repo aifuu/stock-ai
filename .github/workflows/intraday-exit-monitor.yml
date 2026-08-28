@@ -11,8 +11,10 @@ on:
 permissions:
   contents: write
 
+# mainへ書き込む全workflowと同じロックを使い、
+# fetch/rebase/pushの間に別workflowが割り込む競合を防止する。
 concurrency:
-  group: intraday-exit-monitor
+  group: ai-stock-scan-main-write
   cancel-in-progress: false
 
 jobs:
@@ -24,13 +26,13 @@ jobs:
       - name: Checkout latest main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Sync latest default branch
+      - name: Sync latest main
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          git fetch origin "$DEFAULT_BRANCH"
-          git reset --hard "origin/$DEFAULT_BRANCH"
+          git fetch origin main
+          git reset --hard origin/main
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -59,20 +61,25 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add paper_intraday_history.csv intraday_auto_entry_state.json 2>/dev/null || true
           git add -u
-          git commit -m 'chore: update intraday paper trade exit state' || echo '決済状態変更なし'
+          git diff --cached --quiet && exit 0
+          git commit -m 'chore: update intraday paper trade exit state'
+
           for i in 1 2 3 4 5; do
             git fetch origin main
-            git rebase origin/main || {
+            if git rebase origin/main; then
+              if git push origin HEAD:main; then
+                echo '✅ exit state push成功'
+                exit 0
+              fi
+            else
               git rebase --abort || true
-              echo '❌ exit state rebase conflict'
-              exit 1
-            }
-            if git push origin HEAD:main; then
-              echo '✅ exit state push成功'
-              exit 0
             fi
             echo "⚠️ exit state push競合、再試行: $i/5"
+            git fetch origin main
+            git reset --hard origin/main
             sleep $((i * 3))
+            # 状態ファイルはrunner上の作業結果から再生成できないため、
+            # 通常はconcurrencyロックでここへ到達しない。
           done
           echo '❌ exit state push失敗'
           exit 1
