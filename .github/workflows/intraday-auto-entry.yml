@@ -41,38 +41,39 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests jpholiday
 
-      - name: Verify today's TOP3 exists
+      - name: Verify exact morning TOP3
         run: |
+          test -s intraday_today_top3.csv
           python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
           import pandas as pd
           today = datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y-%m-%d')
-          df = pd.read_csv('prediction_history.csv', encoding='utf-8-sig')
-          if 'date' not in df.columns or 'ticker' not in df.columns or 'score' not in df.columns:
-              raise SystemExit('❌ prediction_history.csv の必要列不足')
-          day = df[df['date'].astype(str) == today].copy()
-          day['score'] = pd.to_numeric(day['score'], errors='coerce')
-          day = day.dropna(subset=['score']).sort_values('score', ascending=False).drop_duplicates('ticker').head(3)
-          print('===== TODAY TOP3 =====')
-          print(day[['ticker','score']].to_string(index=False))
-          if len(day) < 3:
-              raise SystemExit(f'❌ 今日のTOP3不足: {len(day)}件')
+          df = pd.read_csv('intraday_today_top3.csv', encoding='utf-8-sig')
+          required = {'date','ticker','score','probability'}
+          missing = required - set(df.columns)
+          if missing:
+              raise SystemExit(f'❌ intraday_today_top3.csv 必須列不足: {sorted(missing)}')
+          if len(df) != 3:
+              raise SystemExit(f'❌ 朝の確定TOP3が3件ではありません: {len(df)}')
+          if not (df['date'].astype(str) == today).all():
+              raise SystemExit('❌ intraday_today_top3.csv が今日の日付ではありません')
+          print('===== EXACT MORNING TOP3 =====')
+          print(df[['ticker','score','probability']].to_string(index=False))
           PY
 
       - name: Show active intraday policy
         run: |
-          echo '===== ACTIVE INTRADAY POLICY ====='
           test -s strategy_policy.json
           python - <<'PY'
           import json
           with open('strategy_policy.json', encoding='utf-8') as f:
               p = json.load(f)
+          print('===== ACTIVE INTRADAY POLICY =====')
           for k in [
               'intraday_strategy','intraday_min_score','intraday_min_up_prob',
               'intraday_min_vol_ratio','intraday_atr_tp','intraday_atr_sl',
-              'intraday_trades','intraday_pf','intraday_win_rate',
-              'intraday_avg_return_pct'
+              'intraday_trades','intraday_pf','intraday_win_rate','intraday_avg_return_pct'
           ]:
               print(f'{k}: {p.get(k)}')
           if p.get('intraday_strategy') not in {'STANDARD','RELAXED','LOOSE'}:
@@ -97,7 +98,7 @@ jobs:
       - name: Monitor 09:15-10:00 JST every 5 minutes
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          TOP3_HISTORY_FILE: prediction_history.csv
+          TOP3_HISTORY_FILE: intraday_today_top3.csv
           AUTO_ENTRY_ATR_TP: '2.0'
           AUTO_ENTRY_ATR_SL: '1.0'
           AUTO_ENTRY_MAX_GAP: '5.0'
@@ -110,7 +111,7 @@ jobs:
           jst = ZoneInfo('Asia/Tokyo')
           while True:
               now = datetime.now(jst)
-              if now.time().hour > 10 or (now.time().hour == 10 and now.time().minute > 0):
+              if now.time() > datetime.strptime('10:00','%H:%M').time():
                   print('10:00を過ぎたためエントリー監視終了')
                   break
               print(f'===== auto entry check {now:%Y-%m-%d %H:%M:%S} JST =====')
@@ -124,25 +125,23 @@ jobs:
         if: always()
         run: |
           set -e
-          if [ ! -f intraday_auto_entry_state.json ] && [ ! -f paper_intraday_history.csv ]; then
-            echo '状態変更なし'
-            exit 0
-          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
           git diff --cached --quiet && exit 0
-          git commit -m 'chore: persist intraday entry state'
+          git commit -m 'chore: persist intraday auto entry state'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
               echo '✅ entry state push成功'
               exit 0
             fi
-            git rebase --abort || true
+            git rebase --abort 2>/dev/null || true
             git reset --hard origin/main
-            git clean -fd
+            git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
+            git diff --cached --quiet || git commit -m 'chore: persist intraday auto entry state retry' || true
             echo "⚠️ entry state push再試行: $i/5"
             sleep $((i * 3))
           done
+          echo '❌ entry state push失敗'
           exit 1
