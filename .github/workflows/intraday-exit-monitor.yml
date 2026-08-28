@@ -3,7 +3,6 @@ name: 毎日デイトレ 5分足 自動決済監視
 on:
   schedule:
     # JST 10:05〜15:25を5分ごとに監視
-    # UTC 01:05〜06:25、平日のみ
     - cron: '5-55/5 1 * * 1-5'
     - cron: '*/5 2-5 * * 1-5'
     - cron: '0-25/5 6 * * 1-5'
@@ -27,6 +26,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Sync latest default branch
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          git fetch origin "$DEFAULT_BRANCH"
+          git reset --hard "origin/$DEFAULT_BRANCH"
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -38,8 +43,7 @@ jobs:
           pip install yfinance pandas numpy requests jpholiday
 
       - name: Syntax check
-        run: |
-          python -m py_compile intraday_exit_monitor.py
+        run: python -m py_compile intraday_exit_monitor.py
 
       - name: Run exit monitor
         env:
@@ -47,32 +51,31 @@ jobs:
           IT_FEE_RATE: '0.00055'
         run: python intraday_exit_monitor.py
 
-      - name: Commit intraday paper result
+      - name: Commit intraday paper result safely
         if: always()
         run: |
+          set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add paper_intraday_history.csv intraday_auto_entry_state.json || true
-          if git diff --cached --quiet; then
-            echo 'デイトレ決済状態の変更なし'
-          else
-            git commit -m 'chore: update intraday paper trade exit state' || true
-            PUSH_SUCCESS=false
-            for i in 1 2 3; do
-              if git push; then
-                echo '✅ push成功'
-                PUSH_SUCCESS=true
-                break
-              fi
-              echo "⚠ push失敗、再試行 ($i/3)"
-              git pull --rebase origin "${GITHUB_REF_NAME}" || true
-              sleep 3
-            done
-            if [ "$PUSH_SUCCESS" != 'true' ]; then
-              echo '❌ 3回ともpush失敗'
+          git add paper_intraday_history.csv intraday_auto_entry_state.json 2>/dev/null || true
+          git add -u
+          git commit -m 'chore: update intraday paper trade exit state' || echo '決済状態変更なし'
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main || {
+              git rebase --abort || true
+              echo '❌ exit state rebase conflict'
               exit 1
+            }
+            if git push origin HEAD:main; then
+              echo '✅ exit state push成功'
+              exit 0
             fi
-          fi
+            echo "⚠️ exit state push競合、再試行: $i/5"
+            sleep $((i * 3))
+          done
+          echo '❌ exit state push失敗'
+          exit 1
 
       - name: Upload intraday paper history
         uses: actions/upload-artifact@v4
