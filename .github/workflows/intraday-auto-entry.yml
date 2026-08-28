@@ -1,10 +1,9 @@
 name: 毎日TOP3 5分足 自動エントリー監視
 
 on:
-  schedule:
-    # JST 09:15〜10:00 = UTC 00:15〜01:00、平日のみ
-    - cron: '15-55/5 0 * * 1-5'
-    - cron: '0 1 * * 1-5'
+  workflow_run:
+    workflows: ["AI Stock Scan + Auto Strategy Validation"]
+    types: [completed]
   workflow_dispatch: {}
 
 permissions:
@@ -16,8 +15,9 @@ concurrency:
 
 jobs:
   auto-entry-monitor:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
 
     steps:
       - name: Checkout latest main
@@ -31,7 +31,7 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -41,36 +41,84 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests jpholiday
 
+      - name: Verify today's TOP3 exists
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import pandas as pd
+          today = datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y-%m-%d')
+          df = pd.read_csv('prediction_history.csv', encoding='utf-8-sig')
+          if 'date' not in df.columns or 'ticker' not in df.columns or 'score' not in df.columns:
+              raise SystemExit('❌ prediction_history.csv の必要列不足')
+          day = df[df['date'].astype(str) == today].copy()
+          day['score'] = pd.to_numeric(day['score'], errors='coerce')
+          day = day.dropna(subset=['score']).sort_values('score', ascending=False).drop_duplicates('ticker').head(3)
+          print('===== TODAY TOP3 =====')
+          print(day[['ticker','score']].to_string(index=False))
+          if len(day) < 3:
+              raise SystemExit(f'❌ 今日のTOP3不足: {len(day)}件')
+          PY
+
       - name: Show active intraday policy
         run: |
           echo '===== ACTIVE INTRADAY POLICY ====='
-          if [ -f strategy_policy.json ]; then
-            python - <<'PY'
-            import json
-            with open('strategy_policy.json', encoding='utf-8') as f:
-                p = json.load(f)
-            for k in [
-                'intraday_strategy','intraday_min_score','intraday_min_up_prob',
-                'intraday_min_vol_ratio','intraday_atr_tp','intraday_atr_sl',
-                'intraday_trades','intraday_pf','intraday_win_rate',
-                'intraday_avg_return_pct'
-            ]:
-                if k in p:
-                    print(f'{k}: {p[k]}')
-            PY
-          else
-            echo '⚠ strategy_policy.jsonなし → 安全のためエントリー見送り'
-            exit 1
-          fi
+          test -s strategy_policy.json
+          python - <<'PY'
+          import json
+          with open('strategy_policy.json', encoding='utf-8') as f:
+              p = json.load(f)
+          for k in [
+              'intraday_strategy','intraday_min_score','intraday_min_up_prob',
+              'intraday_min_vol_ratio','intraday_atr_tp','intraday_atr_sl',
+              'intraday_trades','intraday_pf','intraday_win_rate',
+              'intraday_avg_return_pct'
+          ]:
+              print(f'{k}: {p.get(k)}')
+          if p.get('intraday_strategy') not in {'STANDARD','RELAXED','LOOSE'}:
+              raise SystemExit('❌ デイトレ採用戦略が未設定です。安全のため中止します')
+          PY
 
-      - name: Run entry monitor
+      - name: Wait until JST 09:15
+        run: |
+          python - <<'PY'
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          jst = ZoneInfo('Asia/Tokyo')
+          while True:
+              now = datetime.now(jst)
+              target = now.replace(hour=9, minute=15, second=0, microsecond=0)
+              if now >= target:
+                  break
+              time.sleep(min(60, max(1, int((target-now).total_seconds()))))
+          PY
+
+      - name: Monitor 09:15-10:00 JST every 5 minutes
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           TOP3_HISTORY_FILE: prediction_history.csv
           AUTO_ENTRY_ATR_TP: '2.0'
           AUTO_ENTRY_ATR_SL: '1.0'
           AUTO_ENTRY_MAX_GAP: '5.0'
-        run: python intraday_auto_entry_monitor.py
+        run: |
+          python - <<'PY'
+          import subprocess
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          jst = ZoneInfo('Asia/Tokyo')
+          while True:
+              now = datetime.now(jst)
+              if now.time().hour > 10 or (now.time().hour == 10 and now.time().minute > 0):
+                  print('10:00を過ぎたためエントリー監視終了')
+                  break
+              print(f'===== auto entry check {now:%Y-%m-%d %H:%M:%S} JST =====')
+              result = subprocess.run(['python','intraday_auto_entry_monitor.py'], check=False)
+              if result.returncode != 0:
+                  print(f'監視スクリプト終了コード={result.returncode}')
+              time.sleep(300)
+          PY
 
       - name: Persist daily entry state safely
         if: always()
@@ -80,33 +128,21 @@ jobs:
             echo '状態変更なし'
             exit 0
           fi
-
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
           git diff --cached --quiet && exit 0
-          git commit -m 'chore: persist intraday auto entry state'
-
+          git commit -m 'chore: persist intraday entry state'
           for i in 1 2 3 4 5; do
             git fetch origin main
-            if git rebase origin/main; then
-              if git push origin HEAD:main; then
-                echo '✅ entry state push成功'
-                exit 0
-              fi
-            else
-              git rebase --abort || true
-              echo '⚠️ rebase競合のため最新mainから状態を再構築します'
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo '✅ entry state push成功'
+              exit 0
             fi
-
-            git fetch origin main
+            git rebase --abort || true
             git reset --hard origin/main
             git clean -fd
-            git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
-            git diff --cached --quiet || git commit -m 'chore: persist intraday auto entry state retry' || true
             echo "⚠️ entry state push再試行: $i/5"
             sleep $((i * 3))
           done
-
-          echo '❌ entry state push失敗'
           exit 1
