@@ -17,7 +17,7 @@ PREDICTION_HISTORY_FILE = "prediction_history.csv"
 
 INITIAL_CAPITAL = float(os.getenv("AI_INITIAL_CAPITAL", "1000000"))
 RISK_PER_TRADE = float(os.getenv("AI_RISK_PER_TRADE", "0.005"))
-MAX_POSITIONS = int(os.getenv("AI_MAX_POSITIONS", "3"))
+MAX_POSITIONS = int(os.getenv("AI_MAX_POSITIONS", "20"))
 DAILY_STOP_LOSS = float(os.getenv("AI_DAILY_STOP_LOSS", "0.02"))
 MAX_DRAWDOWN = float(os.getenv("AI_MAX_DRAWDOWN", "0.30"))
 MIN_LIVE_PROFIT_FACTOR = float(os.getenv("AI_MIN_LIVE_PF", "0.90"))
@@ -239,10 +239,22 @@ def build_position_plan(capital, ticker, entry_price, take_profit, stop_loss):
 
 
 def risk_check():
+    """トレード可否を毎回フラットに再評価する。
+
+    ★修正点(2026-08):
+    以前は enabled の初期値を前回保存された trading_enabled から
+    引き継いでいたため、register_position_open() が「同時保有数上限」で
+    一度 trading_enabled=False を保存すると、ポジションが減っても
+    同日中はずっと停止したままになるバグがあった。
+    monthly_stop・daily_stop・DD・連敗・同時保有数はすべて現在の
+    state から都度再計算できる条件なので、enabled は毎回 True から
+    再評価すれば十分で、継続性が必要な monthly_stop は別フィールドで
+    管理されている。
+    """
     state = _sync_state(load_risk_state())
     capital = float(state.get("capital", INITIAL_CAPITAL))
-    reason = state.get("stop_reason", "")
-    enabled = bool(state.get("trading_enabled", True)) and not bool(state.get("monthly_stop", False))
+    reason = ""
+    enabled = True  # ← 前回値を引き継がず、毎回フラットに再評価する
     daily_start = float(state.get("day_start_capital", capital))
     daily_pnl = capital - daily_start
     state["daily_pnl"] = daily_pnl
@@ -293,18 +305,34 @@ def risk_check():
 
 def register_position_open(ticker, shares, entry_price):
     state = _sync_state(load_risk_state())
-    if not state.get("trading_enabled", True):
-        print("🛑 取引停止中のため新規ポジション登録不可")
+
+    # ★追加(2026-08): monthly_stop はここでも直接確認する。
+    # risk_check() を呼び忘れた将来のコード変更があっても、
+    # 月間連続マイナス停止中は新規ポジションを登録させない
+    # 最後の安全装置として機能させる。
+    if state.get("monthly_stop", False):
+        print(f"🛑 月間連続マイナス停止中のため新規ポジション登録不可: {ticker}")
         return state
+
+    if not state.get("trading_enabled", True):
+        print(f"🛑 取引停止中のため新規ポジション登録不可: {ticker}")
+        return state
+
     positions = state["positions"]
     if ticker in positions:
         print(f"⚠ 既に保有中: {ticker}")
         return state
+
     if len(positions) >= MAX_POSITIONS:
-        state["trading_enabled"] = False
-        state["stop_reason"] = "同時保有数上限"
-        save_risk_state(state)
+        # ★修正(2026-08): ここで trading_enabled=False を保存しない。
+        # 同時保有数上限は risk_check() が毎回 state から
+        # 再評価する条件なので、この一件を見送るだけでよい。
+        # 以前はここで trading_enabled=False を永続化していたため、
+        # 決済でポジションが減っても同日中は新規エントリーが
+        # 復活しないバグになっていた。
+        print(f"⚠ 同時保有数上限のため見送り: {ticker}")
         return state
+
     shares = int(shares)
     entry_price = float(entry_price)
     if shares <= 0 or entry_price <= 0:
