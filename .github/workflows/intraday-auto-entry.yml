@@ -1,9 +1,10 @@
-name: 毎日TOP3 5分足 3段階自動エントリー監視
+name: 毎日TOP3 5分足 自動エントリー監視
 
 on:
-  workflow_run:
-    workflows: ["TOP3 5分足 3段階自動検証"]
-    types: [completed]
+  schedule:
+    # JST 09:15〜10:00 = UTC 00:15〜01:00、平日のみ
+    - cron: '15-55/5 0 * * 1-5'
+    - cron: '0 1 * * 1-5'
   workflow_dispatch: {}
 
 permissions:
@@ -15,10 +16,8 @@ concurrency:
 
 jobs:
   auto-entry-monitor:
-    # 3段階検証とデイトレpolicy更新が成功した後だけ自動起動。
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 10
 
     steps:
       - name: Checkout latest main
@@ -44,18 +43,17 @@ jobs:
 
       - name: Show active intraday policy
         run: |
-          echo "===== ACTIVE INTRADAY POLICY ====="
+          echo '===== ACTIVE INTRADAY POLICY ====='
           if [ -f strategy_policy.json ]; then
             python - <<'PY'
             import json
             with open('strategy_policy.json', encoding='utf-8') as f:
                 p = json.load(f)
             for k in [
-                'intraday_strategy', 'intraday_min_score',
-                'intraday_min_up_prob', 'intraday_min_vol_ratio',
-                'intraday_atr_tp', 'intraday_atr_sl',
-                'intraday_trades', 'intraday_pf',
-                'intraday_win_rate', 'intraday_avg_return_pct',
+                'intraday_strategy','intraday_min_score','intraday_min_up_prob',
+                'intraday_min_vol_ratio','intraday_atr_tp','intraday_atr_sl',
+                'intraday_trades','intraday_pf','intraday_win_rate',
+                'intraday_avg_return_pct'
             ]:
                 if k in p:
                     print(f'{k}: {p[k]}')
@@ -64,78 +62,37 @@ jobs:
             echo '⚠ strategy_policy.jsonなし → スクリプト内フォールバック設定を使用'
           fi
 
-      - name: Wait until JST 09:15
-        run: |
-          python - <<'PY'
-          import time
-          from datetime import datetime
-          from zoneinfo import ZoneInfo
-
-          jst = ZoneInfo('Asia/Tokyo')
-          now = datetime.now(jst)
-          target = now.replace(hour=9, minute=15, second=0, microsecond=0)
-          if now < target:
-              while True:
-                  now = datetime.now(jst)
-                  if now >= target:
-                      break
-                  seconds = max(1, int((target - now).total_seconds()))
-                  print(f'現在JST={now:%Y-%m-%d %H:%M:%S} / 9:15まで約{seconds}秒')
-                  time.sleep(min(seconds, 60))
-          PY
-
-      - name: Monitor every 5 minutes from JST 09:15 to 10:00
+      - name: Run entry monitor
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           TOP3_HISTORY_FILE: prediction_history.csv
           AUTO_ENTRY_ATR_TP: '2.0'
           AUTO_ENTRY_ATR_SL: '1.0'
           AUTO_ENTRY_MAX_GAP: '5.0'
-        run: |
-          python - <<'PY'
-          import subprocess
-          import time
-          from datetime import datetime
-          from zoneinfo import ZoneInfo
+        run: python intraday_auto_entry_monitor.py
 
-          jst = ZoneInfo('Asia/Tokyo')
-          while True:
-              now = datetime.now(jst)
-              if now.time().hour > 10 or (now.time().hour == 10 and now.time().minute > 5):
-                  print('10:05を過ぎたため監視終了')
-                  break
-
-              print(f'===== auto entry check {now:%Y-%m-%d %H:%M:%S} JST =====')
-              subprocess.run(['python', 'intraday_auto_entry_monitor.py'], check=False)
-
-              time.sleep(300)
-          PY
-
-      - name: Persist daily signal state
+      - name: Persist daily entry state safely
         if: always()
         run: |
-          if [ -f intraday_auto_entry_state.json ]; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add intraday_auto_entry_state.json paper_intraday_history.csv || true
-            if git diff --cached --quiet; then
-              echo 'デイトレ状態変更なし'
-            else
-              git commit -m 'chore: persist intraday auto entry state' || true
-              PUSH_SUCCESS=false
-              for i in 1 2 3; do
-                if git push; then
-                  echo '✅ push成功'
-                  PUSH_SUCCESS=true
-                  break
-                fi
-                echo "⚠ push失敗、再試行 ($i/3)"
-                git pull --rebase origin "${GITHUB_REF_NAME}" || true
-                sleep 3
-              done
-              if [ "$PUSH_SUCCESS" != 'true' ]; then
-                echo '❌ 3回ともpush失敗'
-                exit 1
-              fi
+          set -e
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
+          git add -u
+          git commit -m 'chore: persist intraday auto entry state' || echo '状態変更なし'
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main || {
+              git rebase --abort || true
+              echo '❌ entry state rebase conflict'
+              exit 1
+            }
+            if git push origin HEAD:main; then
+              echo '✅ entry state push成功'
+              exit 0
             fi
-          fi
+            echo "⚠️ entry state push競合、再試行: $i/5"
+            sleep $((i * 3))
+          done
+          echo '❌ entry state push失敗'
+          exit 1
