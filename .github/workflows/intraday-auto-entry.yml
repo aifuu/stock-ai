@@ -1,10 +1,10 @@
-name: 毎日TOP3 5分足 自動エントリー監視
+name: 毎日TOP3 5分足 3段階自動エントリー監視
 
 on:
   schedule:
     # JST 09:15〜09:55 = UTC 00:15〜00:55
     - cron: '15-55/5 0 * * 1-5'
-    # JST 10:00 = UTC 01:00。最終判定を1回実行
+    # JST 10:00 = UTC 01:00。最終判定
     - cron: '0 1 * * 1-5'
   workflow_dispatch: {}
 
@@ -29,15 +29,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests jpholiday
 
-      - name: Run automatic TOP3 5m entry monitor
+      - name: Run 3-stage automatic TOP3 5m monitor
         env:
           TOP3_HISTORY_FILE: prediction_history.csv
-          AUTO_ENTRY_MIN_SCORE: '70'
-          AUTO_ENTRY_MIN_UP_PROB: '60'
-          AUTO_ENTRY_MIN_VOL_RATIO: '1.2'
-          AUTO_ENTRY_MAX_GAP: '3.0'
           AUTO_ENTRY_ATR_TP: '2.0'
           AUTO_ENTRY_ATR_SL: '1.0'
+          AUTO_ENTRY_MAX_GAP: '5.0'
         run: python intraday_auto_entry_monitor.py
 
       - name: Persist daily signal state
