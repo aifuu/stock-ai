@@ -1,9 +1,9 @@
 name: TOP3 5分足 3段階自動検証
 
 on:
-  workflow_run:
-    workflows: ["AI Stock Scan + Auto Strategy Validation"]
-    types: [completed]
+  schedule:
+    # JST 07:00 = UTC 22:00 (前日)
+    - cron: '0 22 * * 0-4'
   workflow_dispatch: {}
 
 permissions:
@@ -15,7 +15,6 @@ concurrency:
 
 jobs:
   validate:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -38,15 +37,16 @@ jobs:
       - name: Syntax check
         run: |
           python -m py_compile intraday_strategy_backtest.py
-          python -m py_compile intraday_top3_backtest.py
-          python -m py_compile intraday_3stage_validation.py
           python -m py_compile build_intraday_policy.py
+          python -m py_compile intraday_auto_entry_monitor.py
+          python -m py_compile intraday_exit_monitor.py
 
-      - name: Run three-stage validation
+      - name: Run three-stage validation using existing prediction history
         env:
           TOP3_HISTORY_FILE: prediction_history.csv
           IS_START_DATE: '2026-08-01'
           IS_END_DATE: '2026-08-22'
+          IS_MIN_TRADES: '10'
           IT_ATR_TP: '2.0'
           IT_ATR_SL: '1.0'
           AUTO_ENTRY_ATR_TP: '2.0'
@@ -56,58 +56,46 @@ jobs:
 
       - name: Check comparison output
         run: |
-          echo "===== intraday_strategy_comparison.csv ====="
-          ls -lh intraday_strategy_comparison.csv
+          test -s intraday_strategy_comparison.csv
           python - <<'PY'
-          import os
           import pandas as pd
-          file = 'intraday_strategy_comparison.csv'
-          if not os.path.exists(file):
-              raise SystemExit('❌ intraday_strategy_comparison.csv がありません')
-          df = pd.read_csv(file)
-          print(df.to_string(index=False))
-          required = {'strategy','trades','pf','win_rate','avg_return_pct'}
+          df = pd.read_csv('intraday_strategy_comparison.csv')
+          required = {'strategy','trades','pf','win_rate','avg_return_pct','total_return_pct','max_dd_pct','final_capital'}
           missing = required - set(df.columns)
           if missing:
               raise SystemExit(f'❌ 必須列不足: {sorted(missing)}')
+          print(df.to_string(index=False))
           PY
 
       - name: Select best intraday strategy
-        run: |
-          python build_intraday_policy.py
+        env:
+          ID_MIN_TRADES: '10'
+          ID_MIN_PF: '1.0'
+          ID_MIN_AVG_RETURN: '0.0'
+          AUTO_ENTRY_ATR_TP: '2.0'
+          AUTO_ENTRY_ATR_SL: '1.0'
+        run: python build_intraday_policy.py
 
       - name: Show active intraday policy
         run: |
-          echo "===== ACTIVE INTRADAY POLICY ====="
-          if [ -f strategy_policy.json ]; then
-            python - <<'PY'
-            import json
-            with open('strategy_policy.json', encoding='utf-8') as f:
-                p = json.load(f)
-            keys = [
-                'intraday_strategy', 'intraday_min_score',
-                'intraday_min_up_prob', 'intraday_min_vol_ratio',
-                'intraday_atr_tp', 'intraday_atr_sl',
-                'intraday_trades', 'intraday_pf',
-                'intraday_win_rate', 'intraday_avg_return_pct',
-                'intraday_total_return_pct', 'intraday_max_dd_pct',
-            ]
-            for k in keys:
-                if k in p:
-                    print(f'{k}: {p[k]}')
-            PY
-          else
-            echo '⚠ strategy_policy.json がありません'
-          fi
+          echo '===== ACTIVE INTRADAY POLICY ====='
+          test -s strategy_policy.json
+          python - <<'PY'
+          import json
+          with open('strategy_policy.json', encoding='utf-8') as f:
+              p = json.load(f)
+          for k in [
+              'intraday_strategy','intraday_min_score','intraday_min_up_prob',
+              'intraday_min_vol_ratio','intraday_atr_tp','intraday_atr_sl',
+              'intraday_trades','intraday_pf','intraday_win_rate',
+              'intraday_avg_return_pct','intraday_total_return_pct','intraday_max_dd_pct'
+          ]:
+              if k in p:
+                  print(f'{k}: {p[k]}')
+          PY
 
       - name: Build display summary
-        run: |
-          python - <<'PY'
-          import pandas as pd
-          src = pd.read_csv('intraday_strategy_comparison.csv')
-          src.to_csv('intraday_3stage_summary.csv', index=False, encoding='utf-8-sig')
-          print('✅ intraday_3stage_summary.csv 作成')
-          PY
+        run: cp intraday_strategy_comparison.csv intraday_3stage_summary.csv
 
       - name: Upload validation artifacts
         uses: actions/upload-artifact@v4
@@ -117,32 +105,28 @@ jobs:
           path: |
             intraday_strategy_comparison.csv
             intraday_3stage_summary.csv
-            intraday_top3_backtest_results.csv
-            intraday_top3_equity.csv
             strategy_policy.json
 
-      - name: Commit validation and intraday policy
+      - name: Commit validation and intraday policy safely
         run: |
+          set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add intraday_strategy_comparison.csv intraday_3stage_summary.csv strategy_policy.json || true
-          if git diff --cached --quiet; then
-            echo '検証結果・デイトレpolicy変更なし'
-          else
-            git commit -m 'chore: update intraday strategy validation and policy' || true
-            PUSH_SUCCESS=false
-            for i in 1 2 3; do
-              if git push; then
-                echo '✅ push成功'
-                PUSH_SUCCESS=true
-                break
-              fi
-              echo "⚠ push失敗、再試行 ($i/3)"
-              git pull --rebase origin "${GITHUB_REF_NAME}" || true
-              sleep 5
-            done
-            if [ "$PUSH_SUCCESS" != 'true' ]; then
-              echo '❌ 3回ともpush失敗'
+          git add intraday_strategy_comparison.csv intraday_3stage_summary.csv strategy_policy.json
+          git commit -m 'chore: update intraday strategy validation and policy' || echo '変更なし'
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main || {
+              git rebase --abort || true
+              echo '❌ validation rebase conflict'
               exit 1
+            }
+            if git push origin HEAD:main; then
+              echo '✅ validation push成功'
+              exit 0
             fi
-          fi
+            echo "⚠️ validation push競合、再試行: $i/5"
+            sleep $((i * 3))
+          done
+          echo '❌ validation push失敗'
+          exit 1
