@@ -1,0 +1,3069 @@
+# =========================================================
+# risk_manager.py
+#
+# AI株システム用 リスク管理・実戦運用管理
+#
+# 機能
+# 1. ATRベースの株数計算（利用可能資金ベース）
+# 2. 1トレード最大リスク管理
+# 3. 同時保有数制限
+# 4. 利用可能資金チェック
+# 5. デイリーストップ
+# 6. 最大DD監視
+# 7. 連敗ブレーカー
+# 8. 手数料・スリッページ考慮
+# 9. 月間利益ロック
+# 10. 実績PF監視
+# 11. 直近PF監視
+# 12. 月次評価
+# 13. 自動停止フラグ
+# 14. strategy_policy.json連携
+#
+# 推奨フロー
+#
+#   1. can_trade()
+#   2. calculate_position_size_auto()
+#   3. register_position_open()
+#   4. register_position_close()
+#   5. risk_check()
+#
+# prediction_history.csv
+#   → AI予測成績の監視
+#
+# risk_state.json
+#   → 実運用資金・ポジション・DD・連敗などを管理
+#
+# =========================================================
+
+import json
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import numpy as np
+import pandas as pd
+
+
+# =========================================================
+# 基本設定
+# =========================================================
+
+POLICY_FILE = "strategy_policy.json"
+
+RISK_STATE_FILE = "risk_state.json"
+
+PREDICTION_HISTORY_FILE = "prediction_history.csv"
+
+
+# =========================================================
+# 資金管理設定
+# =========================================================
+
+INITIAL_CAPITAL = float(
+    os.getenv(
+        "AI_INITIAL_CAPITAL",
+        "1000000"
+    )
+)
+
+
+# 1トレードあたり最大リスク
+# 通常 0.5%
+RISK_PER_TRADE = float(
+    os.getenv(
+        "AI_RISK_PER_TRADE",
+        "0.005"
+    )
+)
+
+
+# 同時保有上限
+MAX_POSITIONS = int(
+    os.getenv(
+        "AI_MAX_POSITIONS",
+        "3"
+    )
+)
+
+
+# 1日の最大損失
+# 2%
+DAILY_STOP_LOSS = float(
+    os.getenv(
+        "AI_DAILY_STOP_LOSS",
+        "0.02"
+    )
+)
+
+
+# 最大許容DD
+# 30%
+MAX_DRAWDOWN = float(
+    os.getenv(
+        "AI_MAX_DRAWDOWN",
+        "0.30"
+    )
+)
+
+
+# =========================================================
+# 実績PF監視
+# =========================================================
+
+MIN_LIVE_PROFIT_FACTOR = float(
+    os.getenv(
+        "AI_MIN_LIVE_PF",
+        "0.90"
+    )
+)
+
+
+# 全期間PFの監視最低件数
+MIN_LIVE_TRADES_FOR_ALERT = int(
+    os.getenv(
+        "AI_MIN_LIVE_TRADES",
+        "30"
+    )
+)
+
+
+# =========================================================
+# 直近PF監視
+#
+# 全期間PFだけでは最近の劣化を検出しにくいため、
+# 直近N件のPFも監視する。
+# =========================================================
+
+RECENT_TRADE_WINDOWS = [
+    30,
+    60
+]
+
+
+MIN_RECENT_TRADES_FOR_ALERT = int(
+    os.getenv(
+        "AI_MIN_RECENT_TRADES",
+        "30"
+    )
+)
+
+
+MIN_RECENT_PROFIT_FACTOR = float(
+    os.getenv(
+        "AI_MIN_RECENT_PF",
+        "0.90"
+    )
+)
+
+
+# =========================================================
+# 手数料
+#
+# 片道0.1%
+# 買い + 売りで往復0.2%
+# =========================================================
+
+TRADING_FEE_RATE = float(
+    os.getenv(
+        "AI_TRADING_FEE_RATE",
+        "0.001"
+    )
+)
+
+
+# =========================================================
+# スリッページ
+#
+# 片道スリッページ率
+#
+# 例:
+# 0.0005 = 0.05%
+# =========================================================
+
+SLIPPAGE_RATE = float(
+    os.getenv(
+        "AI_SLIPPAGE_RATE",
+        "0.0005"
+    )
+)
+
+
+# =========================================================
+# 連敗ブレーカー
+# =========================================================
+
+MAX_CONSECUTIVE_LOSSES = int(
+    os.getenv(
+        "AI_MAX_CONSECUTIVE_LOSSES",
+        "3"
+    )
+)
+
+
+# =========================================================
+# 月間利益ロック
+#
+# 月間利益5%到達
+# ↓
+# リスク50%へ縮小
+#
+# 0.5%
+# ↓
+# 0.25%
+# =========================================================
+
+MONTHLY_TARGET = float(
+    os.getenv(
+        "AI_MONTHLY_TARGET",
+        "0.05"
+    )
+)
+
+
+LOCK_RISK_AFTER_TARGET = (
+    os.getenv(
+        "AI_LOCK_RISK_AFTER_TARGET",
+        "true"
+    ).lower()
+    ==
+    "true"
+)
+
+
+LOCKED_RISK_MULTIPLIER = float(
+    os.getenv(
+        "AI_LOCKED_RISK_MULTIPLIER",
+        "0.5"
+    )
+)
+
+
+# =========================================================
+# JST
+# =========================================================
+
+def now_jst():
+
+    return datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    )
+
+
+# =========================================================
+# strategy_policy.json
+# =========================================================
+
+DEFAULT_POLICY = {
+
+    "status":
+        "DEFAULT",
+
+    "up_threshold":
+        50,
+
+    "min_score_for_buy":
+        60,
+
+    "nikkei_filter":
+        False,
+
+    "atr_tp_multiplier":
+        3.0,
+
+    "atr_sl_multiplier":
+        1.5,
+
+    "hold_days":
+        5,
+
+}
+
+
+def load_policy():
+
+    if not os.path.exists(
+        POLICY_FILE
+    ):
+
+        return DEFAULT_POLICY.copy()
+
+
+    try:
+
+        with open(
+            POLICY_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            policy = json.load(f)
+
+
+        if not isinstance(
+            policy,
+            dict
+        ):
+
+            return DEFAULT_POLICY.copy()
+
+
+        result = DEFAULT_POLICY.copy()
+
+        result.update(
+            policy
+        )
+
+        return result
+
+
+    except Exception as e:
+
+        print(
+            f"⚠ policy読み込み失敗: {e}"
+        )
+
+        return DEFAULT_POLICY.copy()
+
+
+# =========================================================
+# リスク状態
+# =========================================================
+
+def default_risk_state():
+
+    current = now_jst()
+
+    today = current.strftime(
+        "%Y-%m-%d"
+    )
+
+    month = current.strftime(
+        "%Y-%m"
+    )
+
+    return {
+
+        "date":
+            today,
+
+        "month":
+            month,
+
+        "capital":
+            INITIAL_CAPITAL,
+
+        "peak_capital":
+            INITIAL_CAPITAL,
+
+        "day_start_capital":
+            INITIAL_CAPITAL,
+
+        "month_start_capital":
+            INITIAL_CAPITAL,
+
+        "daily_pnl":
+            0.0,
+
+        "realized_pnl":
+            0.0,
+
+        "open_positions":
+            0,
+
+        "positions":
+            {},
+
+        "consecutive_losses":
+            0,
+
+        "risk_locked":
+            False,
+
+        "trading_enabled":
+            True,
+
+        "stop_reason":
+            "",
+
+        "last_update":
+            current.isoformat(),
+
+    }
+
+
+def load_risk_state():
+
+    if not os.path.exists(
+        RISK_STATE_FILE
+    ):
+
+        state = default_risk_state()
+
+        save_risk_state(
+            state
+        )
+
+        return state
+
+
+    try:
+
+        with open(
+            RISK_STATE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            state = json.load(f)
+
+
+        if not isinstance(
+            state,
+            dict
+        ):
+
+            raise ValueError(
+                "risk stateがdictではありません"
+            )
+
+
+        defaults = default_risk_state()
+
+        defaults.update(
+            state
+        )
+
+
+        if (
+            "positions"
+            not in defaults
+            or
+            not isinstance(
+                defaults["positions"],
+                dict
+            )
+        ):
+
+            defaults["positions"] = {}
+
+
+        defaults["open_positions"] = (
+            len(
+                defaults["positions"]
+            )
+        )
+
+
+        return defaults
+
+
+    except Exception as e:
+
+        print(
+            f"⚠ risk state読み込み失敗: {e}"
+        )
+
+        return default_risk_state()
+
+
+def save_risk_state(
+    state
+):
+
+    state["last_update"] = (
+        now_jst().isoformat()
+    )
+
+
+    with open(
+        RISK_STATE_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            state,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+
+# =========================================================
+# 日次リセット
+# =========================================================
+
+def reset_daily_state_if_needed(
+    state
+):
+
+    today = now_jst().strftime(
+        "%Y-%m-%d"
+    )
+
+
+    if (
+        state.get("date")
+        !=
+        today
+    ):
+
+        state["date"] = today
+
+        state["day_start_capital"] = (
+            float(
+                state.get(
+                    "capital",
+                    INITIAL_CAPITAL
+                )
+            )
+        )
+
+        state["daily_pnl"] = 0.0
+
+        state["consecutive_losses"] = 0
+
+        state["trading_enabled"] = True
+
+        state["stop_reason"] = ""
+
+
+    return state
+
+
+# =========================================================
+# 月次リセット
+# =========================================================
+
+def reset_monthly_state_if_needed(
+    state
+):
+
+    month = now_jst().strftime(
+        "%Y-%m"
+    )
+
+
+    if (
+        state.get("month")
+        !=
+        month
+    ):
+
+        state["month"] = month
+
+        state["month_start_capital"] = (
+            float(
+                state.get(
+                    "capital",
+                    INITIAL_CAPITAL
+                )
+            )
+        )
+
+        state["risk_locked"] = False
+
+
+    return state
+
+
+# =========================================================
+# state同期
+# =========================================================
+
+def _sync_state(
+    state
+):
+
+    state = reset_daily_state_if_needed(
+        state
+    )
+
+    state = reset_monthly_state_if_needed(
+        state
+    )
+
+    state["open_positions"] = (
+        len(
+            state.get(
+                "positions",
+                {}
+            )
+        )
+    )
+
+    return state
+
+
+# =========================================================
+# 利用可能資金
+# =========================================================
+
+def get_available_cash(
+    state=None
+):
+
+    if state is None:
+
+        state = load_risk_state()
+
+
+    capital = float(
+        state.get(
+            "capital",
+            INITIAL_CAPITAL
+        )
+    )
+
+
+    positions = state.get(
+        "positions",
+        {}
+    )
+
+
+    invested = sum(
+        float(
+            position.get(
+                "value",
+                0.0
+            )
+        )
+        for position
+        in positions.values()
+    )
+
+
+    return max(
+        0.0,
+        capital - invested
+    )
+
+
+# =========================================================
+# 現在の1トレードリスク
+# =========================================================
+
+def current_risk_per_trade(
+    state=None
+):
+
+    if state is None:
+
+        state = load_risk_state()
+
+
+    if state.get(
+        "risk_locked",
+        False
+    ):
+
+        return (
+            RISK_PER_TRADE
+            *
+            LOCKED_RISK_MULTIPLIER
+        )
+
+
+    return RISK_PER_TRADE
+
+
+# =========================================================
+# 最大損失額
+# =========================================================
+
+def max_loss_amount(
+    capital,
+    state=None
+):
+
+    return (
+        float(capital)
+        *
+        current_risk_per_trade(
+            state
+        )
+    )
+
+
+# =========================================================
+# 現在DD
+# =========================================================
+
+def current_drawdown(
+    capital=None
+):
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    if capital is None:
+
+        capital = float(
+            state.get(
+                "capital",
+                INITIAL_CAPITAL
+            )
+        )
+
+
+    peak = float(
+        state.get(
+            "peak_capital",
+            capital
+        )
+    )
+
+
+    if peak <= 0:
+
+        return 0.0
+
+
+    return (
+        capital
+        /
+        peak
+        - 1.0
+    )
+
+
+# =========================================================
+# ATRベース株数計算
+#
+# 1回の最大損失を資金の0.5%以内にする。
+#
+# さらに既存ポジションを差し引いた
+# 利用可能資金の範囲内に制限。
+# =========================================================
+
+def calculate_position_size(
+    capital,
+    entry_price,
+    stop_loss,
+    open_value=0.0,
+    state=None
+):
+
+    capital = float(
+        capital
+    )
+
+    entry_price = float(
+        entry_price
+    )
+
+    stop_loss = float(
+        stop_loss
+    )
+
+    open_value = float(
+        open_value
+    )
+
+
+    if (
+        capital <= 0
+        or
+        entry_price <= 0
+    ):
+
+        return 0
+
+
+    per_share_risk = (
+        entry_price
+        -
+        stop_loss
+    )
+
+
+    if per_share_risk <= 0:
+
+        return 0
+
+
+    risk_budget = (
+        max_loss_amount(
+            capital,
+            state
+        )
+    )
+
+
+    shares_by_risk = int(
+        risk_budget
+        /
+        per_share_risk
+    )
+
+
+    if shares_by_risk < 1:
+
+        return 0
+
+
+    available_cash = max(
+        0.0,
+        capital - open_value
+    )
+
+
+    # 手数料 + スリッページの余裕込み
+    entry_cost_per_share = (
+        entry_price
+        *
+        (
+            1
+            +
+            TRADING_FEE_RATE
+            +
+            SLIPPAGE_RATE
+        )
+    )
+
+
+    if entry_cost_per_share <= 0:
+
+        return 0
+
+
+    shares_by_cash = int(
+        available_cash
+        /
+        entry_cost_per_share
+    )
+
+
+    shares = min(
+        shares_by_risk,
+        shares_by_cash
+    )
+
+
+    return max(
+        0,
+        shares
+    )
+
+
+# =========================================================
+# 自動株数計算
+# =========================================================
+
+def calculate_position_size_auto(
+    entry_price,
+    stop_loss
+):
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    capital = float(
+        state.get(
+            "capital",
+            INITIAL_CAPITAL
+        )
+    )
+
+
+    open_value = sum(
+        float(
+            position.get(
+                "value",
+                0.0
+            )
+        )
+        for position
+        in state.get(
+            "positions",
+            {}
+        ).values()
+    )
+
+
+    return calculate_position_size(
+        capital=capital,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        open_value=open_value,
+        state=state
+    )
+
+
+# =========================================================
+# ポジションプラン
+# =========================================================
+
+def build_position_plan(
+    capital,
+    ticker,
+    entry_price,
+    take_profit,
+    stop_loss
+):
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    open_value = sum(
+        float(
+            position.get(
+                "value",
+                0.0
+            )
+        )
+        for position
+        in state.get(
+            "positions",
+            {}
+        ).values()
+    )
+
+
+    shares = calculate_position_size(
+        capital=capital,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        open_value=open_value,
+        state=state
+    )
+
+
+    if shares <= 0:
+
+        return {
+
+            "ticker":
+                ticker,
+
+            "shares":
+                0,
+
+            "entry_price":
+                entry_price,
+
+            "take_profit":
+                take_profit,
+
+            "stop_loss":
+                stop_loss,
+
+            "position_value":
+                0.0,
+
+            "max_loss":
+                0.0,
+
+        }
+
+
+    position_value = (
+        shares
+        *
+        entry_price
+    )
+
+
+    max_loss = (
+        shares
+        *
+        (
+            entry_price
+            -
+            stop_loss
+        )
+    )
+
+
+    return {
+
+        "ticker":
+            ticker,
+
+        "shares":
+            shares,
+
+        "entry_price":
+            entry_price,
+
+        "take_profit":
+            take_profit,
+
+        "stop_loss":
+            stop_loss,
+
+        "position_value":
+            position_value,
+
+        "max_loss":
+            max_loss,
+
+    }
+
+
+# =========================================================
+# ポジション新規登録
+#
+# ★資金チェックを追加
+#
+# 既存ポジション + 新規ポジション
+# が利用可能資金を超える場合は登録拒否。
+# =========================================================
+
+def register_position_open(
+    ticker,
+    shares,
+    entry_price
+):
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    if not state.get(
+        "trading_enabled",
+        True
+    ):
+
+        print(
+            "🛑 取引停止中のため新規ポジション登録不可"
+        )
+
+        return state
+
+
+    positions = state.setdefault(
+        "positions",
+        {}
+    )
+
+
+    if (
+        ticker in positions
+    ):
+
+        print(
+            f"⚠ 既に保有中: {ticker}"
+        )
+
+        return state
+
+
+    if len(positions) >= MAX_POSITIONS:
+
+        print(
+            f"🛑 同時保有上限 "
+            f"{MAX_POSITIONS}銘柄"
+        )
+
+        state[
+            "trading_enabled"
+        ] = False
+
+        state[
+            "stop_reason"
+        ] = "同時保有数上限"
+
+
+        save_risk_state(
+            state
+        )
+
+        return state
+
+
+    shares = int(
+        shares
+    )
+
+    entry_price = float(
+        entry_price
+    )
+
+
+    if (
+        shares <= 0
+        or
+        entry_price <= 0
+    ):
+
+        print(
+            "⚠ 不正なポジション"
+        )
+
+        return state
+
+
+    current_capital = float(
+        state.get(
+            "capital",
+            INITIAL_CAPITAL
+        )
+    )
+
+
+    invested = sum(
+        float(
+            position.get(
+                "value",
+                0.0
+            )
+        )
+        for position
+        in positions.values()
+    )
+
+
+    gross_entry_value = (
+        shares
+        *
+        entry_price
+    )
+
+
+    estimated_entry_cost = (
+        gross_entry_value
+        *
+        (
+            1
+            +
+            TRADING_FEE_RATE
+            +
+            SLIPPAGE_RATE
+        )
+    )
+
+
+    available_cash = max(
+        0.0,
+        current_capital - invested
+    )
+
+
+    # =====================================================
+    # 新規追加:
+    # 利用可能資金を超える場合は登録拒否
+    # =====================================================
+
+    if (
+        estimated_entry_cost
+        >
+        available_cash
+    ):
+
+        print(
+            f"🛑 資金不足: "
+            f"{ticker}"
+        )
+
+        print(
+            f"必要額="
+            f"{estimated_entry_cost:,.0f}円"
+        )
+
+        print(
+            f"利用可能="
+            f"{available_cash:,.0f}円"
+        )
+
+        return state
+
+
+    value = (
+        gross_entry_value
+    )
+
+
+    positions[ticker] = {
+
+        "shares":
+            shares,
+
+        "entry_price":
+            entry_price,
+
+        "value":
+            value,
+
+        "entry_fee":
+            gross_entry_value
+            *
+            TRADING_FEE_RATE,
+
+        "entry_slippage":
+            gross_entry_value
+            *
+            SLIPPAGE_RATE,
+
+        "entry_date":
+            now_jst().strftime(
+                "%Y-%m-%d"
+            ),
+
+    }
+
+
+    state["open_positions"] = (
+        len(
+            positions
+        )
+    )
+
+
+    save_risk_state(
+        state
+    )
+
+
+    print(
+        f"✅ ポジション登録: "
+        f"{ticker} "
+        f"{shares}株 "
+        f"{entry_price:,.0f}円"
+    )
+
+
+    return state
+
+
+# =========================================================
+# ポジション決済
+#
+# ★手数料 + スリッページ
+# ★連敗
+# ★月間利益ロック
+# ★DD
+# ★デイリーストップ
+# =========================================================
+
+def register_position_close(
+    ticker,
+    exit_price,
+    new_capital=None
+):
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    positions = state.get(
+        "positions",
+        {}
+    )
+
+
+    position = positions.pop(
+        ticker,
+        None
+    )
+
+
+    state["open_positions"] = (
+        len(
+            positions
+        )
+    )
+
+
+    if position is None:
+
+        print(
+            f"⚠ ポジションが見つかりません: "
+            f"{ticker}"
+        )
+
+        save_risk_state(
+            state
+        )
+
+        return state
+
+
+    shares = int(
+        position[
+            "shares"
+        ]
+    )
+
+
+    entry_price = float(
+        position[
+            "entry_price"
+        ]
+    )
+
+
+    exit_price = float(
+        exit_price
+    )
+
+
+    entry_value = (
+        shares
+        *
+        entry_price
+    )
+
+
+    exit_value = (
+        shares
+        *
+        exit_price
+    )
+
+
+    # =====================================================
+    # スリッページ
+    #
+    # 買い:
+    # 実質高く買う
+    #
+    # 売り:
+    # 実質安く売る
+    # =====================================================
+
+    effective_entry_price = (
+        entry_price
+        *
+        (
+            1
+            +
+            SLIPPAGE_RATE
+        )
+    )
+
+
+    effective_exit_price = (
+        exit_price
+        *
+        (
+            1
+            -
+            SLIPPAGE_RATE
+        )
+    )
+
+
+    effective_entry_value = (
+        shares
+        *
+        effective_entry_price
+    )
+
+
+    effective_exit_value = (
+        shares
+        *
+        effective_exit_price
+    )
+
+
+    gross_pnl = (
+        effective_exit_value
+        -
+        effective_entry_value
+    )
+
+
+    fees = (
+        effective_entry_value
+        +
+        effective_exit_value
+    ) * TRADING_FEE_RATE
+
+
+    pnl = (
+        gross_pnl
+        -
+        fees
+    )
+
+
+    old_capital = float(
+        state.get(
+            "capital",
+            INITIAL_CAPITAL
+        )
+    )
+
+
+    if new_capital is None:
+
+        new_capital = (
+            old_capital
+            +
+            pnl
+        )
+
+
+    new_capital = float(
+        new_capital
+    )
+
+
+    state["daily_pnl"] += pnl
+
+    state["realized_pnl"] += pnl
+
+    state["capital"] = new_capital
+
+
+    # =====================================================
+    # Peak更新
+    # =====================================================
+
+    peak = float(
+        state.get(
+            "peak_capital",
+            new_capital
+        )
+    )
+
+
+    if new_capital > peak:
+
+        peak = new_capital
+
+
+    state["peak_capital"] = peak
+
+
+    # =====================================================
+    # 連敗
+    # =====================================================
+
+    if pnl < 0:
+
+        state[
+            "consecutive_losses"
+        ] = (
+            int(
+                state.get(
+                    "consecutive_losses",
+                    0
+                )
+            )
+            +
+            1
+        )
+
+    else:
+
+        state[
+            "consecutive_losses"
+        ] = 0
+
+
+    # =====================================================
+    # 月間利益
+    # =====================================================
+
+    month_start = float(
+        state.get(
+            "month_start_capital",
+            INITIAL_CAPITAL
+        )
+    )
+
+
+    month_return = (
+        new_capital
+        /
+        month_start
+        -
+        1
+    ) if month_start > 0 else 0.0
+
+
+    if (
+        LOCK_RISK_AFTER_TARGET
+        and
+        month_return
+        >=
+        MONTHLY_TARGET
+    ):
+
+        state[
+            "risk_locked"
+        ] = True
+
+
+    # =====================================================
+    # 停止判定
+    # =====================================================
+
+    _apply_stop_checks(
+        state,
+        new_capital,
+        peak
+    )
+
+
+    save_risk_state(
+        state
+    )
+
+
+    print(
+        f"✅ 決済: {ticker} "
+        f"PnL={pnl:+,.0f}円 "
+        f"資金={new_capital:,.0f}円"
+    )
+
+
+    return state
+
+
+# =========================================================
+# 停止判定
+# =========================================================
+
+def _apply_stop_checks(
+    state,
+    capital,
+    peak
+):
+
+    reasons = []
+
+
+    # =====================================================
+    # DD
+    # =====================================================
+
+    drawdown = (
+        capital
+        /
+        peak
+        -
+        1
+    ) if peak > 0 else 0.0
+
+
+    if (
+        drawdown
+        <=
+        -MAX_DRAWDOWN
+    ):
+
+        reasons.append(
+            f"最大DD "
+            f"{drawdown * 100:.2f}%"
+        )
+
+
+    # =====================================================
+    # 日次損失
+    # =====================================================
+
+    day_start = float(
+        state.get(
+            "day_start_capital",
+            capital
+        )
+    )
+
+
+    daily_pnl = float(
+        state.get(
+            "daily_pnl",
+            0.0
+        )
+    )
+
+
+    daily_return = (
+        daily_pnl
+        /
+        day_start
+    ) if day_start > 0 else 0.0
+
+
+    if (
+        daily_return
+        <=
+        -DAILY_STOP_LOSS
+    ):
+
+        reasons.append(
+            f"デイリーストップ "
+            f"{daily_return * 100:.2f}%"
+        )
+
+
+    # =====================================================
+    # 連敗
+    # =====================================================
+
+    consecutive_losses = int(
+        state.get(
+            "consecutive_losses",
+            0
+        )
+    )
+
+
+    if (
+        consecutive_losses
+        >=
+        MAX_CONSECUTIVE_LOSSES
+    ):
+
+        reasons.append(
+            f"{MAX_CONSECUTIVE_LOSSES}連敗"
+        )
+
+
+    # =====================================================
+    # 結果
+    # =====================================================
+
+    if reasons:
+
+        state[
+            "trading_enabled"
+        ] = False
+
+        state[
+            "stop_reason"
+        ] = " / ".join(
+            reasons
+        )
+
+    else:
+
+        # 月次ロックは停止ではない
+        state[
+            "trading_enabled"
+        ] = True
+
+        state[
+            "stop_reason"
+        ] = ""
+
+
+# =========================================================
+# 旧API: set_open_positions
+# =========================================================
+
+def set_open_positions(
+    count
+):
+
+    state = load_risk_state()
+
+    state["open_positions"] = max(
+        0,
+        int(count)
+    )
+
+    save_risk_state(
+        state
+    )
+
+    return state
+
+
+# =========================================================
+# 旧API: record_trade_pnl
+# =========================================================
+
+def record_trade_pnl(
+    pnl,
+    new_capital
+):
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    pnl = float(
+        pnl
+    )
+
+    new_capital = float(
+        new_capital
+    )
+
+
+    state["daily_pnl"] += pnl
+
+    state["realized_pnl"] += pnl
+
+    state["capital"] = new_capital
+
+
+    peak = float(
+        state.get(
+            "peak_capital",
+            new_capital
+        )
+    )
+
+
+    if new_capital > peak:
+
+        peak = new_capital
+
+
+    state["peak_capital"] = peak
+
+
+    if pnl < 0:
+
+        state[
+            "consecutive_losses"
+        ] += 1
+
+    else:
+
+        state[
+            "consecutive_losses"
+        ] = 0
+
+
+    month_start = float(
+        state.get(
+            "month_start_capital",
+            INITIAL_CAPITAL
+        )
+    )
+
+
+    month_return = (
+        new_capital
+        /
+        month_start
+        -
+        1
+    ) if month_start > 0 else 0.0
+
+
+    if (
+        LOCK_RISK_AFTER_TARGET
+        and
+        month_return
+        >=
+        MONTHLY_TARGET
+    ):
+
+        state[
+            "risk_locked"
+        ] = True
+
+
+    _apply_stop_checks(
+        state,
+        new_capital,
+        peak
+    )
+
+
+    save_risk_state(
+        state
+    )
+
+
+    return state
+
+
+# =========================================================
+# 現在資産更新
+# =========================================================
+
+def update_capital(
+    capital
+):
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    capital = float(
+        capital
+    )
+
+
+    state["capital"] = capital
+
+
+    peak = float(
+        state.get(
+            "peak_capital",
+            capital
+        )
+    )
+
+
+    if capital > peak:
+
+        peak = capital
+
+
+    state["peak_capital"] = peak
+
+
+    state["daily_pnl"] = (
+        capital
+        -
+        float(
+            state[
+                "day_start_capital"
+            ]
+        )
+    )
+
+
+    state["realized_pnl"] = (
+        capital
+        -
+        INITIAL_CAPITAL
+    )
+
+
+    _apply_stop_checks(
+        state,
+        capital,
+        peak
+    )
+
+
+    save_risk_state(
+        state
+    )
+
+
+    return state
+
+
+# =========================================================
+# 取引可能か
+# =========================================================
+
+def can_trade():
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    save_risk_state(
+        state
+    )
+
+
+    if not state.get(
+        "trading_enabled",
+        True
+    ):
+
+        print(
+            "🛑 新規取引停止"
+        )
+
+        print(
+            f"理由: "
+            f"{state.get('stop_reason', '')}"
+        )
+
+        return False
+
+
+    open_positions = len(
+        state.get(
+            "positions",
+            {}
+        )
+    )
+
+
+    state[
+        "open_positions"
+    ] = open_positions
+
+
+    if (
+        open_positions
+        >=
+        MAX_POSITIONS
+    ):
+
+        print(
+            f"🛑 同時保有上限 "
+            f"{MAX_POSITIONS}銘柄"
+        )
+
+        return False
+
+
+    return True
+
+
+# =========================================================
+# prediction_history.csv
+# =========================================================
+
+def load_history():
+
+    if not os.path.exists(
+        PREDICTION_HISTORY_FILE
+    ):
+
+        return pd.DataFrame()
+
+
+    try:
+
+        df = pd.read_csv(
+            PREDICTION_HISTORY_FILE
+        )
+
+
+        if "return" in df.columns:
+
+            df["return"] = pd.to_numeric(
+                df["return"],
+                errors="coerce"
+            )
+
+
+        if "result" in df.columns:
+
+            df["result"] = (
+                df["result"]
+                .astype(str)
+                .str.strip()
+            )
+
+
+        if "date" in df.columns:
+
+            df["date"] = pd.to_datetime(
+                df["date"],
+                errors="coerce"
+            )
+
+
+        return df
+
+
+    except Exception as e:
+
+        print(
+            f"⚠ prediction_history読み込み失敗: {e}"
+        )
+
+        return pd.DataFrame()
+
+
+# =========================================================
+# PF
+# =========================================================
+
+def calculate_profit_factor(
+    returns
+):
+
+    returns = (
+        pd.Series(
+            returns
+        )
+        .dropna()
+    )
+
+
+    gains = returns[
+        returns > 0
+    ].sum()
+
+
+    losses = (
+        -returns[
+            returns < 0
+        ].sum()
+    )
+
+
+    if losses <= 0:
+
+        if gains > 0:
+
+            return float(
+                "inf"
+            )
+
+        return 0.0
+
+
+    return float(
+        gains
+        /
+        losses
+    )
+
+
+# =========================================================
+# 成績集計内部関数
+# =========================================================
+
+def _calculate_performance(
+    df
+):
+
+    empty = {
+
+        "trades":
+            0,
+
+        "wins":
+            0,
+
+        "losses":
+            0,
+
+        "win_rate":
+            0.0,
+
+        "avg_return":
+            0.0,
+
+        "profit_factor":
+            0.0,
+
+    }
+
+
+    if (
+        df is None
+        or
+        df.empty
+        or
+        "result" not in df.columns
+    ):
+
+        return empty
+
+
+    decided = df[
+        df["result"].isin(
+            [
+                "WIN",
+                "LOSS",
+                "TIMEOUT_LOSS"
+            ]
+        )
+    ].copy()
+
+
+    wins = int(
+        (
+            decided["result"]
+            ==
+            "WIN"
+        ).sum()
+    )
+
+
+    losses = int(
+        (
+            decided["result"]
+            .isin(
+                [
+                    "LOSS",
+                    "TIMEOUT_LOSS"
+                ]
+            )
+        ).sum()
+    )
+
+
+    trades = (
+        wins
+        +
+        losses
+    )
+
+
+    win_rate = (
+        wins
+        /
+        trades
+        *
+        100
+        if
+        trades > 0
+        else
+        0.0
+    )
+
+
+    returns = (
+        pd.to_numeric(
+            decided["return"],
+            errors="coerce"
+        )
+        .dropna()
+    )
+
+
+    avg_return = (
+        float(
+            returns.mean()
+        )
+        if
+        len(returns) > 0
+        else
+        0.0
+    )
+
+
+    pf = calculate_profit_factor(
+        returns
+    )
+
+
+    return {
+
+        "trades":
+            trades,
+
+        "wins":
+            wins,
+
+        "losses":
+            losses,
+
+        "win_rate":
+            win_rate,
+
+        "avg_return":
+            avg_return,
+
+        "profit_factor":
+            pf,
+
+    }
+
+
+# =========================================================
+# 実績評価
+# =========================================================
+
+def evaluate_live_performance():
+
+    df = load_history()
+
+    return _calculate_performance(
+        df
+    )
+
+
+# =========================================================
+# 直近PF
+#
+# ★追加
+#
+# 全期間ではなく直近N件を監視。
+# =========================================================
+
+def evaluate_recent_performance(
+    window
+):
+
+    df = load_history()
+
+
+    if (
+        df.empty
+        or
+        "date" not in df.columns
+    ):
+
+        return _calculate_performance(
+            pd.DataFrame()
+        )
+
+
+    df = df.sort_values(
+        "date"
+    )
+
+
+    decided = df[
+        df["result"].isin(
+            [
+                "WIN",
+                "LOSS",
+                "TIMEOUT_LOSS"
+            ]
+        )
+    ].copy()
+
+
+    if decided.empty:
+
+        return _calculate_performance(
+            pd.DataFrame()
+        )
+
+
+    recent = decided.tail(
+        int(window)
+    ).copy()
+
+
+    return _calculate_performance(
+        recent
+    )
+
+
+# =========================================================
+# ライブ成績監視
+# =========================================================
+
+def check_live_performance():
+
+    full = evaluate_live_performance()
+
+
+    reasons = []
+
+    alert = False
+
+    stop = False
+
+
+    # =====================================================
+    # 全期間PF
+    # =====================================================
+
+    if (
+        full["trades"]
+        >=
+        MIN_LIVE_TRADES_FOR_ALERT
+    ):
+
+        full_pf = full[
+            "profit_factor"
+        ]
+
+
+        if (
+            np.isfinite(full_pf)
+            and
+            full_pf
+            <
+            MIN_LIVE_PROFIT_FACTOR
+        ):
+
+            alert = True
+
+            stop = True
+
+            reasons.append(
+                "全期間PF "
+                f"{full_pf:.2f}"
+                f" < "
+                f"{MIN_LIVE_PROFIT_FACTOR:.2f}"
+            )
+
+
+    # =====================================================
+    # 直近PF
+    # =====================================================
+
+    recent_results = {}
+
+
+    for window in (
+        RECENT_TRADE_WINDOWS
+    ):
+
+        recent = (
+            evaluate_recent_performance(
+                window
+            )
+        )
+
+
+        recent_results[
+            window
+        ] = recent
+
+
+        if (
+            recent["trades"]
+            >=
+            MIN_RECENT_TRADES_FOR_ALERT
+        ):
+
+            recent_pf = (
+                recent[
+                    "profit_factor"
+                ]
+            )
+
+
+            if (
+                np.isfinite(
+                    recent_pf
+                )
+                and
+                recent_pf
+                <
+                MIN_RECENT_PROFIT_FACTOR
+            ):
+
+                alert = True
+
+                stop = True
+
+                reasons.append(
+                    f"直近{window}件PF "
+                    f"{recent_pf:.2f}"
+                    f" < "
+                    f"{MIN_RECENT_PROFIT_FACTOR:.2f}"
+                )
+
+
+    return {
+
+        "alert":
+            alert,
+
+        "stop":
+            stop,
+
+        "reason":
+            " / ".join(
+                reasons
+            ),
+
+        "full":
+            full,
+
+        "recent":
+            recent_results,
+
+        # 旧API互換
+        "trades":
+            full[
+                "trades"
+            ],
+
+        "wins":
+            full[
+                "wins"
+            ],
+
+        "losses":
+            full[
+                "losses"
+            ],
+
+        "win_rate":
+            full[
+                "win_rate"
+            ],
+
+        "avg_return":
+            full[
+                "avg_return"
+            ],
+
+        "profit_factor":
+            full[
+                "profit_factor"
+            ],
+
+    }
+
+
+# =========================================================
+# 月次評価
+# =========================================================
+
+def monthly_performance():
+
+    df = load_history()
+
+
+    if (
+        df.empty
+        or
+        "date" not in df.columns
+        or
+        "result" not in df.columns
+    ):
+
+        return pd.DataFrame()
+
+
+    df = df.dropna(
+        subset=["date"]
+    ).copy()
+
+
+    if df.empty:
+
+        return pd.DataFrame()
+
+
+    df["month"] = (
+        df["date"]
+        .dt
+        .to_period("M")
+        .astype(str)
+    )
+
+
+    rows = []
+
+
+    for month, group in (
+        df.groupby(
+            "month"
+        )
+    ):
+
+        stats = _calculate_performance(
+            group
+        )
+
+
+        rows.append(
+            {
+
+                "month":
+                    month,
+
+                "trades":
+                    stats[
+                        "trades"
+                    ],
+
+                "wins":
+                    stats[
+                        "wins"
+                    ],
+
+                "losses":
+                    stats[
+                        "losses"
+                    ],
+
+                "win_rate":
+                    stats[
+                        "win_rate"
+                    ],
+
+                "avg_return":
+                    stats[
+                        "avg_return"
+                    ],
+
+                "profit_factor":
+                    stats[
+                        "profit_factor"
+                    ],
+
+            }
+        )
+
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# =========================================================
+# 月次CSV保存
+# =========================================================
+
+def save_monthly_report():
+
+    monthly = (
+        monthly_performance()
+    )
+
+
+    if monthly.empty:
+
+        return None
+
+
+    file = (
+        "live_monthly_performance.csv"
+    )
+
+
+    monthly.to_csv(
+        file,
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+
+    print(
+        f"✅ 月次評価保存: "
+        f"{file}"
+    )
+
+
+    return file
+
+
+# =========================================================
+# 総合リスクチェック
+# =========================================================
+
+def risk_check():
+
+    state = load_risk_state()
+
+    state = _sync_state(
+        state
+    )
+
+
+    capital = float(
+        state.get(
+            "capital",
+            INITIAL_CAPITAL
+        )
+    )
+
+
+    peak = float(
+        state.get(
+            "peak_capital",
+            capital
+        )
+    )
+
+
+    drawdown = (
+        capital
+        /
+        peak
+        -
+        1
+    ) if peak > 0 else 0.0
+
+
+    performance = (
+        check_live_performance()
+    )
+
+
+    reasons = []
+
+
+    enabled = True
+
+
+    # =====================================================
+    # DD
+    # =====================================================
+
+    if (
+        drawdown
+        <=
+        -MAX_DRAWDOWN
+    ):
+
+        enabled = False
+
+        reasons.append(
+            f"最大DD "
+            f"{drawdown * 100:.2f}%"
+        )
+
+
+    # =====================================================
+    # 日次損失
+    # =====================================================
+
+    day_start = float(
+        state.get(
+            "day_start_capital",
+            capital
+        )
+    )
+
+
+    daily_pnl = float(
+        state.get(
+            "daily_pnl",
+            capital - day_start
+        )
+    )
+
+
+    daily_return = (
+        daily_pnl
+        /
+        day_start
+        if
+        day_start > 0
+        else
+        0.0
+    )
+
+
+    if (
+        daily_return
+        <=
+        -DAILY_STOP_LOSS
+    ):
+
+        enabled = False
+
+        reasons.append(
+            f"日次損失 "
+            f"{daily_return * 100:.2f}%"
+        )
+
+
+    # =====================================================
+    # 連敗
+    # =====================================================
+
+    consecutive_losses = int(
+        state.get(
+            "consecutive_losses",
+            0
+        )
+    )
+
+
+    if (
+        consecutive_losses
+        >=
+        MAX_CONSECUTIVE_LOSSES
+    ):
+
+        enabled = False
+
+        reasons.append(
+            f"{MAX_CONSECUTIVE_LOSSES}連敗"
+        )
+
+
+    # =====================================================
+    # PF
+    # =====================================================
+
+    if performance["stop"]:
+
+        enabled = False
+
+        reasons.append(
+            performance["reason"]
+        )
+
+
+    # =====================================================
+    # 同時保有
+    # =====================================================
+
+    open_positions = len(
+        state.get(
+            "positions",
+            {}
+        )
+    )
+
+
+    state[
+        "open_positions"
+    ] = open_positions
+
+
+    if (
+        open_positions
+        >=
+        MAX_POSITIONS
+    ):
+
+        enabled = False
+
+        reasons.append(
+            "同時保有数上限"
+        )
+
+
+    # =====================================================
+    # 状態保存
+    # =====================================================
+
+    state[
+        "trading_enabled"
+    ] = enabled
+
+
+    state[
+        "stop_reason"
+    ] = (
+        " / ".join(
+            reasons
+        )
+        if
+        reasons
+        else
+        ""
+    )
+
+
+    save_risk_state(
+        state
+    )
+
+
+    # =====================================================
+    # 月次
+    # =====================================================
+
+    month_start = float(
+        state.get(
+            "month_start_capital",
+            INITIAL_CAPITAL
+        )
+    )
+
+
+    month_return = (
+        capital
+        /
+        month_start
+        -
+        1
+    ) if month_start > 0 else 0.0
+
+
+    return {
+
+        "trading_enabled":
+            enabled,
+
+        "capital":
+            capital,
+
+        "available_cash":
+            get_available_cash(
+                state
+            ),
+
+        "drawdown":
+            drawdown,
+
+        "daily_return":
+            daily_return,
+
+        "month_return":
+            month_return,
+
+        "risk_locked":
+            state.get(
+                "risk_locked",
+                False
+            ),
+
+        "consecutive_losses":
+            consecutive_losses,
+
+        "open_positions":
+            open_positions,
+
+        "performance":
+            performance,
+
+        "reason":
+            state[
+                "stop_reason"
+            ],
+
+        "current_risk":
+            current_risk_per_trade(
+                state
+            ),
+
+    }
+
+
+# =========================================================
+# Discord表示
+# =========================================================
+
+def risk_status_text():
+
+    check = risk_check()
+
+    performance = (
+        check[
+            "performance"
+        ]
+    )
+
+
+    full = performance[
+        "full"
+    ]
+
+
+    pf = full[
+        "profit_factor"
+    ]
+
+
+    if np.isinf(
+        pf
+    ):
+
+        pf_display = "inf"
+
+    else:
+
+        pf_display = (
+            f"{pf:.2f}"
+        )
+
+
+    recent_text_parts = []
+
+
+    for window in (
+        RECENT_TRADE_WINDOWS
+    ):
+
+        recent = (
+            performance[
+                "recent"
+            ].get(
+                window,
+                {}
+            )
+        )
+
+
+        if not recent:
+
+            continue
+
+
+        recent_trades = (
+            recent.get(
+                "trades",
+                0
+            )
+        )
+
+
+        recent_pf = (
+            recent.get(
+                "profit_factor",
+                0.0
+            )
+        )
+
+
+        if np.isinf(
+            recent_pf
+        ):
+
+            recent_pf_display = "inf"
+
+        else:
+
+            recent_pf_display = (
+                f"{recent_pf:.2f}"
+            )
+
+
+        recent_text_parts.append(
+            f"{window}件="
+            f"{recent_trades}件/"
+            f"PF{recent_pf_display}"
+        )
+
+
+    recent_text = (
+        " / ".join(
+            recent_text_parts
+        )
+        if recent_text_parts
+        else
+        "データなし"
+    )
+
+
+    status = (
+        "🟢 取引可能"
+        if
+        check[
+            "trading_enabled"
+        ]
+        else
+        "🛑 取引停止"
+    )
+
+
+    lock_display = (
+        "🔒 ON（リスク縮小中）"
+        if
+        check[
+            "risk_locked"
+        ]
+        else
+        "OFF"
+    )
+
+
+    policy = load_policy()
+
+
+    return (
+
+        "━━━━━━━━━━━━━━━━━━\n"
+
+        "🛡️ リスク管理\n"
+
+        "━━━━━━━━━━━━━━━━━━\n"
+
+        f"状態: {status}\n"
+
+        f"資金: "
+        f"{check['capital']:,.0f}円\n"
+
+        f"利用可能資金: "
+        f"{check['available_cash']:,.0f}円\n"
+
+        f"DD: "
+        f"{check['drawdown'] * 100:.2f}%\n"
+
+        f"本日損益: "
+        f"{check['daily_return'] * 100:+.2f}%\n"
+
+        f"当月損益: "
+        f"{check['month_return'] * 100:+.2f}%\n"
+
+        f"月間目標: "
+        f"{MONTHLY_TARGET * 100:.1f}%\n"
+
+        f"月間利益ロック: "
+        f"{lock_display}\n"
+
+        f"連敗: "
+        f"{check['consecutive_losses']}/"
+        f"{MAX_CONSECUTIVE_LOSSES}\n"
+
+        f"同時保有: "
+        f"{check['open_positions']}/"
+        f"{MAX_POSITIONS}\n"
+
+        f"実績件数: "
+        f"{full['trades']}\n"
+
+        f"実績勝率: "
+        f"{full['win_rate']:.1f}%\n"
+
+        f"全期間PF: "
+        f"{pf_display}\n"
+
+        f"直近PF: "
+        f"{recent_text}\n"
+
+        f"1回リスク: "
+        f"{check['current_risk'] * 100:.2f}%\n"
+
+        f"通常リスク: "
+        f"{RISK_PER_TRADE * 100:.2f}%\n"
+
+        f"日次停止: "
+        f"{DAILY_STOP_LOSS * 100:.1f}%\n"
+
+        f"最大DD: "
+        f"{MAX_DRAWDOWN * 100:.1f}%\n"
+
+        f"手数料: "
+        f"片道{TRADING_FEE_RATE * 100:.3f}%\n"
+
+        f"スリッページ: "
+        f"片道{SLIPPAGE_RATE * 100:.3f}%\n"
+
+        f"Policy: "
+        f"UP{policy.get('up_threshold', '-')}"
+    )
+
+
+# =========================================================
+# テスト用メイン
+#
+# python risk_manager.py
+# で状態確認だけできる。
+# =========================================================
+
+if __name__ == "__main__":
+
+    print(
+        "==========================================="
+    )
+
+    print(
+        "🛡️ AI STOCK RISK MANAGER"
+    )
+
+    print(
+        "==========================================="
+    )
+
+    print(
+        risk_status_text()
+    )
+
+    print("")
+
+    print(
+        "strategy_policy.json:"
+    )
+
+    print(
+        json.dumps(
+            load_policy(),
+            ensure_ascii=False,
+            indent=2
+        )
+    )
+
+    print("")
+
+    print(
+        "✅ risk_manager.py チェック完了"
+    )
