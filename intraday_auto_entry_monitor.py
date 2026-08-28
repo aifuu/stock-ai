@@ -5,9 +5,8 @@ intraday_auto_entry_monitor.py
 寄り後チャートを確認し、最初に条件成立した1銘柄だけを
 ペーパートレード登録する。実注文は一切行わない。
 
-STANDARD / RELAXED / LOOSE は intraday_strategy_backtest.py で比較し、
-build_intraday_policy.py が最良段階を strategy_policy.json の
-intraday_* キーへ保存する。本番監視では採用済み1段階だけを使用する。
+当日の監視対象は morning AI scan が作成した
+intraday_today_top3.csv を最優先で使用する。
 """
 
 import json
@@ -22,7 +21,7 @@ import yfinance as yf
 from common import COMPANY_NAMES, is_tse_trading_day, send
 
 JST = ZoneInfo("Asia/Tokyo")
-HISTORY_FILE = os.getenv("TOP3_HISTORY_FILE", "prediction_history.csv")
+TOP3_FILE = os.getenv("TOP3_HISTORY_FILE", "intraday_today_top3.csv")
 INTRADAY_HISTORY_FILE = "paper_intraday_history.csv"
 POLICY_FILE = "strategy_policy.json"
 STATE_FILE = "intraday_auto_entry_state.json"
@@ -86,15 +85,14 @@ def save_state(state):
 
 
 def load_top3(trade_date):
-    if not os.path.exists(HISTORY_FILE):
+    if not os.path.exists(TOP3_FILE):
         return pd.DataFrame()
     try:
-        df = pd.read_csv(HISTORY_FILE, encoding="utf-8-sig")
+        df = pd.read_csv(TOP3_FILE, encoding="utf-8-sig")
     except Exception as exc:
-        print(f"⚠ {HISTORY_FILE} 読み込み失敗: {exc}")
+        print(f"⚠ {TOP3_FILE} 読み込み失敗: {exc}")
         return pd.DataFrame()
-    required = {"date", "ticker", "score"}
-    if df.empty or not required.issubset(df.columns):
+    if df.empty or not {"date", "ticker", "score"}.issubset(df.columns):
         return pd.DataFrame()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["score"] = pd.to_numeric(df["score"], errors="coerce")
@@ -103,19 +101,15 @@ def load_top3(trade_date):
     if day.empty:
         return day
     day = day.sort_values("score", ascending=False).drop_duplicates("ticker")
-    day["calc_rank"] = day["score"].rank(method="first", ascending=False)
-    return day[day["calc_rank"] <= TOP_N].copy()
+    day["calc_rank"] = range(1, len(day) + 1)
+    return day.head(TOP_N).copy()
 
 
 def download_5m(ticker):
     try:
         df = yf.download(
-            ticker,
-            period="5d",
-            interval="5m",
-            auto_adjust=False,
-            progress=False,
-            threads=False,
+            ticker, period="5d", interval="5m",
+            auto_adjust=False, progress=False, threads=False,
         )
     except Exception as exc:
         print(f"{ticker}: 5m取得失敗: {exc}")
@@ -148,14 +142,11 @@ def indicators(df):
     x["vol_ma20"] = x["Volume"].rolling(20, min_periods=5).mean()
     x["vol_ratio"] = x["Volume"] / x["vol_ma20"].replace(0, np.nan)
     prev = x["Close"].shift(1)
-    tr = pd.concat(
-        [
-            x["High"] - x["Low"],
-            (x["High"] - prev).abs(),
-            (x["Low"] - prev).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
+    tr = pd.concat([
+        x["High"] - x["Low"],
+        (x["High"] - prev).abs(),
+        (x["Low"] - prev).abs(),
+    ], axis=1).max(axis=1)
     x["atr"] = tr.rolling(ATR_PERIOD, min_periods=5).mean()
     return x
 
@@ -181,7 +172,7 @@ def find_entry(df, row, trade_date, now, config, atr_tp, atr_sl):
     prob = float(row.get("probability", np.nan)) if pd.notna(row.get("probability", np.nan)) else np.nan
     if not np.isfinite(score) or score < config["min_score"]:
         return None
-    if np.isfinite(prob) and prob < config["min_up_prob"]:
+    if not np.isfinite(prob) or prob < config["min_up_prob"]:
         return None
 
     prev_close = previous_close(x, trade_date)
@@ -195,11 +186,10 @@ def find_entry(df, row, trade_date, now, config, atr_tp, atr_sl):
     for i in range(len(window) - 1):
         bar = window.iloc[i]
         nxt = window.iloc[i + 1]
-        cond_vwap = float(bar["Close"]) > float(bar["vwap"])
-        cond_volume = pd.notna(bar["vol_ratio"]) and float(bar["vol_ratio"]) >= config["min_vol_ratio"]
-        if not (cond_vwap and cond_volume):
+        if float(bar["Close"]) <= float(bar["vwap"]):
             continue
-
+        if pd.isna(bar["vol_ratio"]) or float(bar["vol_ratio"]) < config["min_vol_ratio"]:
+            continue
         atr = float(bar["atr"]) if pd.notna(bar["atr"]) and float(bar["atr"]) > 0 else float(bar["Close"]) * 0.005
         entry_price = float(nxt["Open"])
         return {
@@ -230,7 +220,7 @@ def save_paper_entry(trade_date, ticker, rank, strategy_name, entry):
         "sl": entry["sl"],
         "gap_pct": entry["gap_pct"],
         "vol_ratio": entry["vol_ratio"],
-        "ema_bull": entry["ema_bull"],
+        "ema_bull": bool(entry["ema_bull"]),
         "exit_time": "",
         "exit_price": np.nan,
         "exit_reason": "",
@@ -248,8 +238,12 @@ def save_paper_entry(trade_date, ticker, rank, strategy_name, entry):
     for col in columns:
         if col not in history.columns:
             history[col] = np.nan
-    if "date" in history.columns:
-        history = history[history["date"].astype(str) != str(trade_date)].copy()
+    for col in history.columns:
+        if col not in row:
+            row[col] = np.nan
+    same_day = history["date"].astype(str) == str(trade_date) if not history.empty else pd.Series(dtype=bool)
+    if not history.empty and same_day.any():
+        history = history[~same_day].copy()
     history = pd.concat([history, pd.DataFrame([row])], ignore_index=True)
     history.to_csv(INTRADAY_HISTORY_FILE, index=False, encoding="utf-8-sig")
 
@@ -260,13 +254,13 @@ def main():
     if not is_tse_trading_day(trade_date):
         print("東証休場日のため終了")
         return
-    if now.time() < ENTRY_START or now.time() > ENTRY_END:
-        print(f"現在時刻 {now:%H:%M} はエントリー監視時間外")
+    if now.time() < ENTRY_START or now.time() > FORCED_EXIT:
+        print(f"現在時刻 {now:%H:%M} は自動監視時間外")
         return
 
     top3 = load_top3(trade_date)
-    if top3.empty:
-        print("本日のTOP3履歴なし")
+    if len(top3) != TOP_N:
+        print(f"本日の確定TOP3がありません/不足: {len(top3)}件")
         return
 
     state = load_state()
@@ -276,13 +270,10 @@ def main():
 
     strategy_name, config, atr_tp, atr_sl = load_active_strategy()
     if strategy_name is None:
-        print("⚠ デイトレ採用policyがありません。安全のため本日はエントリーしません")
-        send("⚠️ デイトレ採用policyなし\nstrategy_policy.json の intraday_strategy が未設定のため、本日はペーパートレードを見送ります。")
+        print("⚠️ デイトレ採用policyなし。安全のためエントリー見送り")
         return
 
-    print(f"採用デイトレ戦略: {strategy_name}")
-    print(f"条件: score>={config['min_score']} / prob>={config['min_up_prob']} / vol>={config['min_vol_ratio']}")
-    print(f"ATR: TP={atr_tp}x / SL={atr_sl}x")
+    print(f"採用戦略: {strategy_name} / TOP3: {', '.join(top3['ticker'].astype(str))}")
 
     for _, row in top3.sort_values("calc_rank").iterrows():
         ticker = str(row["ticker"])
@@ -293,34 +284,26 @@ def main():
         if entry is None:
             continue
 
-        rank = int(row["calc_rank"])
         state = {
             "date": str(trade_date),
             "signaled": True,
             "closed": False,
             "strategy": strategy_name,
             "ticker": ticker,
-            "rank": rank,
-            "entry_time": entry["entry_time"],
-            "entry_price": entry["entry_price"],
-            "tp": entry["tp"],
-            "sl": entry["sl"],
-            "score": entry["score"],
-            "probability": entry["probability"],
-            "gap_pct": entry["gap_pct"],
-            "vol_ratio": entry["vol_ratio"],
+            "rank": int(row["calc_rank"]),
+            **entry,
         }
         save_state(state)
-        save_paper_entry(trade_date, ticker, rank, strategy_name, entry)
+        save_paper_entry(trade_date, ticker, row["calc_rank"], strategy_name, entry)
 
         name = COMPANY_NAMES.get(ticker, "")
-        prob_text = f"{entry['probability']:.1f}%" if np.isfinite(entry["probability"]) else "N/A"
+        prob_text = f"{entry['probability']:.1f}%"
         ema_text = "EMA5>EMA20" if entry["ema_bull"] else "EMA5<=EMA20"
         msg = (
             "🚨 自動デイトレ買いシグナル\n"
             f"日付: {trade_date}\n"
-            f"採用戦略: {strategy_name}\n"
-            f"TOP{rank}: {ticker} {name}\n"
+            f"検証段階: {strategy_name}\n"
+            f"TOP{int(row['calc_rank'])}: {ticker} {name}\n"
             f"AIスコア: {entry['score']:.1f}\n"
             f"上昇確率: {prob_text}\n"
             f"エントリー: {entry['entry_time']} 次の5分足始値\n"
@@ -335,7 +318,7 @@ def main():
         send(msg)
         return
 
-    print(f"{strategy_name}: 現時点でTOP3のエントリー条件は未成立")
+    print("採用戦略でTOP3すべて現時点のエントリー条件未成立")
 
 
 if __name__ == "__main__":
