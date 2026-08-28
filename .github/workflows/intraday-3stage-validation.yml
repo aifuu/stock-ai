@@ -1,0 +1,80 @@
+name: TOP3 5分足 3段階自動検証
+
+on:
+  workflow_run:
+    workflows: ["AI Stock Scan + Auto Strategy Validation"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Syntax check
+        run: |
+          python -m py_compile intraday_top3_backtest.py
+          python -m py_compile intraday_3stage_validation.py
+
+      - name: Run three-stage validation
+        env:
+          TOP3_HISTORY_FILE: prediction_history.csv
+          IT_START_DATE: '2026-08-01'
+          IT_END_DATE: '2026-08-22'
+          IT_ATR_TP: '2.0'
+          IT_ATR_SL: '1.0'
+          IT_MAX_GAP_PCT: '5.0'
+        run: python intraday_3stage_validation.py
+
+      - name: Show comparison
+        run: |
+          echo "===== 3-STAGE SUMMARY ====="
+          cat intraday_3stage_summary.csv
+          echo "===== RESULT FILES ====="
+          ls -lh intraday_*_STANDARD.csv intraday_*_RELAXED.csv intraday_*_LOOSE.csv 2>/dev/null || true
+
+      - name: Upload validation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: intraday-3stage-validation-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            intraday_3stage_summary.csv
+            intraday_top3_backtest_STANDARD.csv
+            intraday_top3_backtest_RELAXED.csv
+            intraday_top3_backtest_LOOSE.csv
+            intraday_top3_equity_STANDARD.csv
+            intraday_top3_equity_RELAXED.csv
+            intraday_top3_equity_LOOSE.csv
+
+      - name: Commit validation summary
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add intraday_3stage_summary.csv
+          if git diff --cached --quiet; then
+            echo '検証サマリー変更なし'
+          else
+            git commit -m 'chore: update intraday 3-stage validation summary' || true
+            git push || true
+          fi
