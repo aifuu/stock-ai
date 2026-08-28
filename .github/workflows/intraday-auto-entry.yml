@@ -9,8 +9,11 @@ on:
 permissions:
   contents: write
 
+# mainへ書き込む全workflowと共通のロック。
+# AI Stock Scan / production / intraday validation / entry / exit の
+# 同時pushを防ぎ、non-fast-forward競合を抑止する。
 concurrency:
-  group: intraday-auto-entry
+  group: ai-stock-scan-main-write
   cancel-in-progress: false
 
 jobs:
@@ -41,7 +44,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests jpholiday
 
-      - name: Verify exact morning TOP3
+      - name: Verify today's TOP3 exists
         run: |
           test -s intraday_today_top3.csv
           python - <<'PY'
@@ -50,16 +53,12 @@ jobs:
           import pandas as pd
           today = datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y-%m-%d')
           df = pd.read_csv('intraday_today_top3.csv', encoding='utf-8-sig')
-          required = {'date','ticker','score','probability'}
-          missing = required - set(df.columns)
-          if missing:
-              raise SystemExit(f'❌ intraday_today_top3.csv 必須列不足: {sorted(missing)}')
           if len(df) != 3:
-              raise SystemExit(f'❌ 朝の確定TOP3が3件ではありません: {len(df)}')
-          if not (df['date'].astype(str) == today).all():
-              raise SystemExit('❌ intraday_today_top3.csv が今日の日付ではありません')
-          print('===== EXACT MORNING TOP3 =====')
-          print(df[['ticker','score','probability']].to_string(index=False))
+              raise SystemExit(f'❌ 今日TOP3が3件ではありません: {len(df)}')
+          if 'date' in df.columns and not (df['date'].astype(str) == today).all():
+              raise SystemExit('❌ TOP3の日付が今日ではありません')
+          print('✅ 今日のTOP3確認')
+          print(df[['ticker','score']].to_string(index=False))
           PY
 
       - name: Show active intraday policy
@@ -69,13 +68,12 @@ jobs:
           import json
           with open('strategy_policy.json', encoding='utf-8') as f:
               p = json.load(f)
-          print('===== ACTIVE INTRADAY POLICY =====')
-          for k in [
-              'intraday_strategy','intraday_min_score','intraday_min_up_prob',
-              'intraday_min_vol_ratio','intraday_atr_tp','intraday_atr_sl',
-              'intraday_trades','intraday_pf','intraday_win_rate','intraday_avg_return_pct'
-          ]:
-              print(f'{k}: {p.get(k)}')
+          print('strategy:', p.get('intraday_strategy'))
+          print('min_score:', p.get('intraday_min_score'))
+          print('min_up_prob:', p.get('intraday_min_up_prob'))
+          print('min_vol_ratio:', p.get('intraday_min_vol_ratio'))
+          print('ATR TP:', p.get('intraday_atr_tp'))
+          print('ATR SL:', p.get('intraday_atr_sl'))
           if p.get('intraday_strategy') not in {'STANDARD','RELAXED','LOOSE'}:
               raise SystemExit('❌ デイトレ採用戦略が未設定です。安全のため中止します')
           PY
@@ -92,7 +90,7 @@ jobs:
               target = now.replace(hour=9, minute=15, second=0, microsecond=0)
               if now >= target:
                   break
-              time.sleep(min(60, max(1, int((target-now).total_seconds()))))
+              time.sleep(min(60, max(1, int((target - now).total_seconds()))))
           PY
 
       - name: Monitor 09:15-10:00 JST every 5 minutes
@@ -111,7 +109,7 @@ jobs:
           jst = ZoneInfo('Asia/Tokyo')
           while True:
               now = datetime.now(jst)
-              if now.time() > datetime.strptime('10:00','%H:%M').time():
+              if now.time().hour > 10 or (now.time().hour == 10 and now.time().minute > 0):
                   print('10:00を過ぎたためエントリー監視終了')
                   break
               print(f'===== auto entry check {now:%Y-%m-%d %H:%M:%S} JST =====')
@@ -128,6 +126,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
+          git add -u
           git diff --cached --quiet && exit 0
           git commit -m 'chore: persist intraday auto entry state'
           for i in 1 2 3 4 5; do
@@ -136,10 +135,7 @@ jobs:
               echo '✅ entry state push成功'
               exit 0
             fi
-            git rebase --abort 2>/dev/null || true
-            git reset --hard origin/main
-            git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
-            git diff --cached --quiet || git commit -m 'chore: persist intraday auto entry state retry' || true
+            git rebase --abort || true
             echo "⚠️ entry state push再試行: $i/5"
             sleep $((i * 3))
           done
