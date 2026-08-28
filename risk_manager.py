@@ -107,6 +107,7 @@ def _sync_state(state):
     if not isinstance(state.get("positions"), dict):
         state["positions"] = {}
     state["open_positions"] = len(state["positions"])
+    state["consecutive_losses"] = int(state.get("consecutive_losses", 0))
     return state
 
 
@@ -224,6 +225,7 @@ def risk_check():
     state["trading_enabled"] = enabled
     state["stop_reason"] = reason
     state["open_positions"] = len(state.get("positions", {}))
+    state["consecutive_losses"] = int(state.get("consecutive_losses", 0))
     save_risk_state(state)
     return {
         "trading_enabled": enabled,
@@ -233,6 +235,7 @@ def risk_check():
         "available_cash": get_available_cash(state),
         "drawdown": current_drawdown(capital),
         "risk_per_trade": current_risk_per_trade(state),
+        "consecutive_losses": state["consecutive_losses"],
     }
 
 
