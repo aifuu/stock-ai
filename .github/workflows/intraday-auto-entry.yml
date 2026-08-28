@@ -23,13 +23,13 @@ jobs:
       - name: Checkout latest main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Sync latest default branch
+      - name: Sync latest main
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          git fetch origin "$DEFAULT_BRANCH"
-          git reset --hard "origin/$DEFAULT_BRANCH"
+          git fetch origin main
+          git reset --hard origin/main
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -59,7 +59,8 @@ jobs:
                     print(f'{k}: {p[k]}')
             PY
           else
-            echo '⚠ strategy_policy.jsonなし → スクリプト内フォールバック設定を使用'
+            echo '⚠ strategy_policy.jsonなし → 安全のためエントリー見送り'
+            exit 1
           fi
 
       - name: Run entry monitor
@@ -75,24 +76,37 @@ jobs:
         if: always()
         run: |
           set -e
+          if [ ! -f intraday_auto_entry_state.json ] && [ ! -f paper_intraday_history.csv ]; then
+            echo '状態変更なし'
+            exit 0
+          fi
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
-          git add -u
-          git commit -m 'chore: persist intraday auto entry state' || echo '状態変更なし'
+          git diff --cached --quiet && exit 0
+          git commit -m 'chore: persist intraday auto entry state'
+
           for i in 1 2 3 4 5; do
             git fetch origin main
-            git rebase origin/main || {
+            if git rebase origin/main; then
+              if git push origin HEAD:main; then
+                echo '✅ entry state push成功'
+                exit 0
+              fi
+            else
               git rebase --abort || true
-              echo '❌ entry state rebase conflict'
-              exit 1
-            }
-            if git push origin HEAD:main; then
-              echo '✅ entry state push成功'
-              exit 0
+              echo '⚠️ rebase競合のため最新mainから状態を再構築します'
             fi
-            echo "⚠️ entry state push競合、再試行: $i/5"
+
+            git fetch origin main
+            git reset --hard origin/main
+            git clean -fd
+            git add intraday_auto_entry_state.json paper_intraday_history.csv 2>/dev/null || true
+            git diff --cached --quiet || git commit -m 'chore: persist intraday auto entry state retry' || true
+            echo "⚠️ entry state push再試行: $i/5"
             sleep $((i * 3))
           done
+
           echo '❌ entry state push失敗'
           exit 1
