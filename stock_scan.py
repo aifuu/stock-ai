@@ -13,6 +13,14 @@ import json
 
 from sklearn.ensemble import RandomForestClassifier
 
+from risk_manager import (
+    risk_check,
+    build_position_plan,
+    register_position_open,
+    register_position_close,
+    risk_status_text,
+)
+
 # ===================== 
 # 自動戦略ポリシー 
 # ===================== 
