@@ -1,0 +1,142 @@
+name: TOP3 寄り後チャート・当日決済バックテスト
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "開始日 (YYYY-MM-DD)"
+        required: false
+        default: "2026-08-01"
+      end_date:
+        description: "終了日 (YYYY-MM-DD)"
+        required: false
+        default: "2026-08-22"
+      min_score:
+        description: "AIスコア下限"
+        required: false
+        default: "70"
+      min_up_prob:
+        description: "上昇確率下限(%)"
+        required: false
+        default: "60"
+      atr_tp:
+        description: "ATR利確倍率"
+        required: false
+        default: "2.0"
+      atr_sl:
+        description: "ATR損切り倍率"
+        required: false
+        default: "1.0"
+  schedule:
+    - cron: '30 8 * * 6'
+
+permissions:
+  contents: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests
+
+      - name: Run TOP3 intraday backtest
+        env:
+          TOP3_HISTORY_FILE: prediction_history.csv
+          IT_START_DATE: ${{ github.event.inputs.start_date || '2026-08-01' }}
+          IT_END_DATE: ${{ github.event.inputs.end_date || '2026-08-22' }}
+          IT_MIN_SCORE: ${{ github.event.inputs.min_score || '70' }}
+          IT_MIN_UP_PROB: ${{ github.event.inputs.min_up_prob || '60' }}
+          IT_ATR_TP: ${{ github.event.inputs.atr_tp || '2.0' }}
+          IT_ATR_SL: ${{ github.event.inputs.atr_sl || '1.0' }}
+        run: python intraday_top3_backtest.py
+
+      - name: Show output files
+        run: |
+          echo "===== generated files ====="
+          ls -lah *top3* *intraday* 2>/dev/null || true
+          echo "===== CSV preview ====="
+          for f in top3_intraday_backtest*.csv intraday_top3_backtest*.csv; do
+            if [ -f "$f" ]; then
+              echo "--- $f ---"
+              head -n 8 "$f"
+            fi
+          done
+
+      - name: Upload backtest results
+        uses: actions/upload-artifact@v4
+        with:
+          name: top3-intraday-backtest-results
+          path: |
+            top3_intraday_backtest*.csv
+            intraday_top3_backtest*.csv
+            *_monthly*.csv
+            *_summary*.csv
+          if-no-files-found: warn
+
+      - name: Commit result CSVs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add '*.csv' || true
+          if git diff --cached --quiet; then
+            echo "結果CSVの変更なし"
+          else
+            git commit -m "chore: update TOP3 intraday backtest results" || true
+            git push || true
+          fi
+
+      - name: Send Discord notification
+        if: always()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK未設定のため通知をスキップ"
+            exit 0
+          fi
+
+          STATUS="✅ 成功"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATUS="❌ 失敗"
+          fi
+
+          python - <<'PY'
+          import os
+          import glob
+          import requests
+
+          webhook = os.environ.get("DISCORD_WEBHOOK")
+          status = "✅ 成功" if "${{ job.status }}" == "success" else "❌ 失敗"
+
+          files = []
+          for pattern in ["top3_intraday_backtest*.csv", "intraday_top3_backtest*.csv", "*_monthly*.csv", "*_summary*.csv"]:
+              files.extend(glob.glob(pattern))
+
+          lines = [
+              "📊 TOP3 寄り後チャート・当日決済バックテスト",
+              f"実行結果：{status}",
+              f"期間：${{ github.event.inputs.start_date || '2026-08-01' }} ～ ${{ github.event.inputs.end_date || '2026-08-22' }}",
+              "戦略：毎日TOP3 → 9:15～10:00チャート確認 → 最初の成立銘柄1件のみ → 当日15:25までに決済",
+              "条件：AIスコア≥${{ github.event.inputs.min_score || '70' }} / 上昇確率≥${{ github.event.inputs.min_up_prob || '60' }}% / ATR TP=${{ github.event.inputs.atr_tp || '2.0' }}x / SL=${{ github.event.inputs.atr_sl || '1.0' }}x",
+          ]
+
+          if files:
+              lines.append("結果CSV：" + ", ".join(sorted(set(files))))
+          else:
+              lines.append("結果CSV：生成ファイルを確認できませんでした")
+
+          requests.post(webhook, json={"content": "\n".join(lines)[:1900]}, timeout=30).raise_for_status()
+          print("Discord通知送信完了")
+          PY
