@@ -1,0 +1,55 @@
+name: 毎日TOP3 5分足 自動エントリー監視
+
+on:
+  schedule:
+    # JST 09:15〜09:55 = UTC 00:15〜00:55
+    - cron: '15-55/5 0 * * 1-5'
+    # JST 10:00 = UTC 01:00。最終判定を1回実行
+    - cron: '0 1 * * 1-5'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  auto-entry-monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests jpholiday
+
+      - name: Run automatic TOP3 5m entry monitor
+        env:
+          TOP3_HISTORY_FILE: prediction_history.csv
+          AUTO_ENTRY_MIN_SCORE: '70'
+          AUTO_ENTRY_MIN_UP_PROB: '60'
+          AUTO_ENTRY_MIN_VOL_RATIO: '1.2'
+          AUTO_ENTRY_MAX_GAP: '3.0'
+          AUTO_ENTRY_ATR_TP: '2.0'
+          AUTO_ENTRY_ATR_SL: '1.0'
+        run: python intraday_auto_entry_monitor.py
+
+      - name: Persist daily signal state
+        run: |
+          if [ -f intraday_auto_entry_state.json ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add intraday_auto_entry_state.json
+            if git diff --cached --quiet; then
+              echo '状態変更なし'
+            else
+              git commit -m 'chore: persist intraday auto entry state' || true
+              git push || true
+            fi
+          fi
