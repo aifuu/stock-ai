@@ -1,0 +1,102 @@
+name: AI Stock Scan - Daily Directional TOP1 Paper Trade
+
+on:
+  schedule:
+    - cron: '30 23 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-stock-daily-top1
+  cancel-in-progress: false
+
+jobs:
+  daily-top1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib
+
+      - name: Syntax check
+        run: python -m py_compile daily_directional_top1.py
+
+      - name: Verify 100 tickers
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          tree = ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8'))
+          tickers = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'TICKERS':
+                          tickers = ast.literal_eval(node.value)
+          if tickers is None or len(tickers) != 100 or len(set(tickers)) != 100:
+              raise SystemExit(f'❌ TOP1銘柄ユニバース不正: {0 if tickers is None else len(tickers)}')
+          print('✅ 100銘柄・重複なし')
+          PY
+
+      - name: Run daily directional TOP1 paper trade
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          AI_INITIAL_CAPITAL: '1000000'
+        run: python daily_directional_top1.py
+
+      - name: Verify paper-trade state
+        run: |
+          test -s directional_paper_state.json
+          python - <<'PY'
+          import json
+          s = json.load(open('directional_paper_state.json', encoding='utf-8'))
+          if 'capital' not in s:
+              raise SystemExit('❌ 資産状態がありません')
+          print(f"✅ 仮想資産: {float(s['capital']):,.0f}円")
+          print(f"✅ 最大DD: {float(s.get('max_dd', 0)):.2f}%")
+          print(f"✅ ポジション: {s.get('position')}")
+          PY
+
+      - name: Commit daily paper-trade state
+        run: |
+          set -e
+          git config user.name 'github-actions'
+          git config user.email 'github-actions@github.com'
+          git add daily_directional_top1.py directional_paper_state.json directional_paper_history.csv directional_monthly_performance.csv model.pkl 2>/dev/null || true
+          git add -u
+          git commit -m 'Update daily directional TOP1 paper trade' || echo 'No state changes to commit'
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              echo '✅ daily TOP1 push成功'
+              exit 0
+            fi
+            echo "⚠️ push競合、再試行: $i/5"
+            sleep $((i * 3))
+          done
+          exit 1
+
+      - name: Upload daily paper-trade artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-directional-top1-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            directional_paper_state.json
+            directional_paper_history.csv
+            directional_monthly_performance.csv
