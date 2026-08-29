@@ -1,0 +1,51 @@
+name: Profit Loop TOP10 Backtest (ISOLATED)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "開始日"
+        required: false
+        default: "2021-01-01"
+      end_date:
+        description: "終了日"
+        required: false
+        default: "2026-08-22"
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pandas numpy
+      - name: Run isolated backtest
+        env:
+          BT_START_DATE: ${{ github.event.inputs.start_date || '2021-01-01' }}
+          BT_END_DATE: ${{ github.event.inputs.end_date || '2026-08-22' }}
+          BT_TOP_N: "10"
+          BT_MAX_PER_TICKER_DAY: "10"
+          BT_MAX_TRADES_DAY: "30"
+          BT_INPUT: prediction_history.csv
+        run: python profit_loop_top10_backtest.py
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: profit-loop-top10-backtest
+          path: |
+            profit_loop_top10_backtest.csv
+            profit_loop_top10_monthly.csv
+          if-no-files-found: error
+      - name: Print summary
+        run: |
+          echo "===== BACKTEST RESULT ====="
+          test -f profit_loop_top10_backtest.csv && head -n 8 profit_loop_top10_backtest.csv
+          test -f profit_loop_top10_monthly.csv && head -n 12 profit_loop_top10_monthly.csv
