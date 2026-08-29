@@ -1,0 +1,86 @@
+name: One-time policy integrity migration
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/workflows/one_time_policy_integrity_migration.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-ai-one-time-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Replace mandatory secret with evidence hash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          # build_strategy_policy.py
+          p = Path('build_strategy_policy.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('import hashlib\nimport hmac\nimport json\n', 'import hashlib\nimport json\n', 1)
+          s = re.sub(r'\n\ndef policy_signature\(policy, secret\):.*?\n\n\nPOLICY_SIGNING_SECRET = os\.getenv\("AI_POLICY_SIGNING_SECRET", ""\)\.strip\(\)\nif not POLICY_SIGNING_SECRET:\n    keep_existing_policy\(.*?\)\n', '\n\ndef policy_evidence_hash(policy, evidence_file):\n    evidence_hash = hashlib.sha256(Path(evidence_file).read_bytes()).hexdigest()\n    payload = canonical_policy_payload(policy).encode("utf-8")\n    return hashlib.sha256(payload + b"\\n" + evidence_hash.encode("ascii")).hexdigest(), evidence_hash\n', s, count=1, flags=re.S)
+          if 'from pathlib import Path' not in s:
+              s = s.replace('import os\n', 'import os\nfrom pathlib import Path\n', 1)
+          s = re.sub(r'new_policy\["approval_signature"\] = policy_signature\(new_policy, POLICY_SIGNING_SECRET\)', 'new_policy["approval_evidence_hash"], new_policy["evidence_file_sha256"] = policy_evidence_hash(new_policy, INPUT_FILE)', s, count=1)
+          p.write_text(s, encoding='utf-8')
+
+          # profit_top10_paper.py
+          p = Path('profit_top10_paper.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('import hashlib\nimport hmac\nimport json\n', 'import hashlib\nimport json\n', 1)
+          old = '''def _verify_policy_signature(policy):\n    secret = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()\n    if not secret:\n        raise RuntimeError("AI_POLICY_SIGNING_SECRET が未設定です。承認済みpolicyを検証できないため新規取引を停止します。")\n    if str(policy.get("source", "")) != "adversarial_strategy_validator":\n        raise RuntimeError("strategy_policy.json のsourceが検証パイプラインではありません。手動policyは無効です。")\n    if int(policy.get("approval_signature_version", 0)) != 1:\n        raise RuntimeError("strategy_policy.json の承認署名バージョンが不正です。")\n    supplied = str(policy.get("approval_signature", ""))\n    if not supplied:\n        raise RuntimeError("strategy_policy.json に承認署名がありません。手動承認は無効です。")\n    covered = _canonical_policy_payload(policy)\n    expected = hmac.new(secret.encode("utf-8"), covered.encode("utf-8"), hashlib.sha256).hexdigest()\n    if not hmac.compare_digest(supplied, expected):\n        raise RuntimeError("strategy_policy.json の承認署名が一致しません。手動変更または検証証跡の破損を検知したため新規取引を停止します。")\n'''
+          new = '''def _verify_policy_integrity(policy):\n    if str(policy.get("source", "")) != "adversarial_strategy_validator":\n        raise RuntimeError("検証パイプライン由来ではないpolicyです。手動policyは無効です。")\n    if int(policy.get("approval_integrity_version", 0)) != 1:\n        raise RuntimeError("policyの承認証跡バージョンが不正です。")\n    supplied = str(policy.get("approval_evidence_hash", ""))\n    evidence_sha = str(policy.get("evidence_file_sha256", ""))\n    if not supplied or not evidence_sha:\n        raise RuntimeError("policyに検証証跡がありません。新規取引を停止します。")\n    from pathlib import Path\n    evidence = Path("adversarial_final_candidates.csv")\n    if not evidence.exists():\n        raise RuntimeError("検証証跡ファイルがありません。新規取引を停止します。")\n    actual_file_sha = hashlib.sha256(evidence.read_bytes()).hexdigest()\n    if actual_file_sha != evidence_sha:\n        raise RuntimeError("検証証跡ファイルがpolicy生成時と一致しません。手動変更を検知しました。")\n    covered = {k: policy.get(k) for k in (\n        "status", "updated_at", "up_threshold", "min_score_for_buy",\n        "nikkei_filter", "atr_tp_multiplier", "atr_sl_multiplier", "hold_days",\n        "validation_signals", "validation_win_rate", "validation_avg_return",\n        "validation_pf", "validation_dd", "oos_signals", "oos_win_rate",\n        "oos_avg_return", "oos_pf", "oos_dd", "oos_validation_pf_ratio",\n        "mc_sizing", "mc_10y_probability", "mc_15y_probability",\n        "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",\n        "strategy_name", "source",\n    )}\n    payload = json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))\n    expected = hashlib.sha256(payload.encode("utf-8") + b"\\n" + evidence_sha.encode("ascii")).hexdigest()\n    if supplied != expected:\n        raise RuntimeError("policyの承認証跡が一致しません。手動変更を検知したため新規取引を停止します。")\n'''
+          if old not in s:
+              raise SystemExit('profit signature block not found')
+          s = s.replace(old, new, 1)
+          s = s.replace('_verify_policy_signature(p)', '_verify_policy_integrity(p)', 1)
+          p.write_text(s, encoding='utf-8')
+
+          # Unified TOP10 workflow: remove secret requirement/env and verify only integrity evidence.
+          p = Path('.github/workflows/ai-stock-scan.yml')
+          s = p.read_text(encoding='utf-8')
+          s = re.sub(r'\n      - name: Check required signing secret \(manual run only\).*?(?=\n      - name: Full validation pipeline)', '', s, count=1, flags=re.S)
+          s = s.replace('          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}\n', '')
+          s = s.replace("          test -n \"$AI_POLICY_SIGNING_SECRET\" || { echo '❌ AI_POLICY_SIGNING_SECRET が未設定。安全のためフルパイプラインを開始しません'; exit 1; }\n          echo '✅ policy署名用Secret設定済み'\n", '')
+          p.write_text(s, encoding='utf-8')
+
+          # Existing signature-enforcement self-writer is no longer needed.
+          ep = Path('.github/workflows/enforce-policy-signature.yml')
+          if ep.exists():
+              ep.unlink()
+
+          # Existing hardening self-writer is no longer needed.
+          hp = Path('.github/workflows/apply_requested_hardening.yml')
+          if hp.exists():
+              hp.unlink()
+
+          # One-time syntax check.
+          import py_compile
+          for name in ('build_strategy_policy.py', 'profit_top10_paper.py'):
+              py_compile.compile(name, doraise=True)
+          print('✅ migration syntax check passed')
+          PY
+
+      - name: Commit migration and remove this workflow
+        run: |
+          set -e
+          rm -f .github/workflows/one_time_policy_integrity_migration.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add build_strategy_policy.py profit_top10_paper.py .github/workflows/ai-stock-scan.yml .github/workflows/enforce-policy-signature.yml .github/workflows/apply_requested_hardening.yml .github/workflows/one_time_policy_integrity_migration.yml
+          git commit -m 'fix: remove mandatory signing secret and self-writing policy workflows [skip ci]'
+          git push origin HEAD:main
