@@ -119,14 +119,35 @@ if len(all_dates) <= OOS_DAYS:
 oos_dates = all_dates[-OOS_DAYS:]
 pre_oos = all_dates[:-OOS_DAYS]
 split = int(len(pre_oos) * 0.60)
-raw_dev_dates = pre_oos[:split]
-raw_validation_dates = pre_oos[split:]
-purge_n = max(0, min(PURGE_DAYS, len(raw_dev_dates) - 1))
-embargo_n = max(0, min(EMBARGO_DAYS, len(raw_validation_dates) - 1))
-dev_dates = raw_dev_dates[:-purge_n] if purge_n else raw_dev_dates
-validation_dates = raw_validation_dates[embargo_n:]
-if not dev_dates or not validation_dates:
-    raise RuntimeError("Purge/Embargo後にDEVまたはValidation期間が空です")
+dev_dates_raw = pre_oos[:split]
+validation_dates_raw = pre_oos[split:]
+
+# ★修正(2026-08): PURGE_DAYS/EMBARGO_DAYSを各フェーズ境界に
+# 明示適用する。境界付近のシグナルが次フェーズの価格を参照して
+# 評価確定する境界リークを除去する。
+def _purge_embargo(dates_before, dates_after, purge_days, embargo_days):
+    purged_before = (
+        dates_before[:-purge_days]
+        if purge_days > 0 and len(dates_before) > purge_days
+        else dates_before
+    )
+    embargoed_after = (
+        dates_after[embargo_days:]
+        if embargo_days > 0 and len(dates_after) > embargo_days
+        else dates_after
+    )
+    return purged_before, embargoed_after
+
+dev_dates, validation_dates_raw = _purge_embargo(
+    dev_dates_raw, validation_dates_raw, PURGE_DAYS, EMBARGO_DAYS
+)
+validation_dates, oos_dates = _purge_embargo(
+    validation_dates_raw, oos_dates, PURGE_DAYS, EMBARGO_DAYS
+)
+
+if not dev_dates or not validation_dates or not oos_dates:
+    raise RuntimeError("Purge/Embargo後にDEV/Validation/OOS期間が空です")
+
 phase_map = {d: "DEV" for d in dev_dates}
 phase_map.update({d: "VALIDATION" for d in validation_dates})
 phase_map.update({d: "OOS" for d in oos_dates})

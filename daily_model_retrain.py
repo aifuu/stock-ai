@@ -331,8 +331,12 @@ def main():
     oos_dates = [d for d in all_dates if pd.Timestamp(d) >= oos_cutoff]
     print(f"OOS区間: {oos_cutoff.date()} 〜 {last_date.date()}（{len(oos_dates)}営業日、学習からは完全除外）")
 
-    fit_rows = flatten_training_rows(ticker_frames, before_date=oos_cutoff)
-    print(f"学習データ行数(OOS区間を除く): {len(fit_rows):,}")
+    # ★修正(2026-08): target は shift(-HOLD_DAYS) で作っているため、
+    # OOS境界直前の学習行はラベル計算時にOOS価格を参照し得る。
+    # embargo として学習カットオフをHOLD_DAYS*2カレンダー日ぶん前倒しする。
+    train_cutoff = oos_cutoff - pd.Timedelta(days=HOLD_DAYS * 2)
+    fit_rows = flatten_training_rows(ticker_frames, before_date=train_cutoff)
+    print(f"学習データ行数(OOS区間+embargo{HOLD_DAYS}営業日相当分を除く): {len(fit_rows):,}")
 
     if len(fit_rows) < MIN_TRAIN_ROWS:
         msg = f"⚠ 学習データが{MIN_TRAIN_ROWS}行未満({len(fit_rows)}行)のため再学習を見送り"
@@ -350,8 +354,10 @@ def main():
     )
 
     if metrics["trades"] < MIN_OOS_TRADES:
-        deploy = True
-        reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・参考採用"
+        # ★修正(2026-08): 判定保留時はmodel.pklを差し替えず、
+        # 前回モデルをそのまま継続使用する（フェイルクローズ）。
+        deploy = False
+        reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・前回モデルを継続使用"
     elif metrics["pf"] >= MIN_OOS_PF and abs(metrics["max_dd_pct"]) <= MAX_OOS_DD_PCT:
         deploy = True
         reason = f"OOSゲート通過(PF={metrics['pf']:.2f}>={MIN_OOS_PF}, 最大DD={metrics['max_dd_pct']:.1f}%)"
