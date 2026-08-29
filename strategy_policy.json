@@ -1,0 +1,12 @@
+{
+  "status": "APPROVED",
+  "updated_at": "2026-08-29T00:00:00",
+  "up_threshold": 50,
+  "min_score_for_buy": 60,
+  "nikkei_filter": false,
+  "atr_tp_multiplier": 3.0,
+  "atr_sl_multiplier": 1.5,
+  "hold_days": 5,
+  "source": "bootstrap_default",
+  "strategy_name": "BOOTSTRAP_DEFAULT_PENDING_OPTIMIZER"
+}
