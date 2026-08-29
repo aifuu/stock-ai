@@ -15,7 +15,7 @@ concurrency:
 jobs:
   profit-loop-top10:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -35,6 +35,7 @@ jobs:
 
       - name: Syntax check
         run: |
+          python -m py_compile daily_model_retrain.py
           python -m py_compile walk_forward.py
           python -m py_compile adversarial_strategy_validator.py
           python -m py_compile build_strategy_policy.py
@@ -59,11 +60,25 @@ jobs:
           print('✅ 100銘柄・重複なし')
           PY
 
+      - name: Check required signing secret (manual run only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+        run: |
+          test -n "$AI_POLICY_SIGNING_SECRET" || { echo '❌ AI_POLICY_SIGNING_SECRET が未設定。安全のためフルパイプラインを開始しません'; exit 1; }
+          echo '✅ policy署名用Secret設定済み'
+
       - name: Full validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+          RETRAIN_HOLDOUT_DAYS: '90'
+          RETRAIN_MIN_OOS_TRADES: '15'
+          RETRAIN_MIN_OOS_PF: '1.0'
+          RETRAIN_MAX_OOS_DD_PCT: '30.0'
+          RETRAIN_MIN_ROWS: '3000'
+          RETRAIN_DOWNLOAD_SLEEP: '0.15'
           WF_TOP_N: '10'
           WF_N_ESTIMATORS: '300'
           WF_REFIT_EVERY_TRADING_DAYS: '20'
@@ -72,42 +87,26 @@ jobs:
           WF_MAX_OOS_DD: '35'
         run: |
           set -e
-          echo '===== 1/4 WALK-FORWARD ====='
+          echo '===== 1/5 DAILY MODEL RETRAIN ====='
+          python daily_model_retrain.py
+          echo '✅ モデル再学習ゲート完了（不合格時は前回modelを維持）'
+
+          echo '===== 2/5 WALK-FORWARD ====='
           python walk_forward.py
           test -s walk_forward_all_candidates.csv
           echo '✅ walk_forward_all_candidates.csv 生成済み'
 
-          echo '===== 2/4 ADVERSARIAL VALIDATION + MONTE CARLO ====='
+          echo '===== 3/5 ADVERSARIAL VALIDATION + MONTE CARLO ====='
           python adversarial_strategy_validator.py
           test -s adversarial_final_candidates.csv
           echo '✅ adversarial_final_candidates.csv 生成済み'
 
-          echo '===== 3/4 BUILD APPROVED POLICY ====='
+          echo '===== 4/5 BUILD APPROVED POLICY ====='
           python build_strategy_policy.py
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          p = json.loads(Path('strategy_policy.json').read_text(encoding='utf-8'))
-          required = [
-              'status','source','approval_signature_version','approval_signature',
-              'validation_pf','oos_pf','oos_validation_pf_ratio',
-              'mc_sizing','mc_10y_probability','mc_15y_probability',
-              'mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd'
-          ]
-          missing = [k for k in required if k not in p]
-          if missing:
-              raise SystemExit('❌ APPROVED policy不足: ' + ','.join(missing))
-          if str(p['status']).upper() != 'APPROVED':
-              raise SystemExit(f"❌ policyがAPPROVEDではありません: {p['status']}")
-          if p.get('source') != 'adversarial_strategy_validator':
-              raise SystemExit(f"❌ policy source不正: {p.get('source')}")
-          if not p.get('approval_signature'):
-              raise SystemExit('❌ policy承認署名がありません')
-          print('✅ 検証済みAPPROVED policy生成成功')
-          print(json.dumps({k: p[k] for k in required if k in p}, ensure_ascii=False, indent=2))
-          PY
+          test -s strategy_policy.json
+          echo '✅ 検証済みpolicy生成処理完了'
 
-          echo '===== 4/4 TOP10 PAPER TRADE ====='
+          echo '===== 5/5 POLICY VERIFY + TOP10 PAPER TRADE ====='
 
       - name: Verify policy before TOP10
         env:
@@ -125,9 +124,11 @@ jobs:
               raise SystemExit(f"❌ policyがAPPROVEDではありません: {p.get('status')}")
           if p.get('source') != 'adversarial_strategy_validator':
               raise SystemExit('❌ 検証パイプライン由来ではないpolicyです')
+          if int(p.get('approval_signature_version', 0)) != 1:
+              raise SystemExit('❌ policy承認署名バージョンが不正です')
           secret = os.getenv('AI_POLICY_SIGNING_SECRET', '').strip()
           if not secret:
-              raise SystemExit('❌ AI_POLICY_SIGNING_SECRET 未設定。安全のため新規取引を停止します')
+              raise SystemExit('❌ AI_POLICY_SIGNING_SECRET 未設定。安全のため停止します')
           keys = [
               'status','updated_at','up_threshold','min_score_for_buy','nikkei_filter',
               'atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals',
@@ -142,7 +143,7 @@ jobs:
           expected = hmac.new(secret.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
           if not hmac.compare_digest(str(p.get('approval_signature','')), expected):
               raise SystemExit('❌ policy署名不一致。手動変更または検証証跡破損を検知')
-          print('✅ policy署名検証OK → TOP10実行可能')
+          print('✅ policy検証OK → TOP10実行可能')
           PY
 
       - name: Run unified Profit Loop TOP10
@@ -198,7 +199,7 @@ jobs:
           echo '❌ TOP10 paper ledger push失敗'
           exit 1
 
-      - name: Upload profit loop artifacts
+      - name: Upload full pipeline artifacts
         uses: actions/upload-artifact@v4
         with:
           name: profit-loop-top10-${{ github.run_id }}
@@ -209,7 +210,9 @@ jobs:
             adversarial_validation_results.csv
             adversarial_oos_results.csv
             adversarial_final_candidates.csv
+            strategy_policy.json
+            daily_retrain_report.csv
+            trade_feedback_report.csv
             profit_top10_paper_state.json
             profit_top10_paper_history.csv
             profit_top10_monthly_performance.csv
-            strategy_policy.json
