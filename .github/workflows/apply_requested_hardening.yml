@@ -1,10 +1,9 @@
 name: Apply requested hardening
 
+# ★修正(2026-08): 意図した変更は既に反映済みのため、push契機で
+# 待ち構えておく必要が無い。手動実行のみに変更する。
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '.github/workflows/apply_requested_hardening.yml'
+  workflow_dispatch: {}
 
 permissions:
   contents: write
