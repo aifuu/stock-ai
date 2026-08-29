@@ -1,0 +1,90 @@
+name: Repair adversarial gates
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  repair:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply safety fixes
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          root = Path('.')
+
+          # 1) build_strategy_policy.py: Monte Carlo must be fail-closed.
+          p = root / 'build_strategy_policy.py'
+          s = p.read_text(encoding='utf-8')
+          old = '''mc_columns_exist = all(col in df.columns for col in mc_columns)\nif not mc_columns_exist:\n    print("⚠ Monte Carlo列がありません")\n    print("Monte Carlo条件なしでは自動採用しません")'''
+          new = '''mc_columns_exist = all(col in df.columns for col in mc_columns)\nif not mc_columns_exist:\n    keep_existing_policy(\n        "Monte Carlo列がありません。破産確率/P90 DD/到達確率を検証できないため自動採用を停止"\n    )'''
+          if old not in s:
+              raise SystemExit('build_strategy_policy.py: MC block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+
+          # 2) risk_manager.py: default simultaneous positions = 3.
+          p = root / 'risk_manager.py'
+          s = p.read_text(encoding='utf-8')
+          s2 = s.replace('MAX_POSITIONS = int(os.getenv("AI_MAX_POSITIONS", "20"))',
+                         'MAX_POSITIONS = int(os.getenv("AI_MAX_POSITIONS", "3"))', 1)
+          if s2 == s:
+              raise SystemExit('risk_manager.py: MAX_POSITIONS line not found')
+          p.write_text(s2, encoding='utf-8')
+
+          # 3) strategy_policy.json: bootstrap is not approved.
+          p = root / 'strategy_policy.json'
+          policy = json.loads(p.read_text(encoding='utf-8'))
+          if policy.get('source') == 'bootstrap_default' and policy.get('strategy_name') == 'BOOTSTRAP_DEFAULT_PENDING_OPTIMIZER':
+              policy['status'] = 'PENDING'
+          p.write_text(json.dumps(policy, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          # 4) adversarial_pretty_runner.py: update stale labels without breaking its wrapper.
+          p = root / 'adversarial_pretty_runner.py'
+          s = p.read_text(encoding='utf-8')
+          replacements = {
+              '("🛡️ ADVERSARIAL STRATEGY VALIDATOR", "🛡️ AI戦略｜敵対的検証レポート"),':
+                  '("🛡️ AI PROFIT OPTIMIZER", "🛡️ AI戦略｜敵対的利益最適化レポート"),',
+              '("N_eff近似:", "実質的な独立戦略数："),':
+                  '("N_eff:", "実質的な独立戦略数："),',
+              '("Validation HOLD:", "検証保留："),':
+                  '("Validation HOLD:", "検証保留："),',
+          }
+          for old, new in replacements.items():
+              if old in s:
+                  s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Commit safety fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add build_strategy_policy.py risk_manager.py strategy_policy.json adversarial_pretty_runner.py
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "fix: fail closed Monte Carlo gate and align risk policy"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Syntax check repaired files
+        run: |
+          python -m py_compile build_strategy_policy.py risk_manager.py adversarial_pretty_runner.py
