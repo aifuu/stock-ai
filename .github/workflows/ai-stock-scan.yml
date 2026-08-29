@@ -34,6 +34,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
+      - name: Repair known syntax corruption before validation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('daily_directional_top1.py')
+          s = p.read_text(encoding='utf-8')
+          bad = 'state["max_dd"]=max(state.get("max_dd",0),((state["peak"]-state["capital"])/state["peak"]*100 if state["peak"] else 0); append_history'
+          good = 'state["max_dd"]=max(state.get("max_dd",0),((state["peak"]-state["capital"])/state["peak"]*100 if state["peak"] else 0)); append_history'
+          if bad in s:
+              p.write_text(s.replace(bad, good, 1), encoding='utf-8')
+              print('✅ known daily_directional_top1.py syntax corruption repaired')
+          else:
+              print('ℹ️ known syntax corruption not present')
+          PY
+
       - name: Syntax check
         run: |
           python -m py_compile daily_directional_top1.py
@@ -76,26 +91,26 @@ jobs:
           print(f"✅ ポジション: {s.get('position')}")
           PY
 
-      - name: Commit paper state safely
+      - name: Commit paper state and repaired source safely
         if: always()
         run: |
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add directional_paper_state.json directional_paper_history.csv directional_monthly_performance.csv 2>/dev/null || true
+          git add daily_directional_top1.py directional_paper_state.json directional_paper_history.csv directional_monthly_performance.csv 2>/dev/null || true
           git add -u
           git diff --cached --quiet && exit 0
-          git commit -m 'chore: update unified 5m TOP1 paper state [skip ci]'
+          git commit -m 'chore: repair TOP1 paper trader syntax [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
-              echo '✅ unified TOP1 state push成功'
+              echo '✅ unified TOP1 state/source push成功'
               exit 0
             fi
             git rebase --abort || true
             sleep $((i * 3))
           done
-          echo '❌ unified TOP1 state push失敗'
+          echo '❌ unified TOP1 state/source push失敗'
           exit 1
 
       - name: Upload paper artifacts
