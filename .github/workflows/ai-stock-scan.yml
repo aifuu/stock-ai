@@ -87,26 +87,24 @@ jobs:
           WF_MAX_OOS_DD: '35'
         run: |
           set -e
-          echo '===== 1/5 DAILY MODEL RETRAIN ====='
+          echo '===== 1/4 DAILY MODEL RETRAIN ====='
           python daily_model_retrain.py
           echo '✅ モデル再学習ゲート完了（不合格時は前回modelを維持）'
 
-          echo '===== 2/5 WALK-FORWARD ====='
+          echo '===== 2/4 WALK-FORWARD ====='
           python walk_forward.py
           test -s walk_forward_all_candidates.csv
           echo '✅ walk_forward_all_candidates.csv 生成済み'
 
-          echo '===== 3/5 ADVERSARIAL VALIDATION + MONTE CARLO ====='
+          echo '===== 3/4 ADVERSARIAL VALIDATION + MONTE CARLO ====='
           python adversarial_strategy_validator.py
           test -s adversarial_final_candidates.csv
           echo '✅ adversarial_final_candidates.csv 生成済み'
 
-          echo '===== 4/5 BUILD APPROVED POLICY ====='
+          echo '===== 4/4 BUILD VERIFIED POLICY ====='
           python build_strategy_policy.py
           test -s strategy_policy.json
-          echo '✅ 検証済みpolicy生成処理完了'
-
-          echo '===== 5/5 POLICY VERIFY + TOP10 PAPER TRADE ====='
+          echo '✅ 検証済みpolicy生成完了'
 
       - name: Verify policy before TOP10
         env:
@@ -172,31 +170,33 @@ jobs:
               print('✅ 月間損益台帳: profit_top10_monthly_performance.csv')
           PY
 
-      - name: Commit paper ledger safely
-        if: always()
+      - name: Persist validated policy and paper ledger
+        if: github.event_name == 'workflow_dispatch' || success()
         run: |
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # 手動フルパイプラインで生成した検証済みpolicyは保存する。
+          # ソースコードはこのworkflowから変更しない。
+          git add strategy_policy.json 2>/dev/null || true
           git add profit_top10_paper_state.json 2>/dev/null || true
           git add profit_top10_paper_history.csv 2>/dev/null || true
           git add profit_top10_monthly_performance.csv 2>/dev/null || true
-          git add -u
           if git diff --cached --quiet; then
             echo 'ℹ️ commit対象の変更なし'
             exit 0
           fi
-          git commit -m 'chore: update TOP10 profit loop paper ledger [skip ci]'
+          git commit -m 'chore: persist verified policy and TOP10 paper ledger [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
-              echo '✅ TOP10 paper ledger push成功'
+              echo '✅ verified policy / TOP10 ledger push成功'
               exit 0
             fi
             git rebase --abort || true
             sleep $((i * 3))
           done
-          echo '❌ TOP10 paper ledger push失敗'
+          echo '❌ push失敗'
           exit 1
 
       - name: Upload full pipeline artifacts
