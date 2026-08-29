@@ -137,9 +137,16 @@ jobs:
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add daily_directional_top1.py directional_paper_state.json directional_paper_history.csv directional_monthly_performance.csv 2>/dev/null || true
+          # 2026-08 修正: ファイルごとに個別addし、存在するstate/historyだけ確実にstageする
+          git add daily_directional_top1.py 2>/dev/null || true
+          git add directional_paper_state.json 2>/dev/null || true
+          git add directional_paper_history.csv 2>/dev/null || true
+          git add directional_monthly_performance.csv 2>/dev/null || true
           git add -u
-          git diff --cached --quiet && exit 0
+          if git diff --cached --quiet; then
+            echo 'ℹ️ commit対象の変更なし'
+            exit 0
+          fi
           git commit -m 'chore: repair TOP1 paper trader syntax [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
