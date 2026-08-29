@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 import os
 from datetime import datetime, time as dtime
@@ -53,6 +55,37 @@ def discord_send(message, required=False):
         return False
 
 
+def _canonical_policy_payload(policy):
+    covered = {k: policy.get(k) for k in (
+        "status", "updated_at", "up_threshold", "min_score_for_buy",
+        "nikkei_filter", "atr_tp_multiplier", "atr_sl_multiplier", "hold_days",
+        "validation_signals", "validation_win_rate", "validation_avg_return",
+        "validation_pf", "validation_dd", "oos_signals", "oos_win_rate",
+        "oos_avg_return", "oos_pf", "oos_dd", "oos_validation_pf_ratio",
+        "mc_sizing", "mc_10y_probability", "mc_15y_probability",
+        "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",
+        "strategy_name", "source",
+    )}
+    return json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _verify_policy_signature(policy):
+    secret = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()
+    if not secret:
+        raise RuntimeError("AI_POLICY_SIGNING_SECRET が未設定です。承認済みpolicyを検証できないため新規取引を停止します。")
+    if str(policy.get("source", "")) != "adversarial_strategy_validator":
+        raise RuntimeError("strategy_policy.json のsourceが検証パイプラインではありません。手動policyは無効です。")
+    if int(policy.get("approval_signature_version", 0)) != 1:
+        raise RuntimeError("strategy_policy.json の承認署名バージョンが不正です。")
+    supplied = str(policy.get("approval_signature", ""))
+    if not supplied:
+        raise RuntimeError("strategy_policy.json に承認署名がありません。手動承認は無効です。")
+    covered = _canonical_policy_payload(policy)
+    expected = hmac.new(secret.encode("utf-8"), covered.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(supplied, expected):
+        raise RuntimeError("strategy_policy.json の承認署名が一致しません。手動変更または検証証跡の破損を検知したため新規取引を停止します。")
+
+
 def load_policy():
     if not os.path.exists(POLICY_FILE):
         raise RuntimeError("strategy_policy.json がありません。先にProfit Optimizerを実行してください。")
@@ -64,6 +97,7 @@ def load_policy():
         raise RuntimeError("strategy_policy.json の不足項目: " + ", ".join(missing))
     if str(p.get("status", "")).upper() != "APPROVED":
         raise RuntimeError(f"strategy_policy.json がAPPROVEDではありません: status={p.get('status')}。安全のため新規取引を停止します。")
+    _verify_policy_signature(p)
     p["up_threshold"] = float(p["up_threshold"])
     p["min_score_for_buy"] = float(p["min_score_for_buy"])
     p["nikkei_filter"] = str(p["nikkei_filter"]).lower() in ("true", "1", "yes", "on")

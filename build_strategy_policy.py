@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 import os
 from datetime import datetime
@@ -82,6 +84,33 @@ def keep_existing_policy(reason):
     print("strategy_policy.jsonは変更しません")
     raise SystemExit(0)
 
+
+def canonical_policy_payload(policy):
+    """Return the exact policy fields covered by the approval signature."""
+    covered = {k: policy.get(k) for k in (
+        "status", "updated_at", "up_threshold", "min_score_for_buy",
+        "nikkei_filter", "atr_tp_multiplier", "atr_sl_multiplier", "hold_days",
+        "validation_signals", "validation_win_rate", "validation_avg_return",
+        "validation_pf", "validation_dd", "oos_signals", "oos_win_rate",
+        "oos_avg_return", "oos_pf", "oos_dd", "oos_validation_pf_ratio",
+        "mc_sizing", "mc_10y_probability", "mc_15y_probability",
+        "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",
+        "strategy_name", "source",
+    )}
+    return json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def policy_signature(policy, secret):
+    return hmac.new(
+        secret.encode("utf-8"),
+        canonical_policy_payload(policy).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+POLICY_SIGNING_SECRET = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()
+if not POLICY_SIGNING_SECRET:
+    keep_existing_policy("AI_POLICY_SIGNING_SECRET が未設定のため、安全のためAPPROVED policyを生成しません")
 
 # =========================================================
 # 入力CSV確認
@@ -203,7 +232,9 @@ new_policy = {
     "mc_p90_max_dd": safe_float(best["p90_max_dd"]) if mc_columns_exist else old_policy.get("mc_p90_max_dd", 0.0),
     "strategy_name": str(best.get("strategy", "")),
     "source": "adversarial_strategy_validator",
+    "approval_signature_version": 1,
 }
+new_policy["approval_signature"] = policy_signature(new_policy, POLICY_SIGNING_SECRET)
 
 try:
     with open(POLICY_FILE, "w", encoding="utf-8") as f:
