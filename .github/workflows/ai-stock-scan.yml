@@ -78,6 +78,46 @@ jobs:
           INTRADAY_FEE_RATE: '0.00055'
         run: python intraday_directional_top1_cycle.py
 
+      # workflow_dispatch is often used for debugging on weekends. The actual
+      # 5-minute paper trader correctly does nothing on Saturday/Sunday, so
+      # send a dedicated webhook test instead of falsely claiming a TOP1 trade.
+      - name: Discord webhook test for manual weekend runs
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          webhook = os.getenv('DISCORD_WEBHOOK')
+          if not webhook:
+              raise SystemExit('❌ DISCORD_WEBHOOK が未設定です')
+
+          now = datetime.now(ZoneInfo('Asia/Tokyo'))
+          if now.weekday() >= 5:
+              msg = (
+                  '🔔 AI Stock Scan｜Discord接続テスト\n'
+                  f'📅 {now:%Y-%m-%d %H:%M JST}\n'
+                  '⚠️ 本日は土日なので5分足ペーパートレードは実売買処理を行っていません。\n'
+                  '✅ GitHub Actions → Discord Webhook はこの通知で確認できます。'
+              )
+          else:
+              msg = (
+                  '🔔 AI Stock Scan｜手動実行確認\n'
+                  f'📅 {now:%Y-%m-%d %H:%M JST}\n'
+                  '5分足TOP1サイクルの手動実行を確認しました。'
+              )
+
+          r = requests.post(webhook, json={'content': msg}, timeout=15)
+          print(f'Discord HTTP status: {r.status_code}')
+          if not 200 <= r.status_code < 300:
+              raise SystemExit(f'❌ Discord送信失敗: HTTP {r.status_code} {r.text[:300]}')
+          print('✅ Discord webhook test sent successfully')
+          PY
+
       - name: Verify paper state
         run: |
           test -s directional_paper_state.json
