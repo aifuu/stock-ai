@@ -419,6 +419,7 @@ if not validation_summary.empty:
         & (validation_summary.validation_dd >= -MAX_VALIDATION_DD)
         & (validation_summary.validation_annual_signals >= MIN_ANNUAL_SIGNALS)
         & (validation_summary.validation_monthly_positive_ratio >= MIN_MONTHLY_POSITIVE_RATIO * 100)
+        & (validation_summary.validation_avg_lower > 0)
     )
 else:
     validation_summary["validation_pass"] = False
