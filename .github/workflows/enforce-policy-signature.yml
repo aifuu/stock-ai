@@ -1,10 +1,11 @@
 name: Enforce policy approval signature
 
+# ★修正(2026-08): HMAC署名検証は既にbuild_strategy_policy.py /
+# profit_top10_paper.pyに実装済み。push契機で待ち構えておく必要が無い。
+# 恒久的には「署名検証コードが欠落していたらCIを失敗させるだけ(自動
+# パッチはしない)」チェック専用ワークフローへの置き換えを推奨。
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '.github/workflows/enforce-policy-signature.yml'
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -44,7 +45,6 @@ jobs:
                   raise SystemExit('build_strategy_policy.py: keep_existing_policy marker not found')
               s = s.replace(marker, marker + helper, 1)
 
-          # Require signing secret before any APPROVED policy can be generated.
           secret_block = '''POLICY_SIGNING_SECRET = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()\nif not POLICY_SIGNING_SECRET:\n    keep_existing_policy("AI_POLICY_SIGNING_SECRET が未設定のため、安全のためAPPROVED policyを生成しません")\n'''
           if 'POLICY_SIGNING_SECRET = os.getenv("AI_POLICY_SIGNING_SECRET"' not in s:
               insert_at = '# =========================================================\n# 入力CSV確認\n# =========================================================\n'
@@ -52,7 +52,6 @@ jobs:
                   raise SystemExit('build_strategy_policy.py: input marker not found')
               s = s.replace(insert_at, secret_block + '\n' + insert_at, 1)
 
-          # Add signature fields to the policy before writing.
           old_write = '''    "strategy_name": str(best.get("strategy", "")),\n    "source": "adversarial_strategy_validator",\n}\n'''
           new_write = '''    "strategy_name": str(best.get("strategy", "")),\n    "source": "adversarial_strategy_validator",\n    "approval_signature_version": 1,\n}\nnew_policy["approval_signature"] = policy_signature(new_policy, POLICY_SIGNING_SECRET)\n'''
           if old_write not in s:
@@ -85,7 +84,6 @@ jobs:
 
           # -----------------------------------------------------------------
           # 3) daily directional consumer: protect the other execution path too.
-          #    Any consumer that trusts status alone must not bypass the proof.
           # -----------------------------------------------------------------
           p = Path('daily_directional_top1.py')
           if p.exists():
@@ -95,9 +93,8 @@ jobs:
                   marker = 'POLICY_FILE = "strategy_policy.json"\n'
                   if marker in s:
                       s = s.replace(marker, marker + '''\n\ndef _verify_policy_signature(policy):\n    secret = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()\n    if not secret:\n        raise RuntimeError("AI_POLICY_SIGNING_SECRET が未設定です。承認policyを検証できないため停止します。")\n    if str(policy.get("source", "")) != "adversarial_strategy_validator" or int(policy.get("approval_signature_version", 0)) != 1:\n        raise RuntimeError("検証パイプライン由来の承認証跡がありません。")\n    covered_keys = [\n        "status", "updated_at", "up_threshold", "min_score_for_buy", "nikkei_filter",\n        "atr_tp_multiplier", "atr_sl_multiplier", "hold_days", "validation_signals",\n        "validation_win_rate", "validation_avg_return", "validation_pf", "validation_dd",\n        "oos_signals", "oos_win_rate", "oos_avg_return", "oos_pf", "oos_dd",\n        "oos_validation_pf_ratio", "mc_sizing", "mc_10y_probability", "mc_15y_probability",\n        "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",\n        "strategy_name", "source",\n    ]\n    covered = {k: policy.get(k) for k in covered_keys}\n    payload = json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))\n    expected = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()\n    supplied = str(policy.get("approval_signature", ""))\n    if not supplied or not hmac.compare_digest(supplied, expected):\n        raise RuntimeError("strategy_policy.json の承認署名が一致しません。手動変更を検知したため停止します。")\n\n''', 1)
-              # Inject call immediately after policy JSON is loaded where possible.
               pattern = r'(with open\(POLICY_FILE, encoding="utf-8"\) as f:\n\s+p = json\.load\(f\)\n)'
-              s, n = re.subn(pattern, r'\1    _verify_policy_signature(p)\n', s, count=1)
+              s, _ = re.subn(pattern, r'\1    _verify_policy_signature(p)\n', s, count=1)
               p.write_text(s, encoding='utf-8')
           PY
 
