@@ -1,0 +1,105 @@
+name: AI Profit Optimizer - OOS Monthly Profit
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 毎週土曜 JST 18:00（UTC 09:00）に戦略再検証
+    - cron: '0 9 * * 6'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-ai-profit-optimizer
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Syntax check
+        run: |
+          python -m py_compile adversarial_strategy_validator.py
+          python -m py_compile build_profit_policy.py
+
+      - name: Run OOS profit optimizer
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          WF_TOP_N: '10'
+          WF_INITIAL_CAPITAL: '1000000'
+          WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
+          WF_MAX_OOS_DD: '35'
+        run: python adversarial_strategy_validator.py
+
+      - name: Build profit-first policy
+        run: python build_profit_policy.py
+
+      - name: Show selected policy
+        run: |
+          python - <<'PY'
+          import json
+          with open('strategy_policy.json', encoding='utf-8') as f:
+              p = json.load(f)
+          print('===== PROFIT-FIRST POLICY =====')
+          print('strategy:', p.get('strategy_name'))
+          print('monthly positive:', p.get('oos_monthly_positive_ratio'), '%')
+          print('OOS compound:', p.get('oos_compound_return'), '%')
+          print('OOS final capital:', p.get('oos_compound_final_capital'))
+          print('expected value:', p.get('oos_expected_value'), '%')
+          print('PF:', p.get('oos_pf'))
+          print('max DD:', p.get('oos_dd'), '%')
+          print('win rate (reference):', p.get('oos_win_rate'), '%')
+          PY
+
+      - name: Commit profit optimizer outputs
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv
+          git add -u
+          if git diff --cached --quiet; then
+            echo '変更なし'
+            exit 0
+          fi
+          git commit -m 'chore: optimize strategy for monthly profit and OOS compound growth [skip ci]'
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo '✅ profit optimizer outputs pushed'
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((i * 3))
+          done
+          echo '❌ push failed'
+          exit 1
+
+      - name: Upload optimizer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: profit-optimizer-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            adversarial_dev_all_results.csv
+            adversarial_dev_selected_candidates.csv
+            adversarial_validation_results.csv
+            adversarial_oos_results.csv
+            adversarial_final_candidates.csv
+            strategy_policy.json
