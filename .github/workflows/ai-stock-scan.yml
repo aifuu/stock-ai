@@ -15,7 +15,7 @@ concurrency:
 jobs:
   profit-loop-top10:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -33,8 +33,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
-      - name: Syntax check unified profit loop
+      - name: Syntax check
         run: |
+          python -m py_compile walk_forward.py
+          python -m py_compile adversarial_strategy_validator.py
+          python -m py_compile build_strategy_policy.py
           python -m py_compile daily_directional_top1.py
           python -m py_compile profit_top10_paper.py
           python -m py_compile intraday_directional_top1_cycle.py
@@ -56,28 +59,96 @@ jobs:
           print('✅ 100銘柄・重複なし')
           PY
 
-      - name: Verify optimizer policy is connected
+      - name: Full validation pipeline (manual run only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+          WF_TOP_N: '10'
+          WF_N_ESTIMATORS: '300'
+          WF_REFIT_EVERY_TRADING_DAYS: '20'
+          WF_INITIAL_CAPITAL: '1000000'
+          WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
+          WF_MAX_OOS_DD: '35'
         run: |
+          set -e
+          echo '===== 1/4 WALK-FORWARD ====='
+          python walk_forward.py
+          test -s walk_forward_all_candidates.csv
+          echo '✅ walk_forward_all_candidates.csv 生成済み'
+
+          echo '===== 2/4 ADVERSARIAL VALIDATION + MONTE CARLO ====='
+          python adversarial_strategy_validator.py
+          test -s adversarial_final_candidates.csv
+          echo '✅ adversarial_final_candidates.csv 生成済み'
+
+          echo '===== 3/4 BUILD APPROVED POLICY ====='
+          python build_strategy_policy.py
           python - <<'PY'
           import json
           from pathlib import Path
-          p = Path('strategy_policy.json')
-          if not p.exists():
-              raise SystemExit('❌ strategy_policy.json がありません。Profit Optimizerを先に実行してください。')
-          policy = json.loads(p.read_text(encoding='utf-8'))
-          required = ['status','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days']
-          missing = [x for x in required if x not in policy]
+          p = json.loads(Path('strategy_policy.json').read_text(encoding='utf-8'))
+          required = [
+              'status','source','approval_signature_version','approval_signature',
+              'validation_pf','oos_pf','oos_validation_pf_ratio',
+              'mc_sizing','mc_10y_probability','mc_15y_probability',
+              'mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd'
+          ]
+          missing = [k for k in required if k not in p]
           if missing:
-              raise SystemExit('❌ policy不足: ' + ','.join(missing))
-          if str(policy.get('status','')).upper() != 'APPROVED':
-              raise SystemExit(f"❌ policyがAPPROVEDではありません: {policy.get('status')}")
-          print('✅ Optimizer → strategy_policy.json → TOP10 が接続可能')
-          print(json.dumps({k: policy[k] for k in required}, ensure_ascii=False, indent=2))
+              raise SystemExit('❌ APPROVED policy不足: ' + ','.join(missing))
+          if str(p['status']).upper() != 'APPROVED':
+              raise SystemExit(f"❌ policyがAPPROVEDではありません: {p['status']}")
+          if p.get('source') != 'adversarial_strategy_validator':
+              raise SystemExit(f"❌ policy source不正: {p.get('source')}")
+          if not p.get('approval_signature'):
+              raise SystemExit('❌ policy承認署名がありません')
+          print('✅ 検証済みAPPROVED policy生成成功')
+          print(json.dumps({k: p[k] for k in required if k in p}, ensure_ascii=False, indent=2))
+          PY
+
+          echo '===== 4/4 TOP10 PAPER TRADE ====='
+
+      - name: Verify policy before TOP10
+        env:
+          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import hmac
+          import json
+          import os
+          from pathlib import Path
+
+          p = json.loads(Path('strategy_policy.json').read_text(encoding='utf-8'))
+          if str(p.get('status', '')).upper() != 'APPROVED':
+              raise SystemExit(f"❌ policyがAPPROVEDではありません: {p.get('status')}")
+          if p.get('source') != 'adversarial_strategy_validator':
+              raise SystemExit('❌ 検証パイプライン由来ではないpolicyです')
+          secret = os.getenv('AI_POLICY_SIGNING_SECRET', '').strip()
+          if not secret:
+              raise SystemExit('❌ AI_POLICY_SIGNING_SECRET 未設定。安全のため新規取引を停止します')
+          keys = [
+              'status','updated_at','up_threshold','min_score_for_buy','nikkei_filter',
+              'atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals',
+              'validation_win_rate','validation_avg_return','validation_pf','validation_dd',
+              'oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd',
+              'oos_validation_pf_ratio','mc_sizing','mc_10y_probability',
+              'mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability',
+              'mc_p90_max_dd','strategy_name','source'
+          ]
+          covered = {k: p.get(k) for k in keys}
+          payload = json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+          expected = hmac.new(secret.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
+          if not hmac.compare_digest(str(p.get('approval_signature','')), expected):
+              raise SystemExit('❌ policy署名不一致。手動変更または検証証跡破損を検知')
+          print('✅ policy署名検証OK → TOP10実行可能')
           PY
 
       - name: Run unified Profit Loop TOP10
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
         run: python profit_top10_paper.py
@@ -133,6 +204,11 @@ jobs:
           name: profit-loop-top10-${{ github.run_id }}
           if-no-files-found: warn
           path: |
+            walk_forward_all_candidates.csv
+            adversarial_dev_all_results.csv
+            adversarial_validation_results.csv
+            adversarial_oos_results.csv
+            adversarial_final_candidates.csv
             profit_top10_paper_state.json
             profit_top10_paper_history.csv
             profit_top10_monthly_performance.csv
