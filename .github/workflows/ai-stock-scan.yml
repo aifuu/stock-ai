@@ -8,8 +8,10 @@ on:
 permissions:
   contents: write
 
+# All workflows that write to main use the same lock so daily state,
+# ticker synchronization, and other writers cannot race each other.
 concurrency:
-  group: ai-stock-daily-top1
+  group: stock-ai-main-writer
   cancel-in-progress: false
 
 jobs:
@@ -78,18 +80,11 @@ jobs:
           git config user.email 'github-actions@github.com'
           git add daily_directional_top1.py directional_paper_state.json directional_paper_history.csv directional_monthly_performance.csv model.pkl 2>/dev/null || true
           git add -u
-          git commit -m 'Update daily directional TOP1 paper trade' || echo 'No state changes to commit'
-          for i in 1 2 3 4 5; do
-            git fetch origin main
-            git rebase origin/main
-            if git push origin HEAD:main; then
-              echo '✅ daily TOP1 push成功'
-              exit 0
-            fi
-            echo "⚠️ push競合、再試行: $i/5"
-            sleep $((i * 3))
-          done
-          exit 1
+          git commit -m 'Update daily directional TOP1 paper trade [skip ci]' || echo 'No state changes to commit'
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
+          echo '✅ daily TOP1 push成功'
 
       - name: Upload daily paper-trade artifacts
         uses: actions/upload-artifact@v4
