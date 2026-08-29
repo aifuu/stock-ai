@@ -9,8 +9,10 @@ on:
 permissions:
   contents: write
 
+# 売買サイクルと同じmain writerグループに統一して、
+# model/train/paper-stateのpush競合を防止する。
 concurrency:
-  group: stock-ai-daily-retrain
+  group: stock-ai-main-writer
   cancel-in-progress: false
 
 jobs:
@@ -43,8 +45,10 @@ jobs:
       - name: Run daily model retraining
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          RETRAIN_HOLDOUT_DAYS: '60'
-          RETRAIN_MAX_ACC_DROP: '5.0'
+          RETRAIN_HOLDOUT_DAYS: '90'
+          RETRAIN_MIN_OOS_TRADES: '15'
+          RETRAIN_MIN_OOS_PF: '1.0'
+          RETRAIN_MAX_OOS_DD_PCT: '30.0'
           RETRAIN_MIN_ROWS: '3000'
           RETRAIN_DOWNLOAD_SLEEP: '0.15'
         run: python daily_model_retrain.py
@@ -68,7 +72,16 @@ jobs:
               print(f'✅ model.pkl classes: {getattr(model, "classes_", "unknown")}')
           else:
               print('🟡 model.pklは今回差し替えなし')
+          
+          if os.path.exists('model_prev.pkl'):
+              print('⚠ model_prev.pkl detected: temporary backup will be removed before commit')
           PY
+
+      - name: Remove temporary previous model backup
+        if: always()
+        run: |
+          rm -f model_prev.pkl
+          echo '✅ 一時退避model_prev.pklを削除（Git/Artifactには残さない）'
 
       - name: Commit retraining artifacts safely
         if: always()
@@ -76,7 +89,8 @@ jobs:
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add model.pkl model_prev.pkl train_data.csv daily_retrain_report.csv 2>/dev/null || true
+          # model_prev.pklは一時ファイルなので絶対にコミットしない。
+          git add model.pkl train_data.csv daily_retrain_report.csv 2>/dev/null || true
           git add -u
           git diff --cached --quiet && exit 0
           git commit -m 'chore: daily model retrain [skip ci]'
@@ -99,6 +113,5 @@ jobs:
           if-no-files-found: warn
           path: |
             model.pkl
-            model_prev.pkl
             train_data.csv
             daily_retrain_report.csv
