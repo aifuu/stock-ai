@@ -1,0 +1,118 @@
+name: Enforce policy approval signature
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/workflows/enforce-policy-signature.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Harden policy approval
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          # -----------------------------------------------------------------
+          # 1) build_strategy_policy.py
+          #    APPROVED policy must carry an HMAC signature generated from the
+          #    verification evidence. Missing signing secret => fail closed.
+          # -----------------------------------------------------------------
+          p = Path('build_strategy_policy.py')
+          s = p.read_text(encoding='utf-8')
+
+          s = s.replace('import json\nimport os\n', 'import hashlib\nimport hmac\nimport json\nimport os\n', 1)
+
+          marker = '''def keep_existing_policy(reason):\n    print("")\n    print("🟡", reason)\n    print("strategy_policy.jsonは変更しません")\n    raise SystemExit(0)\n'''
+          helper = '''\n\ndef canonical_policy_payload(policy):\n    """Return the exact policy fields covered by the approval signature."""\n    covered = {k: policy.get(k) for k in (\n        "status", "updated_at", "up_threshold", "min_score_for_buy",\n        "nikkei_filter", "atr_tp_multiplier", "atr_sl_multiplier", "hold_days",\n        "validation_signals", "validation_win_rate", "validation_avg_return",\n        "validation_pf", "validation_dd", "oos_signals", "oos_win_rate",\n        "oos_avg_return", "oos_pf", "oos_dd", "oos_validation_pf_ratio",\n        "mc_sizing", "mc_10y_probability", "mc_15y_probability",\n        "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",\n        "strategy_name", "source",\n    )}\n    return json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))\n\n\ndef policy_signature(policy, secret):\n    return hmac.new(\n        secret.encode("utf-8"),\n        canonical_policy_payload(policy).encode("utf-8"),\n        hashlib.sha256,\n    ).hexdigest()\n'''
+          if 'def canonical_policy_payload(policy):' not in s:
+              if marker not in s:
+                  raise SystemExit('build_strategy_policy.py: keep_existing_policy marker not found')
+              s = s.replace(marker, marker + helper, 1)
+
+          # Require signing secret before any APPROVED policy can be generated.
+          secret_block = '''POLICY_SIGNING_SECRET = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()\nif not POLICY_SIGNING_SECRET:\n    keep_existing_policy("AI_POLICY_SIGNING_SECRET が未設定のため、安全のためAPPROVED policyを生成しません")\n'''
+          if 'POLICY_SIGNING_SECRET = os.getenv("AI_POLICY_SIGNING_SECRET"' not in s:
+              insert_at = '# =========================================================\n# 入力CSV確認\n# =========================================================\n'
+              if insert_at not in s:
+                  raise SystemExit('build_strategy_policy.py: input marker not found')
+              s = s.replace(insert_at, secret_block + '\n' + insert_at, 1)
+
+          # Add signature fields to the policy before writing.
+          old_write = '''    "strategy_name": str(best.get("strategy", "")),\n    "source": "adversarial_strategy_validator",\n}\n'''
+          new_write = '''    "strategy_name": str(best.get("strategy", "")),\n    "source": "adversarial_strategy_validator",\n    "approval_signature_version": 1,\n}\nnew_policy["approval_signature"] = policy_signature(new_policy, POLICY_SIGNING_SECRET)\n'''
+          if old_write not in s:
+              raise SystemExit('build_strategy_policy.py: new_policy tail not found')
+          s = s.replace(old_write, new_write, 1)
+          p.write_text(s, encoding='utf-8')
+
+          # -----------------------------------------------------------------
+          # 2) profit_top10_paper.py
+          #    APPROVED alone is insufficient. Verify source + HMAC + required
+          #    evidence before any scan/open-position path is reached.
+          # -----------------------------------------------------------------
+          p = Path('profit_top10_paper.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('import json\nimport os\n', 'import hashlib\nimport hmac\nimport json\nimport os\n', 1)
+
+          marker = '''def load_policy():\n'''
+          helper = '''def _canonical_policy_payload(policy):\n    covered = {k: policy.get(k) for k in (\n        "status", "updated_at", "up_threshold", "min_score_for_buy",\n        "nikkei_filter", "atr_tp_multiplier", "atr_sl_multiplier", "hold_days",\n        "validation_signals", "validation_win_rate", "validation_avg_return",\n        "validation_pf", "validation_dd", "oos_signals", "oos_win_rate",\n        "oos_avg_return", "oos_pf", "oos_dd", "oos_validation_pf_ratio",\n        "mc_sizing", "mc_10y_probability", "mc_15y_probability",\n        "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",\n        "strategy_name", "source",\n    )}\n    return json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))\n\n\ndef _verify_policy_signature(policy):\n    secret = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()\n    if not secret:\n        raise RuntimeError("AI_POLICY_SIGNING_SECRET が未設定です。承認済みpolicyを検証できないため新規取引を停止します。")\n    if str(policy.get("source", "")) != "adversarial_strategy_validator":\n        raise RuntimeError("strategy_policy.json のsourceが検証パイプラインではありません。手動policyは無効です。")\n    if int(policy.get("approval_signature_version", 0)) != 1:\n        raise RuntimeError("strategy_policy.json の承認署名バージョンが不正です。")\n    supplied = str(policy.get("approval_signature", ""))\n    if not supplied:\n        raise RuntimeError("strategy_policy.json に承認署名がありません。手動承認は無効です。")\n    covered = _canonical_policy_payload(policy)\n    expected = hmac.new(secret.encode("utf-8"), covered.encode("utf-8"), hashlib.sha256).hexdigest()\n    if not hmac.compare_digest(supplied, expected):\n        raise RuntimeError("strategy_policy.json の承認署名が一致しません。手動変更または検証証跡の破損を検知したため新規取引を停止します。")\n\n\ndef load_policy():\n'''
+          if 'def _verify_policy_signature(policy):' not in s:
+              if marker not in s:
+                  raise SystemExit('profit_top10_paper.py: load_policy marker not found')
+              s = s.replace(marker, helper, 1)
+
+          old_gate = '''    if str(p.get("status", "")).upper() != "APPROVED":\n        raise RuntimeError(f"strategy_policy.json がAPPROVEDではありません: status={p.get('status')}。安全のため新規取引を停止します。")\n'''
+          new_gate = '''    if str(p.get("status", "")).upper() != "APPROVED":\n        raise RuntimeError(f"strategy_policy.json がAPPROVEDではありません: status={p.get('status')}。安全のため新規取引を停止します。")\n    _verify_policy_signature(p)\n'''
+          if old_gate not in s:
+              raise SystemExit('profit_top10_paper.py: APPROVED gate not found')
+          s = s.replace(old_gate, new_gate, 1)
+          p.write_text(s, encoding='utf-8')
+
+          # -----------------------------------------------------------------
+          # 3) daily directional consumer: protect the other execution path too.
+          #    Any consumer that trusts status alone must not bypass the proof.
+          # -----------------------------------------------------------------
+          p = Path('daily_directional_top1.py')
+          if p.exists():
+              s = p.read_text(encoding='utf-8')
+              s = s.replace('import json\nimport os\n', 'import hashlib\nimport hmac\nimport json\nimport os\n', 1)
+              if '_verify_policy_signature(' not in s:
+                  marker = 'POLICY_FILE = "strategy_policy.json"\n'
+                  if marker in s:
+                      s = s.replace(marker, marker + '''\n\ndef _verify_policy_signature(policy):\n    secret = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()\n    if not secret:\n        raise RuntimeError("AI_POLICY_SIGNING_SECRET が未設定です。承認policyを検証できないため停止します。")\n    if str(policy.get("source", "")) != "adversarial_strategy_validator" or int(policy.get("approval_signature_version", 0)) != 1:\n        raise RuntimeError("検証パイプライン由来の承認証跡がありません。")\n    covered_keys = [\n        "status", "updated_at", "up_threshold", "min_score_for_buy", "nikkei_filter",\n        "atr_tp_multiplier", "atr_sl_multiplier", "hold_days", "validation_signals",\n        "validation_win_rate", "validation_avg_return", "validation_pf", "validation_dd",\n        "oos_signals", "oos_win_rate", "oos_avg_return", "oos_pf", "oos_dd",\n        "oos_validation_pf_ratio", "mc_sizing", "mc_10y_probability", "mc_15y_probability",\n        "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",\n        "strategy_name", "source",\n    ]\n    covered = {k: policy.get(k) for k in covered_keys}\n    payload = json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))\n    expected = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()\n    supplied = str(policy.get("approval_signature", ""))\n    if not supplied or not hmac.compare_digest(supplied, expected):\n        raise RuntimeError("strategy_policy.json の承認署名が一致しません。手動変更を検知したため停止します。")\n\n''', 1)
+              # Inject call immediately after policy JSON is loaded where possible.
+              pattern = r'(with open\(POLICY_FILE, encoding="utf-8"\) as f:\n\s+p = json\.load\(f\)\n)'
+              s, n = re.subn(pattern, r'\1    _verify_policy_signature(p)\n', s, count=1)
+              p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Syntax check
+        run: |
+          python -m py_compile build_strategy_policy.py profit_top10_paper.py daily_directional_top1.py
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add build_strategy_policy.py profit_top10_paper.py daily_directional_top1.py
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "fix: cryptographically gate approved trading policy"
+          git push origin main
