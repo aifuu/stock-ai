@@ -1,8 +1,7 @@
-name: AI Stock Scan - Directional TOP1 5分足 Paper Trade
+name: AI Stock Scan - Profit Loop TOP10 Paper Trade
 
 on:
   schedule:
-    # JST 09:00〜15:30を5分ごとに実行（GitHub ActionsのcronはUTC）
     - cron: '*/5 0-6 * * 1-5'
   workflow_dispatch: {}
 
@@ -10,13 +9,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: stock-ai-main-writer
+  group: stock-ai-profit-loop
   cancel-in-progress: false
 
 jobs:
-  directional-top1:
+  profit-loop-top10:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -34,24 +33,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
-      - name: Repair known syntax corruption before validation
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('daily_directional_top1.py')
-          s = p.read_text(encoding='utf-8')
-          bad = 'state["max_dd"]=max(state.get("max_dd",0),((state["peak"]-state["capital"])/state["peak"]*100 if state["peak"] else 0); append_history'
-          good = 'state["max_dd"]=max(state.get("max_dd",0),((state["peak"]-state["capital"])/state["peak"]*100 if state["peak"] else 0)); append_history'
-          if bad in s:
-              p.write_text(s.replace(bad, good, 1), encoding='utf-8')
-              print('✅ known daily_directional_top1.py syntax corruption repaired')
-          else:
-              print('ℹ️ known syntax corruption not present')
-          PY
-
-      - name: Syntax check
+      - name: Syntax check unified profit loop
         run: |
           python -m py_compile daily_directional_top1.py
+          python -m py_compile profit_top10_paper.py
           python -m py_compile intraday_directional_top1_cycle.py
 
       - name: Verify 100 tickers
@@ -67,99 +52,88 @@ jobs:
                       if isinstance(target, ast.Name) and target.id == 'TICKERS':
                           tickers = ast.literal_eval(node.value)
           if tickers is None or len(tickers) != 100 or len(set(tickers)) != 100:
-              raise SystemExit(f'❌ TOP1銘柄ユニバース不正: {0 if tickers is None else len(tickers)}')
+              raise SystemExit(f'❌ 100銘柄ユニバース不正: {0 if tickers is None else len(tickers)}')
           print('✅ 100銘柄・重複なし')
           PY
 
-      - name: Run unified 5m TOP1 cycle
+      - name: Verify optimizer policy is connected
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('strategy_policy.json')
+          if not p.exists():
+              raise SystemExit('❌ strategy_policy.json がありません。Profit Optimizerを先に実行してください。')
+          policy = json.loads(p.read_text(encoding='utf-8'))
+          required = ['status','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days']
+          missing = [x for x in required if x not in policy]
+          if missing:
+              raise SystemExit('❌ policy不足: ' + ','.join(missing))
+          if str(policy.get('status','')).upper() != 'APPROVED':
+              raise SystemExit(f"❌ policyがAPPROVEDではありません: {policy.get('status')}")
+          print('✅ Optimizer → strategy_policy.json → TOP10 が接続可能')
+          print(json.dumps({k: policy[k] for k in required}, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Run unified Profit Loop TOP10
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
-        run: python intraday_directional_top1_cycle.py
+        run: python profit_top10_paper.py
 
-      - name: Discord webhook test for manual weekend runs
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      - name: Verify TOP10 paper state and monthly ledger
         run: |
-          python - <<'PY'
-          import os
-          import requests
-          from datetime import datetime
-          from zoneinfo import ZoneInfo
-          webhook = os.getenv('DISCORD_WEBHOOK')
-          if not webhook:
-              raise SystemExit('❌ DISCORD_WEBHOOK が未設定です')
-          now = datetime.now(ZoneInfo('Asia/Tokyo'))
-          if now.weekday() >= 5:
-              msg = (
-                  '🔔 AI Stock Scan｜Discord接続テスト\n'
-                  f'📅 {now:%Y-%m-%d %H:%M JST}\n'
-                  '⚠️ 本日は土日なので5分足ペーパートレードは実売買処理を行っていません。\n'
-                  '✅ GitHub Actions → Discord Webhook はこの通知で確認できます。'
-              )
-          else:
-              msg = (
-                  '🔔 AI Stock Scan｜手動実行確認\n'
-                  f'📅 {now:%Y-%m-%d %H:%M JST}\n'
-                  '5分足TOP1サイクルの手動実行を確認しました。'
-              )
-          r = requests.post(webhook, json={'content': msg}, timeout=15)
-          print(f'Discord HTTP status: {r.status_code}')
-          if not 200 <= r.status_code < 300:
-              raise SystemExit(f'❌ Discord送信失敗: HTTP {r.status_code} {r.text[:300]}')
-          print('✅ Discord webhook test sent successfully')
-          PY
-
-      - name: Verify paper state
-        run: |
-          test -s directional_paper_state.json
+          test -s profit_top10_paper_state.json
           python - <<'PY'
           import json
-          with open('directional_paper_state.json', encoding='utf-8') as f:
-              s = json.load(f)
-          print(f"✅ 仮想資産: {float(s.get('capital', 0)):,.0f}円")
-          print(f"✅ 最大DD: {float(s.get('max_dd', 0)):.2f}%")
-          print(f"✅ 本日新規: {int(s.get('trades_today', 0))}/10")
-          print(f"✅ ポジション: {s.get('position')}")
+          from pathlib import Path
+          s = json.loads(Path('profit_top10_paper_state.json').read_text(encoding='utf-8'))
+          positions = s.get('positions', [])
+          if len(positions) > 10:
+              raise SystemExit(f'❌ TOP10超過: {len(positions)}')
+          print(f"✅ 仮想資産: {float(s.get('capital',0)):,.0f}円")
+          print(f"✅ 最大DD: {float(s.get('max_dd',0)):.2f}%")
+          print(f"✅ 保有ポジション: {len(positions)}/10")
+          print(f"✅ 最終エントリー日: {s.get('last_entry_date')}")
+          if Path('profit_top10_monthly_performance.csv').exists():
+              print('✅ 月間損益台帳: profit_top10_monthly_performance.csv')
           PY
 
-      - name: Commit paper state and repaired source safely
+      - name: Commit paper ledger safely
         if: always()
         run: |
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # 4ファイルをまとめてgit addせず、存在するファイルを個別にstageする
-          git add daily_directional_top1.py 2>/dev/null || true
-          git add directional_paper_state.json 2>/dev/null || true
-          git add directional_paper_history.csv 2>/dev/null || true
-          git add directional_monthly_performance.csv 2>/dev/null || true
+          git add profit_top10_paper_state.json 2>/dev/null || true
+          git add profit_top10_paper_history.csv 2>/dev/null || true
+          git add profit_top10_monthly_performance.csv 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
             echo 'ℹ️ commit対象の変更なし'
             exit 0
           fi
-          git commit -m 'chore: repair TOP1 paper trader syntax [skip ci]'
+          git commit -m 'chore: update TOP10 profit loop paper ledger [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
-              echo '✅ unified TOP1 state/source push成功'
+              echo '✅ TOP10 paper ledger push成功'
               exit 0
             fi
             git rebase --abort || true
             sleep $((i * 3))
           done
-          echo '❌ unified TOP1 state/source push失敗'
+          echo '❌ TOP10 paper ledger push失敗'
           exit 1
 
-      - name: Upload paper artifacts
+      - name: Upload profit loop artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: unified-directional-top1-${{ github.run_id }}
+          name: profit-loop-top10-${{ github.run_id }}
           if-no-files-found: warn
           path: |
-            directional_paper_state.json
-            directional_paper_history.csv
-            directional_monthly_performance.csv
+            profit_top10_paper_state.json
+            profit_top10_paper_history.csv
+            profit_top10_monthly_performance.csv
+            strategy_policy.json
