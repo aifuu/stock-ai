@@ -15,7 +15,7 @@ concurrency:
 jobs:
   profit-loop-top10:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 360
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -80,8 +80,11 @@ jobs:
           RETRAIN_MIN_ROWS: '3000'
           RETRAIN_DOWNLOAD_SLEEP: '0.15'
           WF_TOP_N: '10'
-          WF_N_ESTIMATORS: '300'
-          WF_REFIT_EVERY_TRADING_DAYS: '20'
+          # ★修正(2026-08): 以前合意していた高速化(n_estimators 300→100,
+          # 再学習間隔20→40営業日)が本番workflowの環境変数に反映されて
+          # おらず、想定より遅く実行されていた。ここで反映する。
+          WF_N_ESTIMATORS: '100'
+          WF_REFIT_EVERY_TRADING_DAYS: '40'
           WF_INITIAL_CAPITAL: '1000000'
           WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
           WF_MAX_OOS_DD: '35'
@@ -171,7 +174,10 @@ jobs:
           PY
 
       - name: Persist validated model, policy and paper ledger
-        if: always()
+        # ★修正(2026-08): if: always() だと profit_top10_paper.py が
+        # 異常終了しても、その時点の中途半端な状態ファイルをそのまま
+        # pushしてしまう。正常完了時のみ保存する。
+        if: success()
         run: |
           set -e
           git config user.name 'github-actions[bot]'
