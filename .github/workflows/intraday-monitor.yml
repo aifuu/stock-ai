@@ -1,50 +1,10 @@
-name: TSE 30分間隔 場中監視
-
-# =====================
-# cronはUTC基準・GitHub Actionsの仕様上、日本時間の「月〜金」を
-# そのまま9時間ずらすだけではカバーできないため、2本に分けている。
-#
-# ① JST 7:00〜8:30 (寄り前〜寄り直後)
-#    = UTC 前日22:00〜23:30、UTC曜日は日本の「翌日」の前日にあたる
-#    → cron: 0,30 22,23 * * 0-4  (UTC 日〜木 22:00,22:30,23:00,23:30)
-#
-# ② JST 9:00〜15:30 (前場・後場)
-#    = UTC 当日0:00〜6:30
-#    → cron: 0,30 0-6 * * 1-5   (UTC 月〜金 0:00〜6:30、30分刻み)
-#
-# これで日本時間の月〜金、7:00〜15:30を30分おき・計18回カバーする。
-# 実際に「今日が東証営業日か(祝日・年末年始含む)」は
-# intraday_monitor.py 側(common.is_tse_trading_day)で判定し、
-# 休場日なら何もせず終了する。
-#
-# 注意: GitHub Actionsのscheduleは負荷状況により
-# 数分程度遅延することがある(公式ドキュメントに明記あり)。
-# =====================
+name: LEGACY DISABLED - TSE 場中監視
 
 on:
-  schedule:
-    - cron: '0,30 22,23 * * 0-4'
-    - cron: '0,30 0-6 * * 1-5'
   workflow_dispatch: {}
 
 jobs:
-  intraday-monitor:
+  disabled:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install yfinance pandas numpy requests jpholiday
-
-      - name: Run intraday monitor
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python intraday_monitor.py
+      - run: echo 'この旧場中監視ワークフローは停止済みです。統合版AI Stock Scan - Directional TOP1 5分足 Paper Tradeを使用してください。'
