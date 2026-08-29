@@ -170,14 +170,15 @@ jobs:
               print('✅ 月間損益台帳: profit_top10_monthly_performance.csv')
           PY
 
-      - name: Persist validated policy and paper ledger
-        if: github.event_name == 'workflow_dispatch' || success()
+      - name: Persist validated model, policy and paper ledger
+        if: always()
         run: |
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # 手動フルパイプラインで生成した検証済みpolicyは保存する。
-          # ソースコードはこのworkflowから変更しない。
+          # このworkflowがmainへ保存するのは、検証・売買で生成した成果物のみ。
+          # Pythonソースコードはここから変更しない。
+          git add model.pkl 2>/dev/null || true
           git add strategy_policy.json 2>/dev/null || true
           git add profit_top10_paper_state.json 2>/dev/null || true
           git add profit_top10_paper_history.csv 2>/dev/null || true
@@ -186,11 +187,11 @@ jobs:
             echo 'ℹ️ commit対象の変更なし'
             exit 0
           fi
-          git commit -m 'chore: persist verified policy and TOP10 paper ledger [skip ci]'
+          git commit -m 'chore: persist validated model policy and TOP10 ledger [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
-              echo '✅ verified policy / TOP10 ledger push成功'
+              echo '✅ validated model / policy / TOP10 ledger push成功'
               exit 0
             fi
             git rebase --abort || true
@@ -205,6 +206,7 @@ jobs:
           name: profit-loop-top10-${{ github.run_id }}
           if-no-files-found: warn
           path: |
+            model.pkl
             walk_forward_all_candidates.csv
             adversarial_dev_all_results.csv
             adversarial_validation_results.csv
