@@ -197,9 +197,29 @@ if mc_columns_exist:
 if approved.empty:
     keep_existing_policy("最終採用条件を満たす戦略なし")
 
+# ★修正(2026-08): 以前はここだけ ["oos_pf","oos_avg_return",...] で
+# 並べ替えており、adversarial_strategy_validator.py の profit_objective
+# (月次プラス比率40%+複利30%+PF15%+平均リターン10%+期待値5%、勝率は
+# 一切使わない設計)と選定基準がズレていた。同じ重み付けに揃える。
+if "oos_monthly_positive_ratio" in approved.columns and "oos_compound_return" in approved.columns:
+    approved["profit_objective"] = (
+        approved["oos_monthly_positive_ratio"] * 0.40
+        + approved["oos_compound_return"].clip(-100, 1000) * 0.30
+        + approved["oos_pf"].clip(0, 8) * 5.0 * 0.15
+        + approved["oos_avg_return"].clip(-5, 5) * 10.0 * 0.10
+        + (
+            approved["oos_expected_value"].clip(-5, 5) * 10.0 * 0.05
+            if "oos_expected_value" in approved.columns
+            else 0.0
+        )
+    )
+    sort_cols = ["profit_objective", "oos_monthly_positive_ratio", "oos_compound_return", "oos_pf", "oos_avg_return"]
+else:
+    # 月次/複利列が無い場合のみ、従来の基準にフォールバックする。
+    sort_cols = ["oos_pf", "oos_avg_return", "validation_pf", "validation_signals"]
+
 approved = approved.sort_values(
-    ["oos_pf", "oos_avg_return", "validation_pf", "validation_signals"],
-    ascending=[False, False, False, False],
+    sort_cols, ascending=[False] * len(sort_cols)
 ).reset_index(drop=True)
 best = approved.iloc[0]
 old_policy = load_existing_policy()
