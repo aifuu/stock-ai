@@ -78,9 +78,6 @@ jobs:
           INTRADAY_FEE_RATE: '0.00055'
         run: python intraday_directional_top1_cycle.py
 
-      # workflow_dispatch is often used for debugging on weekends. The actual
-      # 5-minute paper trader correctly does nothing on Saturday/Sunday, so
-      # send a dedicated webhook test instead of falsely claiming a TOP1 trade.
       - name: Discord webhook test for manual weekend runs
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
@@ -91,11 +88,9 @@ jobs:
           import requests
           from datetime import datetime
           from zoneinfo import ZoneInfo
-
           webhook = os.getenv('DISCORD_WEBHOOK')
           if not webhook:
               raise SystemExit('❌ DISCORD_WEBHOOK が未設定です')
-
           now = datetime.now(ZoneInfo('Asia/Tokyo'))
           if now.weekday() >= 5:
               msg = (
@@ -110,7 +105,6 @@ jobs:
                   f'📅 {now:%Y-%m-%d %H:%M JST}\n'
                   '5分足TOP1サイクルの手動実行を確認しました。'
               )
-
           r = requests.post(webhook, json={'content': msg}, timeout=15)
           print(f'Discord HTTP status: {r.status_code}')
           if not 200 <= r.status_code < 300:
@@ -137,7 +131,7 @@ jobs:
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # 2026-08 修正: ファイルごとに個別addし、存在するstate/historyだけ確実にstageする
+          # 4ファイルをまとめてgit addせず、存在するファイルを個別にstageする
           git add daily_directional_top1.py 2>/dev/null || true
           git add directional_paper_state.json 2>/dev/null || true
           git add directional_paper_history.csv 2>/dev/null || true
