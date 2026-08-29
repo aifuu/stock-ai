@@ -1,0 +1,104 @@
+name: Daily Model Retrain
+
+on:
+  schedule:
+    # JST 07:30（UTC 22:30、月〜金）
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-ai-daily-retrain
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Syntax check
+        run: |
+          python -m py_compile daily_directional_top1.py
+          python -m py_compile daily_model_retrain.py
+
+      - name: Run daily model retraining
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RETRAIN_HOLDOUT_DAYS: '60'
+          RETRAIN_MAX_ACC_DROP: '5.0'
+          RETRAIN_MIN_ROWS: '3000'
+          RETRAIN_DOWNLOAD_SLEEP: '0.15'
+        run: python daily_model_retrain.py
+
+      - name: Verify retrain outputs
+        run: |
+          test -s train_data.csv
+          test -s daily_retrain_report.csv
+          python - <<'PY'
+          import os
+          import joblib
+          import pandas as pd
+
+          train = pd.read_csv('train_data.csv')
+          report = pd.read_csv('daily_retrain_report.csv')
+          print(f'✅ 学習データ: {len(train):,}行')
+          print(f'✅ 再学習レポート: {len(report):,}行')
+
+          if os.path.exists('model.pkl'):
+              model = joblib.load('model.pkl')
+              print(f'✅ model.pkl classes: {getattr(model, "classes_", "unknown")}')
+          else:
+              print('🟡 model.pklは今回差し替えなし')
+          PY
+
+      - name: Commit retraining artifacts safely
+        if: always()
+        run: |
+          set -e
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add model.pkl model_prev.pkl train_data.csv daily_retrain_report.csv 2>/dev/null || true
+          git add -u
+          git diff --cached --quiet && exit 0
+          git commit -m 'chore: daily model retrain [skip ci]'
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo '✅ daily model retrain push成功'
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((i * 3))
+          done
+          echo '❌ daily model retrain push失敗'
+          exit 1
+
+      - name: Upload retrain artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-model-retrain-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            model.pkl
+            model_prev.pkl
+            train_data.csv
+            daily_retrain_report.csv
