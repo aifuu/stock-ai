@@ -8,8 +8,9 @@ on:
 permissions:
   contents: write
 
+# Share the same writer lock as the daily TOP1 workflow.
 concurrency:
-  group: stock-universe-sync
+  group: stock-ai-main-writer
   cancel-in-progress: false
 
 jobs:
@@ -55,15 +56,7 @@ jobs:
           git config user.email "github-actions@github.com"
           git add stock_scan.py walk_forward.py
           git diff --cached --quiet || git commit -m "Sync stock universe to 100 tickers [skip ci]"
-
-          for i in 1 2 3 4 5; do
-            git fetch origin main
-            git rebase origin/main
-            if git push origin HEAD:main; then
-              echo "✅ ticker sync push成功"
-              exit 0
-            fi
-            echo "⚠️ push競合、再試行: $i/5"
-            sleep $((i * 3))
-          done
-          exit 1
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
+          echo "✅ ticker sync push成功"
