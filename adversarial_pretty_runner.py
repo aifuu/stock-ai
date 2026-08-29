@@ -12,12 +12,12 @@ WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 
 def pretty_content(msg):
     replacements = [
-        ("🛡️ ADVERSARIAL STRATEGY VALIDATOR", "🛡️ AI戦略｜敵対的検証レポート"),
+        ("🛡️ AI PROFIT OPTIMIZER", "🛡️ AI戦略｜敵対的利益最適化レポート"),
         ("AI ADVERSARIAL VALIDATION", "🛡️ AI戦略｜厳格検証"),
         ("探索対象期間:", "検証期間："),
         ("期間：", "検証期間："),
         ("探索数:", "探索した戦略数："),
-        ("N_eff近似:", "実質的な独立戦略数："),
+        ("N_eff:", "実質的な独立戦略数："),
         ("DEV候補:", "開発期間の候補："),
         ("Validation PASS:", "検証合格："),
         ("Validation HOLD:", "検証保留："),

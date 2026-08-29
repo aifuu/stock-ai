@@ -17,7 +17,7 @@ PREDICTION_HISTORY_FILE = "prediction_history.csv"
 
 INITIAL_CAPITAL = float(os.getenv("AI_INITIAL_CAPITAL", "1000000"))
 RISK_PER_TRADE = float(os.getenv("AI_RISK_PER_TRADE", "0.005"))
-MAX_POSITIONS = int(os.getenv("AI_MAX_POSITIONS", "20"))
+MAX_POSITIONS = int(os.getenv("AI_MAX_POSITIONS", "3"))
 DAILY_STOP_LOSS = float(os.getenv("AI_DAILY_STOP_LOSS", "0.02"))
 MAX_DRAWDOWN = float(os.getenv("AI_MAX_DRAWDOWN", "0.30"))
 MIN_LIVE_PROFIT_FACTOR = float(os.getenv("AI_MIN_LIVE_PF", "0.90"))

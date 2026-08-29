@@ -137,8 +137,7 @@ df["nikkei_filter"] = df["nikkei_filter"].apply(safe_bool)
 mc_columns = ["sizing", "prob_10y", "prob_15y", "prob_20y", "bankruptcy_prob", "p90_max_dd"]
 mc_columns_exist = all(col in df.columns for col in mc_columns)
 if not mc_columns_exist:
-    print("⚠ Monte Carlo列がありません")
-    print("Monte Carlo条件なしでは自動採用しません")
+    keep_existing_policy("Monte Carlo列がありません。破産確率/P90 DD/到達確率を検証できないため自動採用を停止")
 
 approved = df[df["final_status"].astype(str).str.upper().eq("PASS")].copy()
 if approved.empty:

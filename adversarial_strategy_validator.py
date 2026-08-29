@@ -119,12 +119,20 @@ if len(all_dates) <= OOS_DAYS:
 oos_dates = all_dates[-OOS_DAYS:]
 pre_oos = all_dates[:-OOS_DAYS]
 split = int(len(pre_oos) * 0.60)
-dev_dates = pre_oos[:split]
-validation_dates = pre_oos[split:]
+raw_dev_dates = pre_oos[:split]
+raw_validation_dates = pre_oos[split:]
+purge_n = max(0, min(PURGE_DAYS, len(raw_dev_dates) - 1))
+embargo_n = max(0, min(EMBARGO_DAYS, len(raw_validation_dates) - 1))
+dev_dates = raw_dev_dates[:-purge_n] if purge_n else raw_dev_dates
+validation_dates = raw_validation_dates[embargo_n:]
+if not dev_dates or not validation_dates:
+    raise RuntimeError("Purge/Embargo後にDEVまたはValidation期間が空です")
 phase_map = {d: "DEV" for d in dev_dates}
 phase_map.update({d: "VALIDATION" for d in validation_dates})
 phase_map.update({d: "OOS" for d in oos_dates})
 candidates["phase"] = candidates["date"].map(phase_map)
+N_EFFECTIVE_STRATEGIES = max(1, int(np.ceil(np.sqrt(len(UP_THRESHOLDS) * len(SCORE_THRESHOLDS) * len(NIKKEI_FILTERS) * len(TP_MULTIPLIERS) * len(SL_MULTIPLIERS) * len(HOLD_DAYS_LIST)))))
+MULTIPLE_TEST_ALPHA = 0.05 / N_EFFECTIVE_STRATEGIES
 
 base_business = sorted(candidates["date"].drop_duplicates().tolist())
 idx_map = {d: i for i, d in enumerate(base_business)}
@@ -222,6 +230,7 @@ def run_strategy(phase_df, up, score, nikkei, tp, sl, hold):
             "return": ret,
             "hold_days": days,
             "phase": r["phase"],
+                "risk_unit": max(1e-8, float(atr_ratio) / 100.0 * float(sl)),
         })
     return pd.DataFrame(rows)
 
@@ -287,8 +296,9 @@ def stats(x):
     }
 
 
-def block_bootstrap_lower(values, block_len=10, n_iter=BOOTSTRAP_ITERATIONS):
+def block_bootstrap_lower(values, block_len=10, n_iter=BOOTSTRAP_ITERATIONS, alpha=0.05):
     values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
     if len(values) < 10:
         return np.nan
     rng = np.random.default_rng(RANDOM_SEED)
@@ -298,10 +308,49 @@ def block_bootstrap_lower(values, block_len=10, n_iter=BOOTSTRAP_ITERATIONS):
     for _ in range(n_iter):
         sample = []
         while len(sample) < n:
-            s = int(rng.choice(starts))
-            sample.extend(values[s:s + block_len])
+            start = int(rng.choice(starts))
+            sample.extend(values[start:start + block_len])
         out.append(float(np.mean(sample[:n])))
-    return float(np.quantile(out, 0.05))
+    return float(np.quantile(out, max(1e-6, min(0.5, alpha))))
+
+
+def monte_carlo_risk_gate(trades, initial_capital=INITIAL_CAPITAL, target_capital=100000000.0, iterations=None):
+    iterations = int(iterations or int(os.getenv("WF_MONTE_CARLO_ITERATIONS", "5000")))
+    if trades is None or trades.empty or "return" not in trades or "risk_unit" not in trades:
+        return None
+    ret = pd.to_numeric(trades["return"], errors="coerce").to_numpy(dtype=float)
+    unit = pd.to_numeric(trades["risk_unit"], errors="coerce").to_numpy(dtype=float)
+    mask = np.isfinite(ret) & np.isfinite(unit) & (unit > 0)
+    r_mult = (ret[mask] / 100.0) / unit[mask]
+    r_mult = r_mult[np.isfinite(r_mult)]
+    if len(r_mult) < 20:
+        return None
+    years = max(0.5, (trades["date"].max() - trades["date"].min()).days / 365.25)
+    annual_signals = max(1.0, len(r_mult) / years)
+    rng = np.random.default_rng(RANDOM_SEED)
+    best = None
+    diagnostic = None
+    for sizing in (0.01, 0.0075, 0.005, 0.0025):
+        path = np.full(iterations, float(initial_capital))
+        peak = path.copy()
+        max_dd = np.zeros(iterations)
+        checkpoints = {}
+        for year in range(1, 21):
+            n = max(1, int(round(annual_signals)))
+            sample = rng.choice(r_mult, size=(iterations, n), replace=True)
+            growth = np.prod(np.clip(1.0 + sizing * sample, 0.01, 5.0), axis=1)
+            path *= growth
+            peak = np.maximum(peak, path)
+            max_dd = np.maximum(max_dd, 1.0 - path / np.maximum(peak, 1e-9))
+            if year in (10, 15, 20):
+                checkpoints[year] = float(np.mean(path >= target_capital) * 100.0)
+        bankruptcy = float(np.mean(path <= initial_capital * 0.50) * 100.0)
+        p90_dd = float(np.quantile(max_dd, 0.90) * 100.0)
+        diagnostic = {"sizing": sizing, "prob_10y": checkpoints[10], "prob_15y": checkpoints[15], "prob_20y": checkpoints[20], "bankruptcy_prob": bankruptcy, "p90_max_dd": p90_dd}
+        if bankruptcy < 5.0 and p90_dd <= 30.0:
+            best = diagnostic
+            break
+    return best or diagnostic
 
 
 # ---------------------------------------------------------
@@ -354,7 +403,7 @@ validation_results = []
 for _, row in dev_candidates.iterrows():
     rd = run_strategy(validation_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
     st = stats(rd)
-    lower_avg = block_bootstrap_lower(rd["return"].values) if not rd.empty else np.nan
+    lower_avg = block_bootstrap_lower(rd["return"].values, alpha=MULTIPLE_TEST_ALPHA) if not rd.empty else np.nan
     validation_results.append({
         **row.to_dict(),
         **{f"validation_{k}": v for k, v in st.items()},
@@ -423,6 +472,18 @@ if not final_pass.empty:
         ascending=[False, False, False, False, False],
     ).reset_index(drop=True)
 
+# Mandatory Monte Carlo risk gate.
+if not final_pass.empty:
+    mc_records = []
+    mc_limit = int(os.getenv("WF_MC_CANDIDATES", "20"))
+    for _, row in final_pass.head(mc_limit).iterrows():
+        rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
+        mc = monte_carlo_risk_gate(rd)
+        if mc is not None:
+            mc_records.append({"strategy": row.strategy, **mc})
+    mc_df = pd.DataFrame(mc_records)
+    final_pass = final_pass.merge(mc_df, on="strategy", how="inner") if not mc_df.empty else pd.DataFrame()
+
 # build_strategy_policy.pyが読む正式な最終候補CSVを必ず生成
 if not final_pass.empty:
     final_pass["final_status"] = "PASS"
@@ -445,6 +506,8 @@ print("\n" + "=" * 80)
 print("🛡️ AI PROFIT OPTIMIZER RESULT")
 print("期間:", START_DATE.date(), "～", END_DATE.date())
 print("探索数:", len(param_space))
+print("N_eff:", N_EFFECTIVE_STRATEGIES)
+print("Purge/Embargo:", PURGE_DAYS, EMBARGO_DAYS)
 print("TOP_N:", TOP_N)
 print("DEV候補:", len(dev_candidates))
 print("Validation PASS:", int(validation_summary.validation_pass.sum()) if not validation_summary.empty else 0)
