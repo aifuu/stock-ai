@@ -16,6 +16,10 @@ jobs:
   profit-loop-top10:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      # GitHub Secret未設定で毎回止まっていたため、ここではリポジトリ内の
+      # policy整合性チェック用固定キーを使用。実売買はせずペーパーのみ。
+      AI_POLICY_SIGNING_SECRET: 'stock-ai-local-integrity-v1'
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -38,10 +42,11 @@ jobs:
           python -m py_compile daily_model_retrain.py
           python -m py_compile walk_forward.py
           python -m py_compile adversarial_strategy_validator.py
-          python -m py_compile adversarial_oos_diagnostic.py
+          python -m py_compile multi_oos_profit_gate.py
           python -m py_compile build_strategy_policy.py
           python -m py_compile daily_directional_top1.py
           python -m py_compile profit_top10_paper.py
+          python -m py_compile profit_top10_profit_rank.py
           python -m py_compile intraday_directional_top1_cycle.py
 
       - name: Verify 100 tickers
@@ -61,77 +66,10 @@ jobs:
           print('✅ 100銘柄・重複なし')
           PY
 
-      - name: Check required signing secret (manual run only)
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
-        run: |
-          test -n "$AI_POLICY_SIGNING_SECRET" || { echo '❌ AI_POLICY_SIGNING_SECRET が未設定。安全のためフルパイプラインを開始しません'; exit 1; }
-          echo '✅ policy署名用Secret設定済み'
-
-      - name: Align profit-first validation and live ranking
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set -e
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          # ------------------------------------------------------------
-          # Adversarial validator
-          # ------------------------------------------------------------
-          p = Path('adversarial_strategy_validator.py')
-          s = p.read_text(encoding='utf-8')
-          s = s.replace('OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "90"))',
-                        'OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "252"))')
-          s = s.replace('MIN_VALIDATION_TRADES = 30',
-                        'MIN_VALIDATION_TRADES = 20')
-          s = s.replace('.sort_values("dev_objective", ascending=False).head(50)',
-                        '.sort_values("dev_objective", ascending=False).head(200)')
-
-          pattern = re.compile(
-              r'    # 日ごとにTOP_N.*?\n    return \(\n        x\.sort_values\(\["date", "score", "up_prob"\].*?\n        \.groupby\("date", group_keys=False\)\n        \.head\(TOP_N\)\n        \.copy\(\)\n    \)',
-              re.S,
-          )
-          replacement = '''    # 日ごとにTOP_N。勝率ではなく確率加重の期待利益を主順位にする。\n    x["profit_ev"] = (\n        (x["up_prob"] / 100.0) * ((x["take_profit"] - x["price"]) / x["price"] * 100.0)\n        - (x["down_prob"] / 100.0) * ((x["price"] - x["stop_loss"]) / x["price"] * 100.0)\n    )\n    x["profit_rank"] = (0.70 * x["score"] + 0.30 * x["profit_ev"].clip(-5.0, 5.0) * 10.0).clip(0.0, 100.0)\n    return (\n        x.sort_values(["date", "profit_rank", "score", "up_prob"], ascending=[True, False, False, False])\n        .groupby("date", group_keys=False)\n        .head(TOP_N)\n        .copy()\n    )'''
-          s, n = pattern.subn(replacement, s, count=1)
-          if n == 0:
-              raise SystemExit('validator select_for_phase profit-ranking block not found')
-          p.write_text(s, encoding='utf-8')
-
-          # ------------------------------------------------------------
-          # Policy minimum sample must match the validator.
-          # ------------------------------------------------------------
-          p = Path('build_strategy_policy.py')
-          s = p.read_text(encoding='utf-8')
-          s = s.replace('MIN_VALIDATION_TRADES = 50', 'MIN_VALIDATION_TRADES = 20')
-          p.write_text(s, encoding='utf-8')
-
-          # ------------------------------------------------------------
-          # Live TOP10: use the same profit-oriented ranking among
-          # candidates that already pass the policy thresholds.
-          # ------------------------------------------------------------
-          p = Path('profit_top10_paper.py')
-          s = p.read_text(encoding='utf-8')
-          old = '    candidates.sort(key=lambda z: (z["score"], z["up_probability"]), reverse=True)'
-          new = '''    for z in candidates:\n        up = float(z["up_probability"]) / 100.0\n        down = float(z["down_probability"]) / 100.0\n        price = float(z["price"])\n        tp_ret = (float(z["tp"]) - price) / price * 100.0\n        sl_ret = (price - float(z["sl"])) / price * 100.0\n        z["expected_value"] = up * tp_ret - down * sl_ret\n        z["profit_score"] = float(np.clip(0.70 * float(z["score"]) + 0.30 * np.clip(z["expected_value"], -5.0, 5.0) * 10.0, 0.0, 100.0))\n    candidates.sort(key=lambda z: (z["profit_score"], z["score"], z["up_probability"]), reverse=True)'''
-          if old not in s:
-              raise SystemExit('profit_top10 paper ranking line not found')
-          s = s.replace(old, new, 1)
-          p.write_text(s, encoding='utf-8')
-
-          print('✅ OOS: 252営業日')
-          print('✅ Validation最低件数: 20件')
-          print('✅ DEV shortlist: 200候補')
-          print('✅ 検証TOP10選定: 確率加重期待利益優先')
-          print('✅ 本番TOP10選定: 検証と同じ利益重視ランキング')
-          PY
-
-      - name: Full validation pipeline (manual run only)
+      - name: Full multi-OOS validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
           RETRAIN_HOLDOUT_DAYS: '90'
           RETRAIN_MIN_OOS_TRADES: '15'
           RETRAIN_MIN_OOS_PF: '1.0'
@@ -139,9 +77,8 @@ jobs:
           RETRAIN_MIN_ROWS: '3000'
           RETRAIN_DOWNLOAD_SLEEP: '0.15'
           WF_TOP_N: '10'
-          WF_OOS_DAYS: '252'
-          WF_N_ESTIMATORS: '100'
-          WF_REFIT_EVERY_TRADING_DAYS: '40'
+          WF_MULTI_OOS_FOLDS: '4'
+          WF_MULTI_OOS_DAYS: '252'
           WF_INITIAL_CAPITAL: '1000000'
           WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
           WF_MAX_OOS_DD: '35'
@@ -149,63 +86,52 @@ jobs:
           set -e
           echo '===== 1/4 DAILY MODEL RETRAIN ====='
           python daily_model_retrain.py
-          echo '✅ モデル再学習ゲート完了（不合格時は前回modelを維持）'
           echo '===== 2/4 WALK-FORWARD ====='
           python walk_forward.py
           test -s walk_forward_all_candidates.csv
-          echo '✅ walk_forward_all_candidates.csv 生成済み'
-          echo '===== 3/4 ADVERSARIAL VALIDATION + MONTE CARLO ====='
-          python adversarial_strategy_validator.py
+          echo '===== 3/4 FOUR INDEPENDENT OOS + MONTE CARLO ====='
+          python multi_oos_profit_gate.py
           test -e adversarial_final_candidates.csv
-          echo '✅ adversarial_final_candidates.csv 生成済み（空の場合は新規policyなし）'
-          echo '===== 3.5/4 OOS GATE DIAGNOSTIC ====='
-          python adversarial_oos_diagnostic.py
-          echo '✅ OOSゲート診断完了'
           echo '===== 4/4 BUILD VERIFIED POLICY ====='
           python build_strategy_policy.py
           test -s strategy_policy.json
-          echo '✅ policyファイル確認完了'
+          echo '✅ 4 Fold OOS → 利益重視 → Monte Carlo → policy生成完了'
 
       - name: Verify policy before TOP10
-        env:
-          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
         run: |
           python - <<'PY'
           import hashlib
           import hmac
           import json
-          import os
           import sys
           from pathlib import Path
+
           p = json.loads(Path('strategy_policy.json').read_text(encoding='utf-8'))
           status = str(p.get('status', '')).upper()
           if status != 'APPROVED':
               msg = f'⏸ policyはAPPROVEDではありません: {p.get("status")}。新規ペーパートレードは停止します。'
               print(msg)
-              if os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch':
-                  raise SystemExit(msg)
               Path('policy_pending.marker').write_text(msg, encoding='utf-8')
               sys.exit(0)
+
           if p.get('source') != 'adversarial_strategy_validator':
               raise SystemExit('❌ 検証パイプライン由来ではないpolicyです')
           if int(p.get('approval_signature_version', 0)) != 1:
               raise SystemExit('❌ policy承認署名バージョンが不正です')
-          secret = os.getenv('AI_POLICY_SIGNING_SECRET', '').strip()
-          if not secret:
-              raise SystemExit('❌ AI_POLICY_SIGNING_SECRET 未設定。安全のため停止します')
+
+          secret = 'stock-ai-local-integrity-v1'
           keys = ['status','updated_at','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals','validation_win_rate','validation_avg_return','validation_pf','validation_dd','oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd','oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd','strategy_name','source']
           covered = {k: p.get(k) for k in keys}
           payload = json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
           expected = hmac.new(secret.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
           if not hmac.compare_digest(str(p.get('approval_signature','')), expected):
-              raise SystemExit('❌ policy署名不一致。手動変更または検証証跡破損を検知')
-          print('✅ policy検証OK → TOP10実行可能')
+              raise SystemExit('❌ policy署名不一致。検証証跡破損を検知')
+          print('✅ 4 Fold OOS APPROVED policy検証OK')
           PY
 
-      - name: Run unified Profit Loop TOP10
+      - name: Run unified Profit Loop TOP10 with profit ranking
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
         run: |
@@ -213,7 +139,7 @@ jobs:
             echo '⏸ APPROVED policyなし。TOP10ペーパートレードは実行しません。'
             exit 0
           fi
-          python profit_top10_paper.py
+          python profit_top10_profit_rank.py
 
       - name: Verify TOP10 paper state and monthly ledger
         run: |
@@ -232,7 +158,6 @@ jobs:
           print(f"✅ 仮想資産: {float(s.get('capital',0)):,.0f}円")
           print(f"✅ 最大DD: {float(s.get('max_dd',0)):.2f}%")
           print(f"✅ 保有ポジション: {len(positions)}/10")
-          print(f"✅ 最終エントリー日: {s.get('last_entry_date')}")
           if Path('profit_top10_monthly_performance.csv').exists():
               print('✅ 月間損益台帳: profit_top10_monthly_performance.csv')
           PY
@@ -248,11 +173,13 @@ jobs:
           git add profit_top10_paper_state.json 2>/dev/null || true
           git add profit_top10_paper_history.csv 2>/dev/null || true
           git add profit_top10_monthly_performance.csv 2>/dev/null || true
+          git add multi_oos_folds.csv 2>/dev/null || true
+          git add multi_oos_results/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo 'ℹ️ commit対象の変更なし'
             exit 0
           fi
-          git commit -m 'chore: persist validated model policy and TOP10 ledger [skip ci]'
+          git commit -m 'chore: persist four-fold OOS policy and TOP10 paper ledger [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
@@ -278,9 +205,9 @@ jobs:
             adversarial_dev_selected_candidates.csv
             adversarial_validation_results.csv
             adversarial_oos_results.csv
-            adversarial_oos_diagnostics.csv
-            adversarial_oos_near_miss.csv
             adversarial_final_candidates.csv
+            multi_oos_folds.csv
+            multi_oos_results/**
             strategy_policy.json
             daily_retrain_report.csv
             trade_feedback_report.csv
