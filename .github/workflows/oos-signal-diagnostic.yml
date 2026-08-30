@@ -1,0 +1,62 @@
+name: OOS Signal Diagnostic - 100 Stocks
+on:
+  schedule:
+    - cron: '*/5 0-6 * * 1-5'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: stock-ai-oos-diagnostic
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Verify 100 tickers
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          tree = ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8'))
+          tickers = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'TICKERS':
+                          tickers = ast.literal_eval(node.value)
+          if tickers is None or len(tickers) != 100 or len(set(tickers)) != 100:
+              raise SystemExit(f'❌ 100銘柄ユニバース不正: {0 if tickers is None else len(tickers)}')
+          print('✅ 100銘柄・重複なし')
+          PY
+
+      - name: Run stage-by-stage OOS diagnostic
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python -m py_compile oos_signal_diagnostic.py
+          python oos_signal_diagnostic.py | tee oos_signal_diagnostic.log
+
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oos-signal-diagnostic-${{ github.run_id }}
+          if-no-files-found: warn
+          path: oos_signal_diagnostic.log
