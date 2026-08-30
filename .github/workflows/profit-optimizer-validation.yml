@@ -1,4 +1,4 @@
-name: AI Profit Optimizer - 4 Fold OOS Profit Gate
+name: AI Profit Optimizer - Regime TOP1 4 Fold OOS
 
 on:
   workflow_dispatch:
@@ -13,10 +13,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  WF_TOP_N: '10'
-  WF_MULTI_OOS_FOLDS: '4'
-  WF_MULTI_OOS_DAYS: '239'
+  WF_TOP_N: '1'
+  WF_OOS_FOLDS: '4'
+  WF_OOS_DAYS: '252'
   WF_INITIAL_CAPITAL: '1000000'
+  WF_PURGE_DAYS: '7'
+  WF_EMBARGO_DAYS: '7'
   WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
   WF_MAX_OOS_DD: '35'
   WF_MIN_POSITIVE_FOLDS: '3'
@@ -27,12 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      AI_POLICY_SIGNING_SECRET: 'stock-ai-local-integrity-v1'
+      AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
     steps:
-      - name: Checkout latest main
+      - name: Checkout current branch
         uses: actions/checkout@v4
         with:
-          ref: main
           fetch-depth: 0
 
       - name: Setup Python
@@ -47,191 +49,86 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile adversarial_strategy_validator.py
-          python -m py_compile multi_oos_profit_gate.py
-          python -m py_compile adversarial_oos_diagnostic.py
-          python -m py_compile build_strategy_policy.py
+          python -m py_compile regime_profit_core.py
+          python -m py_compile enrich_walk_forward_candidates.py
+          python -m py_compile daily_model_retrain.py
+          python -m py_compile walk_forward.py
+          python -m py_compile multi_oos_profit_validator.py
+          python -m py_compile build_verified_profit_policy.py
+          python -m py_compile run_profit_loop.py
+          python -m py_compile profit_top10_paper.py
 
-      - name: Build candidates when needed
+      - name: Check policy signing secret
         run: |
-          if [ ! -s walk_forward_all_candidates.csv ]; then
-            python daily_model_retrain.py
-            python walk_forward.py
-          fi
+          test -n "$AI_POLICY_SIGNING_SECRET" || { echo '❌ AI_POLICY_SIGNING_SECRET 未設定'; exit 1; }
+          echo '✅ policy signing secret configured'
+
+      - name: Build model and walk-forward candidates
+        run: |
+          python daily_model_retrain.py
+          python walk_forward.py
+          test -s walk_forward_all_candidates.csv
+          python enrich_walk_forward_candidates.py
           test -s walk_forward_all_candidates.csv
 
-      - name: Run 4 independent OOS profit gate
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python multi_oos_profit_gate.py
+      - name: Run identical 4-fold regime TOP1 OOS validation
+        run: |
+          python multi_oos_profit_validator.py
+          test -e adversarial_final_candidates.csv
 
-      - name: Build OOS diagnostic input from all Fold results
+      - name: Build signed verified policy
+        run: |
+          python build_verified_profit_policy.py
+          test -s strategy_policy.json
+
+      - name: Verify policy signature and selection mode
         run: |
           python - <<'PY'
+          import hashlib, hmac, json, os
           from pathlib import Path
-          import pandas as pd
-
-          root = Path('multi_oos_results')
-          files = sorted(root.glob('fold_*/adversarial_oos_results.csv'))
-          rows = []
-          print('============================================================')
-          print('🔧 BUILD OOS DIAGNOSTIC INPUT')
-          print('目的: 4 Foldの実OOS結果を診断スクリプトへ確実に受け渡す')
-          print('ゲート条件・探索閾値・policyは変更しない')
-          print('============================================================')
-
-          for path in files:
-              try:
-                  df = pd.read_csv(path)
-              except Exception as e:
-                  print(f'⚠ 読み込み失敗: {path}: {e}')
-                  continue
-              if df.empty:
-                  print(f'⚠ 空ファイル: {path}')
-                  continue
-              fold_text = path.parent.name
-              try:
-                  fold_no = int(fold_text.split('_')[-1])
-              except ValueError:
-                  print(f'⚠ Fold番号を取得できないためスキップ: {path}')
-                  continue
-              df = df.copy()
-              df['diagnostic_fold'] = fold_no
-              rows.append(df)
-              print(f'✅ {path}: {len(df)} rows / Fold {fold_no}')
-
-          out = Path('adversarial_multi_oos_folds.csv')
-          if rows:
-              merged = pd.concat(rows, ignore_index=True, sort=False)
-              if 'fold' not in merged.columns:
-                  merged['fold'] = merged['diagnostic_fold']
-              else:
-                  merged['fold'] = pd.to_numeric(merged['fold'], errors='coerce').fillna(merged['diagnostic_fold']).astype(int)
-              merged.to_csv(out, index=False, encoding='utf-8-sig')
-              print(f'📁 {out}: {len(merged)} rows / {merged["fold"].nunique()} folds')
-              print('列:', ', '.join(merged.columns))
-          else:
-              # 診断側が「入力なし」と明示できるよう、空CSVを作る。
-              pd.DataFrame().to_csv(out, index=False)
-              print(f'⚠ {out}: 診断対象データなし')
+          p = json.loads(Path('strategy_policy.json').read_text(encoding='utf-8'))
+          if str(p.get('status','')).upper() != 'APPROVED':
+              raise SystemExit(f"policy status={p.get('status')} -> paper trade remains stopped")
+          if p.get('selection_mode') != 'REGIME_EXPECTED_RETURN_TOP1':
+              raise SystemExit('❌ selection_mode mismatch')
+          if p.get('source') != 'adversarial_strategy_validator':
+              raise SystemExit('❌ policy source mismatch')
+          if p.get('selection_version') != 'regime_profit_core_v1':
+              raise SystemExit('❌ selection version mismatch')
+          keys = [
+              'status','updated_at','up_threshold','min_score_for_buy','nikkei_filter',
+              'atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals',
+              'validation_win_rate','validation_avg_return','validation_pf','validation_dd',
+              'oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd',
+              'oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability',
+              'mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd',
+              'strategy_name','selection_mode','regime_expectancy_json','source'
+          ]
+          payload = json.dumps({k:p.get(k) for k in keys}, ensure_ascii=False, sort_keys=True, separators=(',',':'))
+          expected = hmac.new(os.environ['AI_POLICY_SIGNING_SECRET'].encode(), payload.encode(), hashlib.sha256).hexdigest()
+          if not hmac.compare_digest(str(p.get('approval_signature','')), expected):
+              raise SystemExit('❌ policy signature mismatch')
+          print('✅ signed policy verified')
+          print('✅ selection_mode:', p['selection_mode'])
+          print('✅ OOS compound:', p.get('oos_compound_return'))
+          print('✅ monthly positive:', p.get('oos_monthly_positive_ratio'))
+          print('✅ expected value:', p.get('oos_expected_value'))
           PY
 
-      - name: Run OOS failure diagnosis
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          WF_OOS_FOLDS: '4'
-          WF_MIN_POSITIVE_FOLDS: '3'
-          WF_MIN_TOTAL_OOS_TRADES: '20'
-          WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
-          WF_MAX_OOS_DD: '35'
+      - name: Run TOP1 paper loop with exact OOS ranking
         run: |
-          echo '============================================================'
-          echo '🔎 OOS FAILURE DIAGNOSTIC'
-          echo '目的: OOS PASS=0 の原因を戦略ごとに可視化する'
-          echo '重要: ゲート条件・探索閾値・policyは変更しない'
-          echo '優先目標: 毎日取引 / 毎月収益プラス / 収益率優先'
-          echo '============================================================'
-          python adversarial_oos_diagnostic.py
+          python run_profit_loop.py
 
-      - name: Verify threshold funnel diagnostics without changing gates
-        run: |
-          python - <<'PY'
-          import pandas as pd
-          from pathlib import Path
-          src = Path('walk_forward_all_candidates.csv')
-          out = Path('multi_oos_threshold_diagnostics.csv')
-          c = pd.read_csv(src)
-          c['date'] = pd.to_datetime(c['date'], errors='coerce').dt.normalize()
-          for col in ['up_prob','down_prob','flat_prob','score']:
-              c[col] = pd.to_numeric(c[col], errors='coerce')
-          c['nikkei_uptrend'] = c['nikkei_uptrend'].astype(str).str.lower().isin(['true','1','yes'])
-          c = c.dropna(subset=['date','up_prob','down_prob','flat_prob','score'])
-          dates = sorted(c['date'].drop_duplicates())
-          folds, oos_days, purge, embargo = 4, 239, 7, 7
-          rows = []
-          for fold in range(1, folds+1):
-              end_pos = len(dates) - (folds-fold)*oos_days
-              oos = dates[end_pos-oos_days:end_pos]
-              pre = dates[:max(0, end_pos-oos_days)]
-              cut = int(len(pre)*0.60)
-              dev = pre[:max(1,cut-purge)]
-              val = pre[min(len(pre),cut+embargo):]
-              for phase, ds in [('DEV',dev),('VALIDATION',val),('OOS',oos)]:
-                  x = c[c.date.isin(ds)]
-                  for up in [45,50,55,60,65]:
-                      for score in [50,60,70,80]:
-                          for nikkei in [False,True]:
-                              y=x[(x.up_prob>=up)&(x.up_prob>x.down_prob)&(x.flat_prob<50)&(x.score>=score)]
-                              if nikkei: y=y[y.nikkei_uptrend]
-                              rows.append({'fold':fold,'phase':phase,'up':up,'score':score,'nikkei':nikkei,'candidate_count':len(y)})
-          d = pd.DataFrame(rows)
-          d.to_csv(out,index=False,encoding='utf-8-sig')
-          print(f'診断CSV: {out} / {len(d)} rows')
-          print(d.sort_values(['fold','phase','candidate_count'], ascending=[True,True,False]).groupby(['fold','phase']).head(5).to_string(index=False))
-          print('※診断専用。PASS条件・policy・閾値は変更しません。')
-          PY
-
-      - name: Build verified policy
-        run: python build_strategy_policy.py
-
-      - name: Show selected policy
-        run: |
-          python - <<'PY'
-          import json
-          with open('strategy_policy.json', encoding='utf-8') as f:
-              p = json.load(f)
-          print('===== 4-FOLD PROFIT-FIRST POLICY =====')
-          print('status:', p.get('status'))
-          print('strategy:', p.get('strategy_name'))
-          print('monthly positive:', p.get('oos_monthly_positive_ratio'), '%')
-          print('OOS compound:', p.get('oos_compound_return'), '%')
-          print('OOS final capital:', p.get('oos_compound_final_capital'))
-          print('expected value:', p.get('oos_expected_value'), '%')
-          print('PF:', p.get('oos_pf'))
-          print('max DD:', p.get('oos_dd'), '%')
-          print('MC bankruptcy:', p.get('mc_bankruptcy_probability'), '%')
-          print('MC p90 DD:', p.get('mc_p90_max_dd'), '%')
-          PY
-
-      - name: Commit optimizer outputs
+      - name: Persist validated outputs
+        if: success()
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv adversarial_oos_diagnostics.csv adversarial_oos_near_miss.csv adversarial_multi_oos_folds.csv multi_oos_folds.csv multi_oos_results/ multi_oos_fold_funnel.csv multi_oos_threshold_diagnostics.csv 2>/dev/null || true
+          git add regime_profit_core.py enrich_walk_forward_candidates.py multi_oos_profit_validator.py build_verified_profit_policy.py run_profit_loop.py .github/workflows/profit-optimizer-validation.yml walk_forward_all_candidates.csv adversarial_final_candidates.csv adversarial_multi_oos_folds.csv adversarial_oos_results.csv strategy_policy.json profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
-            echo '変更なし'
+            echo 'ℹ️ 変更なし'
             exit 0
           fi
-          git commit -m 'fix: connect all fold OOS results to failure diagnostics [skip ci]'
-          for i in 1 2 3 4 5; do
-            git fetch origin main
-            if git rebase origin/main && git push origin HEAD:main; then
-              echo '✅ 4 Fold OOS optimizer outputs pushed'
-              exit 0
-            fi
-            git rebase --abort || true
-            sleep $((i * 3))
-          done
-          echo '❌ push failed'
-          exit 1
-
-      - name: Upload optimizer artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: profit-optimizer-4fold-${{ github.run_id }}
-          if-no-files-found: warn
-          path: |
-            adversarial_dev_all_results.csv
-            adversarial_dev_selected_candidates.csv
-            adversarial_validation_results.csv
-            adversarial_oos_results.csv
-            adversarial_final_candidates.csv
-            adversarial_multi_oos_folds.csv
-            adversarial_oos_diagnostics.csv
-            adversarial_oos_near_miss.csv
-            multi_oos_folds.csv
-            multi_oos_results/**
-            multi_oos_fold_funnel.csv
-            multi_oos_threshold_diagnostics.csv
-            strategy_policy.json
+          git commit -m 'fix: unify regime expected return OOS and TOP1 runtime'
+          git push origin HEAD
