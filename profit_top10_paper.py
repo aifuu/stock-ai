@@ -64,7 +64,7 @@ def _canonical_policy_payload(policy):
         "oos_avg_return", "oos_pf", "oos_dd", "oos_validation_pf_ratio",
         "mc_sizing", "mc_10y_probability", "mc_15y_probability",
         "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",
-        "strategy_name", "source",
+        "strategy_name", "selection_mode", "regime_expectancy_json", "source",
     )}
     return json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
