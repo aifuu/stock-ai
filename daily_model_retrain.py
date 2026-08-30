@@ -65,6 +65,17 @@ MIN_TRAIN_ROWS = int(os.getenv("RETRAIN_MIN_ROWS", "3000"))
 DOWNLOAD_SLEEP = float(os.getenv("RETRAIN_DOWNLOAD_SLEEP", "0.15"))
 
 
+def notify(msg):
+    """再学習結果のDiscord通知。
+    Discord送信の失敗は再学習/OOSゲートの成否とは無関係なので、
+    通知例外でジョブ全体を失敗扱いにしない。
+    """
+    try:
+        trader.send(msg)
+    except Exception as e:
+        print(f"⚠ Discord通知に失敗しましたが、再学習処理自体は正常終了として扱います: {e}")
+
+
 def make_futures_features():
     """日経225先物(NIY=F)の特徴量を、1日ラグを入れて計算する。"""
     f = trader.download("NIY=F")
@@ -331,9 +342,6 @@ def main():
     oos_dates = [d for d in all_dates if pd.Timestamp(d) >= oos_cutoff]
     print(f"OOS区間: {oos_cutoff.date()} 〜 {last_date.date()}（{len(oos_dates)}営業日、学習からは完全除外）")
 
-    # ★修正(2026-08): target は shift(-HOLD_DAYS) で作っているため、
-    # OOS境界直前の学習行はラベル計算時にOOS価格を参照し得る。
-    # embargo として学習カットオフをHOLD_DAYS*2カレンダー日ぶん前倒しする。
     train_cutoff = oos_cutoff - pd.Timedelta(days=HOLD_DAYS * 2)
     fit_rows = flatten_training_rows(ticker_frames, before_date=train_cutoff)
     print(f"学習データ行数(OOS区間+embargo{HOLD_DAYS}営業日相当分を除く): {len(fit_rows):,}")
@@ -341,7 +349,7 @@ def main():
     if len(fit_rows) < MIN_TRAIN_ROWS:
         msg = f"⚠ 学習データが{MIN_TRAIN_ROWS}行未満({len(fit_rows)}行)のため再学習を見送り"
         print(msg)
-        trader.send(f"🟡 日次モデル再学習｜{today}\n{msg}\nmodel.pklは変更しません")
+        notify(f"🟡 日次モデル再学習｜{today}\n{msg}\nmodel.pklは変更しません")
         return
 
     oos_model = fit_rf(fit_rows)
@@ -354,8 +362,6 @@ def main():
     )
 
     if metrics["trades"] < MIN_OOS_TRADES:
-        # ★修正(2026-08): 判定保留時はmodel.pklを差し替えず、
-        # 前回モデルをそのまま継続使用する（フェイルクローズ）。
         deploy = False
         reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・前回モデルを継続使用"
     elif metrics["pf"] >= MIN_OOS_PF and abs(metrics["max_dd_pct"]) <= MAX_OOS_DD_PCT:
@@ -400,7 +406,7 @@ def main():
         "live_recent_pnl": round(live["pnl"], 2) if live else 0.0,
     })
 
-    trader.send(
+    notify(
         f"🧠 日次モデル再学習(Walk-Forward OOSゲート)｜{today}\n"
         f"OOS区間: 直近{HOLDOUT_DAYS}日｜取引{metrics['trades']}件\n"
         f"OOS PF: {metrics['pf']:.2f}｜勝率: {metrics['win_rate']:.1f}%｜最大DD: {metrics['max_dd_pct']:.1f}%\n"
