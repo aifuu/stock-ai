@@ -6,7 +6,6 @@ on:
     paths:
       - '.github/workflows/refresh-walk-forward-candidates.yml'
   schedule:
-    # 毎週土曜 07:00 JST（利益Optimizerの約2時間前）
     - cron: '0 22 * * 5'
 
 permissions:
@@ -61,7 +60,63 @@ jobs:
           python walk_forward_fast_runner.py
           test -s walk_forward_all_candidates.csv
 
-      - name: Verify candidate coverage and recent OOS density
+      - name: Verify candidate coverage and diagnose date gaps
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          p = Path('walk_forward_all_candidates.csv')
+          c = pd.read_csv(p)
+          if 'date' not in c.columns or 'ticker' not in c.columns:
+              raise SystemExit('❌ candidate CSV lacks date/ticker columns')
+
+          c['date'] = pd.to_datetime(c['date'], errors='coerce').dt.normalize()
+          c = c.dropna(subset=['date'])
+          dates = c['date'].drop_duplicates().sort_values()
+          end = pd.Timestamp('2026-08-22')
+
+          print('candidate rows:', len(c))
+          print('tickers:', c['ticker'].nunique())
+          print('first date:', dates.iloc[0].date() if len(dates) else 'NONE')
+          print('last date:', dates.iloc[-1].date() if len(dates) else 'NONE')
+
+          # WF_END_DATEは土曜なので、固定日付そのものではなく、
+          # WF_END_DATE以下で実際に存在する最終市場日を基準にする。
+          eligible = dates[dates <= end]
+          expected_last = eligible.iloc[-1] if len(eligible) else None
+          print('expected last trading date <= WF_END_DATE:', expected_last.date() if expected_last is not None else 'NONE')
+
+          if expected_last is None:
+              raise SystemExit('❌ no candidate dates at or before WF_END_DATE')
+
+          if dates.iloc[-1] < expected_last:
+              raise SystemExit('❌ candidate CSV ends before expected last trading date')
+
+          recent_dates = dates.iloc[-63:]
+          daily = c.groupby('date').size().reindex(recent_dates, fill_value=0)
+          print('recent 63 trading-day rows:', int(daily.sum()))
+          print('recent daily row median:', float(daily.median()))
+          print('recent daily row min:', int(daily.min()))
+          print('recent daily row max:', int(daily.max()))
+
+          print('--- last 15 candidate dates ---')
+          print(daily.tail(15).to_string())
+
+          missing = [d.date().isoformat() for d in recent_dates if daily.loc[d] == 0]
+          if missing:
+              print('⚠️ zero-candidate dates:', ', '.join(missing))
+
+          # 8/21が欠落している場合は明示する。
+          target = pd.Timestamp('2026-08-21')
+          print('2026-08-21 candidate rows:', int((c['date'] == target).sum()))
+          print('2026-08-20 candidate rows:', int((c['date'] == pd.Timestamp('2026-08-20')).sum()))
+
+          if c['ticker'].nunique() < 50:
+              raise SystemExit('❌ candidate universe unexpectedly small (<50 tickers)')
+          PY
+
+      - name: Run explicit Fold-4 OOS density diagnostic
         run: |
           python - <<'PY'
           import pandas as pd
@@ -71,22 +126,30 @@ jobs:
           c = pd.read_csv(p)
           c['date'] = pd.to_datetime(c['date'], errors='coerce').dt.normalize()
           c = c.dropna(subset=['date'])
-          print('candidate rows:', len(c))
-          print('tickers:', c['ticker'].nunique() if 'ticker' in c.columns else 'UNKNOWN')
-          print('first date:', c['date'].min().date())
-          print('last date:', c['date'].max().date())
-          recent_dates = c['date'].drop_duplicates().sort_values().iloc[-63:]
-          if len(recent_dates):
-              recent = c[c['date'].isin(recent_dates)]
-              daily = c.groupby('date').size().reindex(recent_dates, fill_value=0)
-              print('recent 63 trading-day rows:', len(recent))
-              print('recent daily row median:', daily.median())
-              print('recent daily row min:', daily.min())
-              print('recent daily row max:', daily.max())
-          if c['date'].max() < pd.Timestamp('2026-08-22'):
-              raise SystemExit('❌ candidate CSV is not current through WF_END_DATE')
-          if 'ticker' not in c.columns or c['ticker'].nunique() < 50:
-              raise SystemExit('❌ candidate universe unexpectedly small (<50 tickers)')
+
+          print('============================================================')
+          print('🔎 FOLD-4 OOS DENSITY DIAGNOSTIC')
+          print('ゲート条件・探索閾値・policyは変更しない')
+          print('============================================================')
+
+          # 各候補行の代表的な列が存在する場合、段階別件数を確認する。
+          for col in ['up', 'score', 'nikkei', 'direction', 'signal', 'ai_score', 'probability', 'prob_up']:
+              if col in c.columns:
+                  print(f'column present: {col}')
+
+          # 期間を推定し、最後のOOS相当期間を日付密度で可視化する。
+          dates = c['date'].drop_duplicates().sort_values()
+          if len(dates) >= 90:
+              oos_dates = dates.iloc[-90:]
+              oos = c[c['date'].isin(oos_dates)]
+              print('OOS diagnostic date range:', oos_dates.iloc[0].date(), '->', oos_dates.iloc[-1].date())
+              print('OOS raw candidate rows:', len(oos))
+              print('OOS unique tickers:', oos['ticker'].nunique())
+              print('OOS daily median:', float(oos.groupby('date').size().median()))
+              print('OOS daily min:', int(oos.groupby('date').size().min()))
+              print('OOS daily max:', int(oos.groupby('date').size().max()))
+          else:
+              print('⚠️ fewer than 90 unique candidate dates; no OOS-window estimate')
           PY
 
       - name: Commit refreshed candidates
@@ -99,7 +162,7 @@ jobs:
             echo '変更なし'
             exit 0
           fi
-          git commit -m 'refresh: rebuild walk-forward candidates before OOS optimizer [skip ci]'
+          git commit -m 'refresh: rebuild walk-forward candidates and diagnose OOS density [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
