@@ -3122,138 +3122,73 @@ for pos, prediction_date in enumerate(
  
     # =====================================================
     # 当日の全候補
+    #
+    # ★高速化(2026-08): 銘柄ごとにpredict_probaを個別呼び出し
+    # していたのを、その日の対象銘柄をまとめて1回のバッチ予測に
+    # 変更。model/入力行は変えていないので予測結果は完全に同一、
+    # sklearn呼び出し回数だけ 1077日×約100銘柄 → 1077回に削減。
     # =====================================================
- 
+
     candidates = []
- 
- 
-    for ticker, df in (
-        symbol_data.items()
-    ):
- 
-        if (
-            prediction_date
-            not in
-            df.index
-        ):
- 
+
+    rows_for_batch = []
+    tickers_for_batch = []
+
+    for ticker, df in symbol_data.items():
+        if prediction_date not in df.index:
             continue
- 
- 
-        row = df.loc[
-            prediction_date
-        ]
- 
- 
-        # 流動性
-        if not bool(
-            row["liquid"]
-        ):
- 
+
+        row = df.loc[prediction_date]
+
+        if not bool(row["liquid"]):
             continue
- 
- 
-        x = (
-            row[FEATURES]
-            .to_frame()
-            .T
-        )
- 
- 
-        if (
-            x.isna()
-            .any()
-            .any()
-        ):
- 
+
+        x_row = row[FEATURES]
+
+        if x_row.isna().any():
             continue
- 
- 
-        try:
- 
-            proba = (
-                model
-                .predict_proba(
-                    x
-                )[0]
-            )
- 
-            classes = list(
-                model.classes_
-            )
- 
- 
-            if not all(
-                cls in classes
-                for cls in [
-                    0,
-                    1,
-                    2
-                ]
-            ):
- 
-                continue
- 
- 
-            down_prob = (
-                proba[
-                    classes.index(0)
-                ]
-            )
- 
-            flat_prob = (
-                proba[
-                    classes.index(1)
-                ]
-            )
- 
-            up_prob = (
-                proba[
-                    classes.index(2)
-                ]
-            )
- 
- 
-        except Exception as e:
- 
-            print(
-                f"predict失敗 "
-                f"{ticker} "
-                f"{prediction_date.date()}: "
-                f"{e}"
-            )
- 
-            continue
- 
- 
+
+        rows_for_batch.append(x_row)
+        tickers_for_batch.append((ticker, row))
+
+    if not rows_for_batch:
+        continue
+
+    X_batch = pd.DataFrame(rows_for_batch)
+
+    try:
+        proba_batch = model.predict_proba(X_batch)
+        classes = list(model.classes_)
+    except Exception as e:
+        print(f"predict失敗(batch) {prediction_date.date()}: {e}")
+        continue
+
+    if not all(cls in classes for cls in [0, 1, 2]):
+        continue
+
+    down_idx, flat_idx, up_idx = classes.index(0), classes.index(1), classes.index(2)
+
+    for (ticker, row), proba in zip(tickers_for_batch, proba_batch):
+        down_prob = proba[down_idx]
+        flat_prob = proba[flat_idx]
+        up_prob = proba[up_idx]
+
         signal = calculate_signal(
             row,
             up_prob,
             down_prob,
             flat_prob
         )
- 
- 
+
         signal.update(
             {
-                "date":
-                    prediction_date,
- 
-                "ticker":
-                    ticker,
- 
-                "company":
-                    COMPANY_NAMES.get(
-                        ticker,
-                        ""
-                    ),
+                "date": prediction_date,
+                "ticker": ticker,
+                "company": COMPANY_NAMES.get(ticker, ""),
             }
         )
- 
- 
-        candidates.append(
-            signal
-        )
+
+        candidates.append(signal)
  
  
     if not candidates:
