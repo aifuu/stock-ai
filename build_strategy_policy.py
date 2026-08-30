@@ -132,8 +132,6 @@ except Exception as e:
 if df.empty:
     keep_existing_policy("候補が0件です")
 
-# adversarial_strategy_validator.py の実際の出力名は
-# oos_val_pf_ratio。内部policy名は oos_validation_pf_ratio なので統一する。
 if "oos_validation_pf_ratio" not in df.columns and "oos_val_pf_ratio" in df.columns:
     df["oos_validation_pf_ratio"] = df["oos_val_pf_ratio"]
 
@@ -166,8 +164,6 @@ df["nikkei_filter"] = df["nikkei_filter"].apply(safe_bool)
 mc_columns = ["sizing", "prob_10y", "prob_15y", "prob_20y", "bankruptcy_prob", "p90_max_dd"]
 mc_columns_exist = all(col in df.columns for col in mc_columns)
 if not mc_columns_exist:
-    # ★修正(2026-08): Monte Carlo未実施時は警告だけで続行せず、
-    # 既存policyを維持して自動採用を停止する（フェイルクローズ）。
     keep_existing_policy(f"{INPUT_FILE} にMonte Carlo列がありません。Monte Carlo未検証のため自動採用しません")
 
 approved = df[df["final_status"].astype(str).str.upper().eq("PASS")].copy()
@@ -188,41 +184,51 @@ approved = approved[
     & (approved["oos_validation_pf_ratio"] >= MIN_OOS_TO_VALIDATION_PF)
 ]
 
-if mc_columns_exist:
-    approved = approved[
-        (approved["bankruptcy_prob"] < MIN_MC_BANKRUPTCY_PROB)
-        & (approved["p90_max_dd"].abs() <= MAX_MC_DD90)
-    ]
+approved = approved[
+    (approved["bankruptcy_prob"] < MIN_MC_BANKRUPTCY_PROB)
+    & (approved["p90_max_dd"].abs() <= MAX_MC_DD90)
+]
 
 if approved.empty:
     keep_existing_policy("最終採用条件を満たす戦略なし")
 
-# ★修正(2026-08): 以前はここだけ ["oos_pf","oos_avg_return",...] で
-# 並べ替えており、adversarial_strategy_validator.py の profit_objective
-# (月次プラス比率40%+複利30%+PF15%+平均リターン10%+期待値5%、勝率は
-# 一切使わない設計)と選定基準がズレていた。同じ重み付けに揃える。
-if "oos_monthly_positive_ratio" in approved.columns and "oos_compound_return" in approved.columns:
-    approved["profit_objective"] = (
-        approved["oos_monthly_positive_ratio"] * 0.40
-        + approved["oos_compound_return"].clip(-100, 1000) * 0.30
-        + approved["oos_pf"].clip(0, 8) * 5.0 * 0.15
-        + approved["oos_avg_return"].clip(-5, 5) * 10.0 * 0.10
-        + (
-            approved["oos_expected_value"].clip(-5, 5) * 10.0 * 0.05
-            if "oos_expected_value" in approved.columns
-            else 0.0
-        )
+# =========================================================
+# 最終選定基準を adversarial_strategy_validator.py と完全一致させる。
+# 月間プラス率40% + OOS複利30% + PF15% + 平均リターン10% + 期待利益5%。
+# 勝率は順位付けに使用しない。
+# =========================================================
+required_objective_columns = [
+    "oos_monthly_positive_ratio", "oos_compound_return", "oos_pf", "oos_avg_return"
+]
+missing_objective = [c for c in required_objective_columns if c not in approved.columns]
+if missing_objective:
+    keep_existing_policy(
+        "最終選定に必要な利益最適化列が不足しています: " + ", ".join(missing_objective)
     )
-    sort_cols = ["profit_objective", "oos_monthly_positive_ratio", "oos_compound_return", "oos_pf", "oos_avg_return"]
-else:
-    # 月次/複利列が無い場合のみ、従来の基準にフォールバックする。
-    sort_cols = ["oos_pf", "oos_avg_return", "validation_pf", "validation_signals"]
+
+approved["profit_objective"] = (
+    approved["oos_monthly_positive_ratio"] * 0.40
+    + approved["oos_compound_return"].clip(-100, 1000) * 0.30
+    + approved["oos_pf"].clip(0, 8) * 5.0 * 0.15
+    + approved["oos_avg_return"].clip(-5, 5) * 10.0 * 0.10
+    + (
+        approved["oos_expected_value"].clip(-5, 5) * 10.0 * 0.05
+        if "oos_expected_value" in approved.columns
+        else 0.0
+    )
+)
 
 approved = approved.sort_values(
-    sort_cols, ascending=[False] * len(sort_cols)
+    [
+        "profit_objective",
+        "oos_monthly_positive_ratio",
+        "oos_compound_return",
+        "oos_pf",
+        "oos_avg_return",
+    ],
+    ascending=[False, False, False, False, False],
 ).reset_index(drop=True)
 best = approved.iloc[0]
-old_policy = load_existing_policy()
 
 new_policy = {
     "status": "APPROVED",
@@ -244,12 +250,12 @@ new_policy = {
     "oos_pf": safe_float(best["oos_pf"]),
     "oos_dd": safe_float(best["oos_dd"]),
     "oos_validation_pf_ratio": safe_float(best["oos_validation_pf_ratio"]),
-    "mc_sizing": safe_float(best["sizing"]) if mc_columns_exist else old_policy.get("mc_sizing", 0.005),
-    "mc_10y_probability": safe_float(best["prob_10y"]) if mc_columns_exist else old_policy.get("mc_10y_probability", 0.0),
-    "mc_15y_probability": safe_float(best["prob_15y"]) if mc_columns_exist else old_policy.get("mc_15y_probability", 0.0),
-    "mc_20y_probability": safe_float(best["prob_20y"]) if mc_columns_exist else old_policy.get("mc_20y_probability", 0.0),
-    "mc_bankruptcy_probability": safe_float(best["bankruptcy_prob"]) if mc_columns_exist else old_policy.get("mc_bankruptcy_probability", 0.0),
-    "mc_p90_max_dd": safe_float(best["p90_max_dd"]) if mc_columns_exist else old_policy.get("mc_p90_max_dd", 0.0),
+    "mc_sizing": safe_float(best["sizing"]),
+    "mc_10y_probability": safe_float(best["prob_10y"]),
+    "mc_15y_probability": safe_float(best["prob_15y"]),
+    "mc_20y_probability": safe_float(best["prob_20y"]),
+    "mc_bankruptcy_probability": safe_float(best["bankruptcy_prob"]),
+    "mc_p90_max_dd": safe_float(best["p90_max_dd"]),
     "strategy_name": str(best.get("strategy", "")),
     "source": "adversarial_strategy_validator",
     "approval_signature_version": 1,
@@ -276,3 +282,6 @@ print("ATR SL:", new_policy["atr_sl_multiplier"])
 print("Validation PF:", new_policy["validation_pf"])
 print("OOS PF:", new_policy["oos_pf"])
 print("OOS/Validation PF:", new_policy["oos_validation_pf_ratio"])
+print("月間プラス率:", safe_float(best["oos_monthly_positive_ratio"]))
+print("OOS複利リターン:", safe_float(best["oos_compound_return"]))
+print("期待利益:", safe_float(best.get("oos_expected_value", 0.0)))
