@@ -64,7 +64,6 @@ def stat(x: pd.DataFrame) -> dict:
 
 def add_strength_fields(x: pd.DataFrame) -> pd.DataFrame:
     x = enrich_candidate_frame(x)
-    # Keep the exact shared formula explicit for auditability.
     x["individual_strength"] = [
         individual_strength(u, d, s, rs)
         for u, d, s, rs in zip(x["up_prob"], x["down_prob"], x["score"], x["relative_strength"])
@@ -76,8 +75,7 @@ def add_strength_fields(x: pd.DataFrame) -> pd.DataFrame:
 def choose_phase(frame: pd.DataFrame, expectancy_table: dict) -> pd.DataFrame:
     if frame.empty:
         return frame.copy()
-    records = frame.to_dict("records")
-    return pd.DataFrame(rank_candidates(records, expectancy_table, top_n=TOP_N))
+    return pd.DataFrame(rank_candidates(frame.to_dict("records"), expectancy_table, top_n=TOP_N))
 
 
 def gate_ok(o: dict) -> bool:
@@ -94,6 +92,7 @@ def gate_ok(o: dict) -> bool:
 def main() -> None:
     if not Path(CANDIDATE_FILE).exists():
         raise RuntimeError(f"{CANDIDATE_FILE} がありません")
+
     c = pd.read_csv(CANDIDATE_FILE)
     c["date"] = pd.to_datetime(c["date"], errors="coerce").dt.normalize()
     c = c[(c["date"] >= START) & (c["date"] <= END)].dropna(subset=["date"]).copy()
@@ -103,7 +102,9 @@ def main() -> None:
         raise RuntimeError(f"複数OOSに必要な営業日が不足: {len(dates)}")
 
     fold_rows = []
-    final_rows = []
+    last_oos_table = {"global": 0.0, "regimes": {}, "groups": {}}
+    last_validation = stat(pd.DataFrame())
+
     for fold in range(1, FOLDS + 1):
         end_pos = len(dates) - (FOLDS - fold) * OOS_DAYS
         oos_dates = dates[end_pos - OOS_DAYS:end_pos]
@@ -111,6 +112,7 @@ def main() -> None:
         if len(pre_dates) <= PURGE + EMBARGO + 120:
             raise RuntimeError(f"Fold {fold}: 過去学習期間不足")
 
+        # Purge/embargo: OOS直前の期間を期待値キャリブレーションへ混ぜない。
         pre_dates = pre_dates[:max(0, len(pre_dates) - PURGE - EMBARGO)]
         cut = int(len(pre_dates) * 0.60)
         calibration_dates = pre_dates[:max(1, cut // 2)]
@@ -122,19 +124,23 @@ def main() -> None:
         val = c[c.date.isin(validation_dates)]
         oo = c[c.date.isin(oos_dates)]
 
-        # Every table is built only from rows strictly earlier than the phase it scores.
+        # 各フェーズの選定表は、そのフェーズより前のデータだけで作る。
         cal_table = build_expectancy_table(cal)
         dev_selected = choose_phase(dev, cal_table)
+
         val_table = build_expectancy_table(pd.concat([cal, dev], ignore_index=True))
         val_selected = choose_phase(val, val_table)
+
         oos_table = build_expectancy_table(pd.concat([cal, dev, val], ignore_index=True))
         oos_selected = choose_phase(oo, oos_table)
+        last_oos_table = oos_table
+        last_validation = stat(val_selected)
 
         d = stat(dev_selected)
-        v = stat(val_selected)
+        v = last_validation
         o = stat(oos_selected)
         passed = gate_ok(o)
-        row = {
+        fold_rows.append({
             "fold": fold,
             "strategy": STRATEGY,
             "up": 0,
@@ -148,62 +154,24 @@ def main() -> None:
             **{f"oos_{k}": value for k, value in o.items()},
             "oos_pass": passed,
             "regime_expectancy_json": json.dumps(oos_table, ensure_ascii=False, sort_keys=True),
-        }
-        fold_rows.append(row)
-
-        if passed:
-            final_rows.append({
-                "strategy": STRATEGY,
-                "final_status": "PASS",
-                "up_threshold": 0,
-                "score_threshold": 0,
-                "nikkei_filter": False,
-                "tp_multiplier": 3.0,
-                "sl_multiplier": 1.5,
-                "hold_days": 5,
-                "validation_signals": v["signals"],
-                "validation_win_rate": 0.0,
-                "validation_avg_return": v["avg_return"],
-                "validation_pf": v["pf"],
-                "validation_dd": v["dd"],
-                "oos_signals": o["signals"],
-                "oos_win_rate": 0.0,
-                "oos_avg_return": o["avg_return"],
-                "oos_pf": o["pf"],
-                "oos_dd": o["dd"],
-                "oos_validation_pf_ratio": 1.0,
-                "oos_monthly_positive_ratio": o["monthly_positive_ratio"],
-                "oos_compound_return": o["compound_return"],
-                "oos_compound_final_capital": o["final_capital"],
-                "oos_expected_value": o["expected_value"],
-                "multi_oos_folds": 1,
-                "positive_oos_folds": 1,
-                "selection_mode": "REGIME_EXPECTED_RETURN_TOP1",
-                "regime_expectancy_json": json.dumps(oos_table, ensure_ascii=False, sort_keys=True),
-                # MC fields are retained as required policy fields; this validator does not invent MC results.
-                "sizing": 0.0,
-                "prob_10y": 0.0,
-                "prob_15y": 0.0,
-                "prob_20y": 0.0,
-                "bankruptcy_prob": 100.0,
-                "p90_max_dd": 100.0,
-            })
-        print(f"Fold {fold}: OOS={o['signals']} | PF={o['pf']:.2f} | EV={o['expected_value']:+.3f}% | {'PASS' if passed else 'FAIL'}")
+        })
+        print(
+            f"Fold {fold}: OOS={o['signals']} | PF={o['pf']:.2f} | "
+            f"EV={o['expected_value']:+.3f}% | {'PASS' if passed else 'FAIL'}"
+        )
 
     folds_df = pd.DataFrame(fold_rows)
     folds_df.to_csv(FOLD_FILE, index=False, encoding="utf-8-sig")
     folds_df.to_csv(OOS_FILE, index=False, encoding="utf-8-sig")
 
-    # Require the unchanged four-fold gate. A single fold PASS is never enough.
+    # 既存の4-foldゲート条件を変更しない。
     positive = int((folds_df["oos_compound_return"] > 0).sum())
     total = int(pd.to_numeric(folds_df["oos_signals"], errors="coerce").sum())
     pf_min = float(pd.to_numeric(folds_df["oos_pf"], errors="coerce").replace(np.inf, 99).min())
     avg_min = float(pd.to_numeric(folds_df["oos_avg_return"], errors="coerce").min())
     monthly_min = float(pd.to_numeric(folds_df["oos_monthly_positive_ratio"], errors="coerce").min())
     dd_worst = float(pd.to_numeric(folds_df["oos_dd"], errors="coerce").min())
-    compound = 1.0
-    for value in folds_df["oos_compound_return"]:
-        compound *= 1.0 + float(value) / 100.0
+    compound = float(np.prod(1.0 + pd.to_numeric(folds_df["oos_compound_return"], errors="coerce") / 100.0))
     compound_return = (compound - 1.0) * 100.0
     final_pass = (
         positive >= MIN_POSITIVE
@@ -216,31 +184,59 @@ def main() -> None:
     )
 
     if final_pass:
-        # Aggregate only this verified strategy; preserve the most recent OOS table for live policy.
-        base = final_rows[-1].copy()
-        base["multi_oos_folds"] = FOLDS
-        base["positive_oos_folds"] = positive
-        base["oos_signals"] = total
-        base["oos_pf"] = pf_min
-        base["oos_avg_return"] = avg_min
-        base["oos_monthly_positive_ratio"] = monthly_min
-        base["oos_dd"] = dd_worst
-        base["oos_compound_return"] = compound_return
-        base["oos_compound_final_capital"] = CAPITAL * compound
-        base["final_status"] = "PASS"
-        base["profit_objective"] = (
-            monthly_min * 0.40
-            + np.clip(compound_return, -100, 1000) * 0.30
-            + np.clip(pf_min, 0, 8) * 5.0 * 0.15
-            + np.clip(avg_min, -5, 5) * 10.0 * 0.10
-            + np.clip(float(base["oos_expected_value"]), -5, 5) * 10.0 * 0.05
-        )
-        final = pd.DataFrame([base])
+        final = pd.DataFrame([{
+            "strategy": STRATEGY,
+            "final_status": "PASS",
+            "up_threshold": 0,
+            "score_threshold": 0,
+            "nikkei_filter": False,
+            "tp_multiplier": 3.0,
+            "sl_multiplier": 1.5,
+            "hold_days": 5,
+            "validation_signals": int(folds_df["validation_signals"].sum()),
+            "validation_win_rate": 0.0,
+            "validation_avg_return": float(folds_df["validation_avg_return"].min()),
+            "validation_pf": float(folds_df["validation_pf"].min()),
+            "validation_dd": float(folds_df["validation_dd"].min()),
+            "oos_signals": total,
+            "oos_win_rate": 0.0,
+            "oos_avg_return": avg_min,
+            "oos_pf": pf_min,
+            "oos_dd": dd_worst,
+            "oos_validation_pf_ratio": 1.0,
+            "oos_monthly_positive_ratio": monthly_min,
+            "oos_compound_return": compound_return,
+            "oos_compound_final_capital": CAPITAL * compound,
+            "oos_expected_value": float(folds_df["oos_expected_value"].min()),
+            "multi_oos_folds": FOLDS,
+            "positive_oos_folds": positive,
+            "selection_mode": "REGIME_EXPECTED_RETURN_TOP1",
+            "selection_version": "regime_profit_core_v1",
+            "regime_expectancy_json": json.dumps(last_oos_table, ensure_ascii=False, sort_keys=True),
+            "sizing": None,
+            "prob_10y": None,
+            "prob_15y": None,
+            "prob_20y": None,
+            "bankruptcy_prob": None,
+            "p90_max_dd": None,
+            "profit_objective": (
+                monthly_min * 0.40
+                + np.clip(compound_return, -100, 1000) * 0.30
+                + np.clip(pf_min, 0, 8) * 5.0 * 0.15
+                + np.clip(avg_min, -5, 5) * 10.0 * 0.10
+                + np.clip(float(folds_df["oos_expected_value"].min()), -5, 5) * 10.0 * 0.05
+            ),
+        }])
     else:
         final = pd.DataFrame(columns=["strategy", "final_status", "oos_signals"])
 
     final.to_csv(FINAL_FILE, index=False, encoding="utf-8-sig")
-    print(f"4-FOLD結果: {'PASS' if final_pass else 'FAIL'} | positive={positive}/{FOLDS} | total={total} | PF(min)={pf_min:.2f} | EV(min)={avg_min:+.3f}% | monthly(min)={monthly_min:.1f}%")
+    print(
+        f"4-FOLD結果: {'PASS' if final_pass else 'FAIL'} | "
+        f"positive={positive}/{FOLDS} | total={total} | PF(min)={pf_min:.2f} | "
+        f"EV(min)={avg_min:+.3f}% | monthly(min)={monthly_min:.1f}% | "
+        f"compound={compound_return:+.2f}%"
+    )
 
 
 if __name__ == "__main__":
