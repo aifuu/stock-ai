@@ -9,6 +9,7 @@ CANDIDATE_FILE = "walk_forward_all_candidates.csv"
 FINAL_FILE = "adversarial_final_candidates.csv"
 FOLD_FILE = "adversarial_multi_oos_folds.csv"
 OOS_FILE = "adversarial_oos_results.csv"
+DEV_ALL_FILE = "adversarial_dev_all_combos.csv"
 START_DATE = pd.Timestamp(os.getenv("WF_START_DATE", "2021-01-01"))
 END_DATE = pd.Timestamp(os.getenv("WF_END_DATE", "2026-08-22"))
 TOTAL_OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "252"))
@@ -104,6 +105,7 @@ def trade(prices, date, entry, atr_ratio, tp, sl, hold):
 def evaluate(df, prices, params):
     up, score, nikkei, tp, sl, hold = params
     x = select(df, up, score, nikkei)
+    ai_buy_candidates = len(x)
     rows = []
     for _, r in x.iterrows():
         p = prices.get(r.ticker)
@@ -116,6 +118,7 @@ def evaluate(df, prices, params):
         ret = trade(p, r.date, float(r.price), atr_ratio, tp, sl, hold)
         if ret is not None:
             rows.append((r.date, float(ret)))
+    tp_sl_resolved = len(rows)
     if not rows:
         return {
             "signals": 0,
@@ -124,6 +127,9 @@ def evaluate(df, prices, params):
             "dd": 0.0,
             "monthly_positive_ratio": 0.0,
             "compound_return": 0.0,
+            "final_capital": float(INITIAL_CAPITAL),
+            "ai_buy_candidates": ai_buy_candidates,
+            "tp_sl_resolved": tp_sl_resolved,
         }
     z = pd.DataFrame(rows, columns=["date", "return"]).sort_values("date")
     daily = z.groupby("date")["return"].mean()
@@ -142,6 +148,8 @@ def evaluate(df, prices, params):
         "monthly_positive_ratio": float((monthly > 0).mean() * 100) if len(monthly) else 0.0,
         "compound_return": float((eq.iloc[-1] - 1) * 100),
         "final_capital": float(INITIAL_CAPITAL * eq.iloc[-1]),
+        "ai_buy_candidates": ai_buy_candidates,
+        "tp_sl_resolved": tp_sl_resolved,
     }
 
 
@@ -191,6 +199,7 @@ for ticker in c.ticker.drop_duplicates():
     time.sleep(0.03)
 
 strategy_fold_rows = []
+dev_all_rows = []
 for fold in range(1, FOLDS + 1):
     end_pos = len(dates) - (FOLDS - fold) * FOLD_OOS_DAYS
     start_pos = end_pos - FOLD_OOS_DAYS
@@ -209,7 +218,16 @@ for fold in range(1, FOLDS + 1):
     dev_scores = []
     for params in PARAMS:
         s = evaluate(dev_df, prices, params)
-        if s["signals"] >= 20 and s["avg_return"] > 0 and s["pf"] >= 1:
+        dev_pass = s["signals"] >= 20 and s["avg_return"] > 0 and s["pf"] >= 1
+        dev_all_rows.append({
+            "fold": fold, "up": params[0], "score": params[1], "nikkei": params[2],
+            "tp": params[3], "sl": params[4], "hold": params[5],
+            "ai_buy_candidates": s["ai_buy_candidates"], "tp_sl_resolved": s["tp_sl_resolved"],
+            "signals": s["signals"], "avg_return": s["avg_return"], "pf": s["pf"],
+            "dd": s["dd"], "monthly_positive_ratio": s["monthly_positive_ratio"],
+            "compound_return": s["compound_return"], "dev_pass": dev_pass,
+        })
+        if dev_pass:
             obj = (
                 0.35 * s["monthly_positive_ratio"]
                 + 0.30 * np.clip(s["compound_return"], -100, 500)
@@ -229,8 +247,15 @@ for fold in range(1, FOLDS + 1):
     if not chosen:
         chosen = [(0.0, p, evaluate(val_df, prices, p)) for _, p in validation_candidates[:50]]
 
+    ref_row = next(
+        (r for r in dev_all_rows if r["fold"] == fold and r["up"] == min(UP) and r["score"] == min(SCORE) and r["nikkei"] is False),
+        None,
+    )
+    single_fold_oos_pass = 0
     for _, params, vs in chosen:
         os_ = evaluate(oos_df, prices, params)
+        if passes(os_):
+            single_fold_oos_pass += 1
         name = (
             f"UP{params[0]}_SCORE{params[1]}_NIKKEI{'ON' if params[2] else 'OFF'}"
             f"_TP{params[3]}_SL{params[4]}_H{params[5]}"
@@ -251,45 +276,57 @@ for fold in range(1, FOLDS + 1):
             **{"oos_" + k: v for k, v in os_.items()},
             "oos_pass": passes(os_),
         })
+    print(f"  ── Fold {fold} ファネル(閾値は変更していません) ──")
+    print(f"  生候補行数(DEV期間・全銘柄合算)         : {len(dev_df):,}")
+    if ref_row is not None:
+        print(f"  AI BUY候補(最も緩いUP{min(UP)}/SCORE{min(SCORE)}/NIKKEI OFF): {ref_row['ai_buy_candidates']:,}")
+        print(f"    うちTP/SL判定まで到達               : {ref_row['tp_sl_resolved']:,}")
+    print(f"  DEV通過パラメータ数(全{len(PARAMS):,}通り中)  : {len(dev_scores):,}")
+    print(f"  VALIDATION通過パラメータ数             : {len(valid):,} / 検証対象{len(validation_candidates):,}")
+    print(f"  単一Fold OOS合格パラメータ数(chosen{len(chosen)}件中): {single_fold_oos_pass:,}")
+
+pd.DataFrame(dev_all_rows).to_csv(DEV_ALL_FILE, index=False, encoding="utf-8-sig")
+print(f"📁 {DEV_ALL_FILE}(全fold・全パラメータの生結果、合否問わず)を保存しました")
 
 fold_table = pd.DataFrame(strategy_fold_rows)
 fold_table.to_csv(FOLD_FILE, index=False, encoding="utf-8-sig")
 grouped = []
-for name, g in fold_table.groupby("strategy"):
-    if len(g) < FOLDS:
-        continue
-    positive = int((g.oos_compound_return > 0).sum())
-    total = int(g.oos_signals.sum())
-    pfv = pd.to_numeric(g.oos_pf, errors="coerce").replace([np.inf], np.nan).dropna()
-    avg = pd.to_numeric(g.oos_avg_return, errors="coerce")
-    compound = float(((1 + avg.fillna(0) / 100).prod() - 1) * 100)
-    monthly = float(pd.to_numeric(g.oos_monthly_positive_ratio, errors="coerce").mean())
-    worst = float(pd.to_numeric(g.oos_dd, errors="coerce").min())
-    grouped.append({
-        "strategy": name,
-        "folds": len(g),
-        "positive_oos_folds": positive,
-        "oos_signals": total,
-        "oos_pf_min": float(pfv.min()) if len(pfv) else 0.0,
-        "oos_pf_mean": float(pfv.mean()) if len(pfv) else 0.0,
-        "oos_avg_return_mean": float(avg.mean()),
-        "oos_monthly_positive_ratio_mean": monthly,
-        "oos_worst_dd": worst,
-        "oos_compound_return": compound,
-        "up": int(g.up.iloc[-1]),
-        "score": int(g.score.iloc[-1]),
-        "nikkei": bool(g.nikkei.iloc[-1]),
-        "tp": float(g.tp.iloc[-1]),
-        "sl": float(g.sl.iloc[-1]),
-        "hold": int(g.hold.iloc[-1]),
-        "oos_pass": (
-            positive >= MIN_POSITIVE_FOLDS
-            and total >= MIN_TOTAL_TRADES
-            and compound > 0
-            and monthly >= MIN_MONTHLY
-            and worst >= -MAX_DD
-        ),
-    })
+if not fold_table.empty and "strategy" in fold_table.columns:
+    for name, g in fold_table.groupby("strategy"):
+        if len(g) < FOLDS:
+            continue
+        positive = int((g.oos_compound_return > 0).sum())
+        total = int(g.oos_signals.sum())
+        pfv = pd.to_numeric(g.oos_pf, errors="coerce").replace([np.inf], np.nan).dropna()
+        avg = pd.to_numeric(g.oos_avg_return, errors="coerce")
+        compound = float(((1 + avg.fillna(0) / 100).prod() - 1) * 100)
+        monthly = float(pd.to_numeric(g.oos_monthly_positive_ratio, errors="coerce").mean())
+        worst = float(pd.to_numeric(g.oos_dd, errors="coerce").min())
+        grouped.append({
+            "strategy": name,
+            "folds": len(g),
+            "positive_oos_folds": positive,
+            "oos_signals": total,
+            "oos_pf_min": float(pfv.min()) if len(pfv) else 0.0,
+            "oos_pf_mean": float(pfv.mean()) if len(pfv) else 0.0,
+            "oos_avg_return_mean": float(avg.mean()),
+            "oos_monthly_positive_ratio_mean": monthly,
+            "oos_worst_dd": worst,
+            "oos_compound_return": compound,
+            "up": int(g.up.iloc[-1]),
+            "score": int(g.score.iloc[-1]),
+            "nikkei": bool(g.nikkei.iloc[-1]),
+            "tp": float(g.tp.iloc[-1]),
+            "sl": float(g.sl.iloc[-1]),
+            "hold": int(g.hold.iloc[-1]),
+            "oos_pass": (
+                positive >= MIN_POSITIVE_FOLDS
+                and total >= MIN_TOTAL_TRADES
+                and compound > 0
+                and monthly >= MIN_MONTHLY
+                and worst >= -MAX_DD
+            ),
+        })
 
 final = pd.DataFrame(grouped)
 final = final[final.oos_pass].copy() if not final.empty else final
