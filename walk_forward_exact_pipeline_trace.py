@@ -12,7 +12,7 @@ TARGETS={"2026-08-18","2026-08-19","2026-08-20"}
 
 def patch_source(s):
     marker='candidate_history = []\n'
-    injected='''candidate_history = []\n\n_TRACE_ROWS=[]\n_TRACE_TARGETS={"2026-08-18","2026-08-19","2026-08-20"}\n'''
+    injected='''candidate_history = []\n\n# The generated temporary source executes in its own runpy namespace.\n# Define the trace output path inside that namespace so OUT is always available.\n_TRACE_OUT = Path(__file__).resolve().with_name("walk_forward_exact_pipeline_trace.csv")\n_TRACE_ROWS=[]\n_TRACE_TARGETS={"2026-08-18","2026-08-19","2026-08-20"}\n'''
     if marker not in s: raise RuntimeError("candidate_history marker not found")
     s=s.replace(marker,injected,1)
 
@@ -41,9 +41,8 @@ def patch_source(s):
     if old not in s: raise RuntimeError("candidate end block not found")
     s=s.replace(old,new,1)
 
-    # Insert output immediately before the existing final candidate-history check.
     marker='# =========================================================\n# 候補が無い場合\n'
-    block='''# =========================================================\n# EXACT TRACE OUTPUT (diagnostic only)\n# =========================================================\nif _TRACE_ROWS:\n    with OUT.open("w",encoding="utf-8",newline="") as f:\n        w=csv.DictWriter(f,fieldnames=list(_TRACE_ROWS[0].keys()))\n        w.writeheader(); w.writerows(_TRACE_ROWS)\n    print("\\n🔬 EXACT PIPELINE TRACE")\n    for r in _TRACE_ROWS:\n        print(f"{r['date']} | expected={r['expected_tickers']} present={r['symbol_data_present']} liquid={r['liquid']} feature={r['feature_valid']} predict={r['prediction_rows']} signal={r['signal_rows']} raw_candidate={r['raw_candidates']} score>=50={r['score_ge_50']} up>=50={r['up_ge_50']} up>down={r['up_gt_down']} flat<50={r['flat_lt_50']}")\n    print(f"診断CSV: {OUT.name}")\n\n\n'''
+    block='''# =========================================================\n# EXACT TRACE OUTPUT (diagnostic only)\n# =========================================================\nif _TRACE_ROWS:\n    with _TRACE_OUT.open("w",encoding="utf-8",newline="") as f:\n        w=csv.DictWriter(f,fieldnames=list(_TRACE_ROWS[0].keys()))\n        w.writeheader(); w.writerows(_TRACE_ROWS)\n    print("\\n🔬 EXACT PIPELINE TRACE")\n    for r in _TRACE_ROWS:\n        print(f"{r['date']} | expected={r['expected_tickers']} present={r['symbol_data_present']} liquid={r['liquid']} feature={r['feature_valid']} predict={r['prediction_rows']} signal={r['signal_rows']} raw_candidate={r['raw_candidates']} score>=50={r['score_ge_50']} up>=50={r['up_ge_50']} up>down={r['up_gt_down']} flat<50={r['flat_lt_50']}")\n    print(f"診断CSV: {_TRACE_OUT.name}")\n\n\n'''
     if marker not in s: raise RuntimeError("output marker not found")
     s=s.replace(marker,block+marker,1)
     return s
