@@ -61,6 +61,7 @@ jobs:
       - name: Full multi-OOS validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
           RETRAIN_HOLDOUT_DAYS: '90'
           RETRAIN_MIN_OOS_TRADES: '15'
@@ -80,6 +81,7 @@ jobs:
           WF_MIN_TOTAL_OOS_TRADES: '20'
         run: |
           set -e
+          test -n "$DISCORD_WEBHOOK" || { echo '❌ DISCORD_WEBHOOK が未設定'; exit 1; }
           echo '===== 1/4 DAILY MODEL RETRAIN ====='
           python daily_model_retrain.py
           echo '===== 2/4 WALK-FORWARD ====='
