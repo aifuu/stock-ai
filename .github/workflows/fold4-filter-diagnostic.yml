@@ -1,0 +1,80 @@
+name: Fold 4 OOS Filter Funnel Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'fold4_oos_filter_trace.py'
+      - '.github/workflows/fold4-filter-diagnostic.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-ai-fold4-filter-diagnostic
+  cancel-in-progress: false
+
+env:
+  WF_START_DATE: '2021-01-01'
+  WF_END_DATE: '2026-08-22'
+  WF_MULTI_OOS_DAYS: '239'
+  WF_TOP_N: '10'
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy
+
+      - name: Syntax check
+        run: python -m py_compile fold4_oos_filter_trace.py
+
+      - name: Run exact Fold 4 funnel trace
+        run: |
+          echo '============================================================'
+          echo '🔎 FOLD 4 OOS FILTER FUNNEL DIAGNOSTIC'
+          echo '目的: 8,016 → 8 のような件数減少を段階別に特定'
+          echo 'ゲート条件・探索閾値・policyは変更しない'
+          echo '============================================================'
+          python fold4_oos_filter_trace.py
+
+      - name: Show diagnostic CSV
+        run: |
+          test -s fold4_oos_filter_trace.csv
+          cat fold4_oos_filter_trace.csv
+
+      - name: Commit diagnostic result
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add fold4_oos_filter_trace.csv
+          if git diff --cached --quiet; then
+            echo '変更なし'
+            exit 0
+          fi
+          git commit -m 'diagnostic: record exact Fold 4 OOS filter funnel [skip ci]'
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
+
+      - name: Upload diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fold4-oos-filter-trace-${{ github.run_id }}
+          if-no-files-found: error
+          path: fold4_oos_filter_trace.csv
