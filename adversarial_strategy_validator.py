@@ -251,7 +251,7 @@ def run_strategy(phase_df, up, score, nikkei, tp, sl, hold):
             "return": ret,
             "hold_days": days,
             "phase": r["phase"],
-                "risk_unit": max(1e-8, float(atr_ratio) / 100.0 * float(sl)),
+            "risk_unit": max(1e-8, float(r["atr_ratio"]) / 100.0 * float(sl)),
         })
     return pd.DataFrame(rows)
 
