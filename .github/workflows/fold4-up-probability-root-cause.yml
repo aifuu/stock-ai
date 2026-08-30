@@ -1,0 +1,46 @@
+name: Fold 4 UP Probability Root Cause Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pandas numpy
+
+      - name: Verify candidate CSV
+        run: |
+          test -s walk_forward_all_candidates.csv
+          python - <<'PY'
+          import pandas as pd
+          p='walk_forward_all_candidates.csv'
+          df=pd.read_csv(p)
+          print('candidate rows:',len(df))
+          print('columns:',', '.join(df.columns))
+          print('last date:',df['date'].max())
+          PY
+
+      - name: Run Fold 4 UP probability root-cause diagnostic
+        run: python fold4_up_probability_root_cause_diagnostic.py
+
+      - name: Upload diagnostic artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fold4-up-probability-root-cause
+          path: |
+            fold4_up_probability_root_cause.csv
+            fold4_up_probability_root_cause_detail.csv
+          if-no-files-found: error
