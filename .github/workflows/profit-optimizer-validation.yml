@@ -19,6 +19,8 @@ env:
   WF_INITIAL_CAPITAL: '1000000'
   WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
   WF_MAX_OOS_DD: '35'
+  WF_MIN_POSITIVE_FOLDS: '3'
+  WF_MIN_TOTAL_OOS_TRADES: '20'
 
 jobs:
   validate:
@@ -47,6 +49,7 @@ jobs:
         run: |
           python -m py_compile adversarial_strategy_validator.py
           python -m py_compile multi_oos_profit_gate.py
+          python -m py_compile adversarial_oos_diagnostic.py
           python -m py_compile build_strategy_policy.py
 
       - name: Build candidates when needed
@@ -62,12 +65,28 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python multi_oos_profit_gate.py
 
-      - name: Verify diagnostic outputs without changing gates
+      - name: Run OOS failure diagnosis
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          WF_OOS_FOLDS: '4'
+          WF_MIN_POSITIVE_FOLDS: '3'
+          WF_MIN_TOTAL_OOS_TRADES: '20'
+          WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
+          WF_MAX_OOS_DD: '35'
+        run: |
+          echo '============================================================'
+          echo '🔎 OOS FAILURE DIAGNOSTIC'
+          echo '目的: OOS PASS=0 の原因を戦略ごとに可視化する'
+          echo '重要: ゲート条件・探索閾値・policyは変更しない'
+          echo '優先目標: 毎日取引 / 毎月収益プラス / 収益率優先'
+          echo '============================================================'
+          python adversarial_oos_diagnostic.py
+
+      - name: Verify threshold funnel diagnostics without changing gates
         run: |
           python - <<'PY'
           import pandas as pd
           from pathlib import Path
-
           src = Path('walk_forward_all_candidates.csv')
           out = Path('multi_oos_threshold_diagnostics.csv')
           c = pd.read_csv(src)
@@ -94,10 +113,11 @@ jobs:
                               y=x[(x.up_prob>=up)&(x.up_prob>x.down_prob)&(x.flat_prob<50)&(x.score>=score)]
                               if nikkei: y=y[y.nikkei_uptrend]
                               rows.append({'fold':fold,'phase':phase,'up':up,'score':score,'nikkei':nikkei,'candidate_count':len(y)})
-          pd.DataFrame(rows).to_csv(out,index=False,encoding='utf-8-sig')
-          print(f'診断CSV: {out} / {len(rows)} rows')
-          print(pd.DataFrame(rows).sort_values(['fold','phase','candidate_count'], ascending=[True,True,False]).groupby(['fold','phase']).head(5).to_string(index=False))
-          print('※これは診断専用。PASS条件・policy・閾値は変更しません。')
+          d = pd.DataFrame(rows)
+          d.to_csv(out,index=False,encoding='utf-8-sig')
+          print(f'診断CSV: {out} / {len(d)} rows')
+          print(d.sort_values(['fold','phase','candidate_count'], ascending=[True,True,False]).groupby(['fold','phase']).head(5).to_string(index=False))
+          print('※診断専用。PASS条件・policy・閾値は変更しません。')
           PY
 
       - name: Build verified policy
@@ -126,13 +146,13 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv multi_oos_folds.csv multi_oos_results/ multi_oos_fold_funnel.csv multi_oos_threshold_diagnostics.csv 2>/dev/null || true
+          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv adversarial_oos_diagnostics.csv adversarial_oos_near_miss.csv multi_oos_folds.csv multi_oos_results/ multi_oos_fold_funnel.csv multi_oos_threshold_diagnostics.csv 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
             echo '変更なし'
             exit 0
           fi
-          git commit -m 'chore: add non-invasive OOS threshold diagnostics [skip ci]'
+          git commit -m 'chore: add non-invasive OOS failure diagnostics [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
@@ -156,6 +176,8 @@ jobs:
             adversarial_validation_results.csv
             adversarial_oos_results.csv
             adversarial_final_candidates.csv
+            adversarial_oos_diagnostics.csv
+            adversarial_oos_near_miss.csv
             multi_oos_folds.csv
             multi_oos_results/**
             multi_oos_fold_funnel.csv
