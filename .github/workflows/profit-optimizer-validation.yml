@@ -65,6 +65,57 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python multi_oos_profit_gate.py
 
+      - name: Build OOS diagnostic input from all Fold results
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('multi_oos_results')
+          files = sorted(root.glob('fold_*/adversarial_oos_results.csv'))
+          rows = []
+          print('============================================================')
+          print('🔧 BUILD OOS DIAGNOSTIC INPUT')
+          print('目的: 4 Foldの実OOS結果を診断スクリプトへ確実に受け渡す')
+          print('ゲート条件・探索閾値・policyは変更しない')
+          print('============================================================')
+
+          for path in files:
+              try:
+                  df = pd.read_csv(path)
+              except Exception as e:
+                  print(f'⚠ 読み込み失敗: {path}: {e}')
+                  continue
+              if df.empty:
+                  print(f'⚠ 空ファイル: {path}')
+                  continue
+              fold_text = path.parent.name
+              try:
+                  fold_no = int(fold_text.split('_')[-1])
+              except ValueError:
+                  print(f'⚠ Fold番号を取得できないためスキップ: {path}')
+                  continue
+              df = df.copy()
+              df['diagnostic_fold'] = fold_no
+              rows.append(df)
+              print(f'✅ {path}: {len(df)} rows / Fold {fold_no}')
+
+          out = Path('adversarial_multi_oos_folds.csv')
+          if rows:
+              merged = pd.concat(rows, ignore_index=True, sort=False)
+              if 'fold' not in merged.columns:
+                  merged['fold'] = merged['diagnostic_fold']
+              else:
+                  merged['fold'] = pd.to_numeric(merged['fold'], errors='coerce').fillna(merged['diagnostic_fold']).astype(int)
+              merged.to_csv(out, index=False, encoding='utf-8-sig')
+              print(f'📁 {out}: {len(merged)} rows / {merged["fold"].nunique()} folds')
+              print('列:', ', '.join(merged.columns))
+          else:
+              # 診断側が「入力なし」と明示できるよう、空CSVを作る。
+              pd.DataFrame().to_csv(out, index=False)
+              print(f'⚠ {out}: 診断対象データなし')
+          PY
+
       - name: Run OOS failure diagnosis
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -146,13 +197,13 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv adversarial_oos_diagnostics.csv adversarial_oos_near_miss.csv multi_oos_folds.csv multi_oos_results/ multi_oos_fold_funnel.csv multi_oos_threshold_diagnostics.csv 2>/dev/null || true
+          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv adversarial_oos_diagnostics.csv adversarial_oos_near_miss.csv adversarial_multi_oos_folds.csv multi_oos_folds.csv multi_oos_results/ multi_oos_fold_funnel.csv multi_oos_threshold_diagnostics.csv 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
             echo '変更なし'
             exit 0
           fi
-          git commit -m 'chore: add non-invasive OOS failure diagnostics [skip ci]'
+          git commit -m 'fix: connect all fold OOS results to failure diagnostics [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
@@ -176,6 +227,7 @@ jobs:
             adversarial_validation_results.csv
             adversarial_oos_results.csv
             adversarial_final_candidates.csv
+            adversarial_multi_oos_folds.csv
             adversarial_oos_diagnostics.csv
             adversarial_oos_near_miss.csv
             multi_oos_folds.csv
