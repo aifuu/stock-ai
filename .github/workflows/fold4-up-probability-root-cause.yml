@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip pandas numpy yfinance
+        run: python -m pip install --upgrade pip pandas numpy yfinance scikit-learn requests
 
       - name: Verify candidate CSV
         run: |
@@ -36,8 +36,13 @@ jobs:
       - name: Run Fold 4 UP probability root-cause diagnostic
         run: python fold4_up_probability_root_cause_diagnostic.py
 
-      - name: Run Fold 4 candidate pipeline coverage diagnostic
-        run: python fold4_candidate_pipeline_trace.py
+      - name: Run EXACT walk-forward candidate pipeline trace
+        run: python walk_forward_exact_pipeline_trace.py
+
+      - name: Verify exact trace artifact
+        run: |
+          test -s walk_forward_exact_pipeline_trace.csv
+          cat walk_forward_exact_pipeline_trace.csv
 
       - name: Upload diagnostic artifacts
         uses: actions/upload-artifact@v4
@@ -46,5 +51,5 @@ jobs:
           path: |
             fold4_up_probability_root_cause.csv
             fold4_up_probability_root_cause_detail.csv
-            fold4_candidate_pipeline_trace.csv
+            walk_forward_exact_pipeline_trace.csv
           if-no-files-found: error
