@@ -2,6 +2,9 @@ name: Refresh Walk-Forward Candidates
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/refresh-walk-forward-candidates.yml'
   schedule:
     # 毎週土曜 07:00 JST（利益Optimizerの約2時間前）
     - cron: '0 22 * * 5'
@@ -72,13 +75,17 @@ jobs:
           print('tickers:', c['ticker'].nunique() if 'ticker' in c.columns else 'UNKNOWN')
           print('first date:', c['date'].min().date())
           print('last date:', c['date'].max().date())
-          print('recent 63 trading-day rows:', len(c[c['date'] >= c['date'].drop_duplicates().sort_values().iloc[-63]]))
-          print('recent daily row median:', c.groupby('date').size().tail(63).median())
-          print('recent daily row min:', c.groupby('date').size().tail(63).min())
-          print('recent daily row max:', c.groupby('date').size().tail(63).max())
+          recent_dates = c['date'].drop_duplicates().sort_values().iloc[-63:]
+          if len(recent_dates):
+              recent = c[c['date'].isin(recent_dates)]
+              daily = c.groupby('date').size().reindex(recent_dates, fill_value=0)
+              print('recent 63 trading-day rows:', len(recent))
+              print('recent daily row median:', daily.median())
+              print('recent daily row min:', daily.min())
+              print('recent daily row max:', daily.max())
           if c['date'].max() < pd.Timestamp('2026-08-22'):
               raise SystemExit('❌ candidate CSV is not current through WF_END_DATE')
-          if c['ticker'].nunique() < 50:
+          if 'ticker' not in c.columns or c['ticker'].nunique() < 50:
               raise SystemExit('❌ candidate universe unexpectedly small (<50 tickers)')
           PY
 
