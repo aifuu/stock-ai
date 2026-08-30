@@ -11,6 +11,11 @@ TARGETS={"2026-08-18","2026-08-19","2026-08-20"}
 
 
 def patch_source(s):
+    # walk_forward.py does not import pathlib.Path. The injected trace code uses
+    # Path, so add the import to the generated temporary source itself.
+    if "from pathlib import Path" not in s:
+        s=s.replace("import os\n", "import os\nfrom pathlib import Path\n", 1)
+
     marker='candidate_history = []\n'
     injected='''candidate_history = []\n\n# The generated temporary source executes in its own runpy namespace.\n# Define both names because the real walk_forward.py also references OUT.\n_TRACE_OUT = Path(__file__).resolve().with_name("walk_forward_exact_pipeline_trace.csv")\nOUT = _TRACE_OUT\n_TRACE_ROWS=[]\n_TRACE_TARGETS={"2026-08-18","2026-08-19","2026-08-20"}\n'''
     if marker not in s: raise RuntimeError("candidate_history marker not found")
