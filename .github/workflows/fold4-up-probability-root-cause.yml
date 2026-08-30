@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip pandas numpy
+        run: python -m pip install --upgrade pip pandas numpy yfinance
 
       - name: Verify candidate CSV
         run: |
@@ -36,6 +36,9 @@ jobs:
       - name: Run Fold 4 UP probability root-cause diagnostic
         run: python fold4_up_probability_root_cause_diagnostic.py
 
+      - name: Run Fold 4 candidate pipeline coverage diagnostic
+        run: python fold4_candidate_pipeline_trace.py
+
       - name: Upload diagnostic artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -43,4 +46,5 @@ jobs:
           path: |
             fold4_up_probability_root_cause.csv
             fold4_up_probability_root_cause_detail.csv
+            fold4_candidate_pipeline_trace.csv
           if-no-files-found: error
