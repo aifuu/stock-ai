@@ -150,16 +150,50 @@ def run_fold(fold_no, end_date, all_candidates):
             raise RuntimeError(f"Fold {fold_no}: {name} が生成されませんでした")
         shutil.copy2(src, fold_dir / name)
 
+    # OOS期待利益はprofit_objectiveの5%を担う正式な評価値。
+    # 欠落時に .get(..., 0) で黙って0にせず、非空のOOS結果では必須列として検証する。
+    oos_path = fold_dir / "adversarial_oos_results.csv"
+    oos_df = pd.read_csv(oos_path)
+    if not oos_df.empty:
+        if "oos_expected_value" not in oos_df.columns:
+            raise RuntimeError(
+                f"Fold {fold_no}: adversarial_oos_results.csv に oos_expected_value がありません。"
+                " profit_objective の期待利益5%が無効化されるため停止します。"
+            )
+        values = pd.to_numeric(oos_df["oos_expected_value"], errors="coerce")
+        if values.isna().any():
+            bad = int(values.isna().sum())
+            raise RuntimeError(
+                f"Fold {fold_no}: oos_expected_value に数値化できない値が {bad} 件あります。"
+            )
+        print(
+            f"  ✅ Fold {fold_no}: oos_expected_value 検証OK "
+            f"(min={values.min():+.6f}%, max={values.max():+.6f}%)"
+        )
+    else:
+        print(
+            f"  ℹ Fold {fold_no}: OOS結果0件のため oos_expected_value の実値検証は対象外"
+        )
+
     # Fold単位の最終候補が0件でも、診断用に0件として明示的に保存する。
     final_path = fold_dir / "adversarial_final_candidates.csv"
     df = pd.read_csv(final_path)
-    if df.empty:
-        print(f"  ⚠ Fold {fold_no}: Final PASS = 0")
-    else:
+    if not df.empty:
+        if "oos_expected_value" not in df.columns:
+            raise RuntimeError(
+                f"Fold {fold_no}: Final candidates に oos_expected_value がありません。"
+            )
+        final_values = pd.to_numeric(df["oos_expected_value"], errors="coerce")
+        if final_values.isna().any():
+            raise RuntimeError(
+                f"Fold {fold_no}: Final candidates の oos_expected_value に欠損/非数値があります。"
+            )
         df["fold"] = fold_no
         df["oos_end"] = str(end_date.date())
         df.to_csv(final_path, index=False, encoding="utf-8-sig")
         print(f"  ✅ Fold {fold_no}: Final PASS = {len(df)}")
+    else:
+        print(f"  ⚠ Fold {fold_no}: Final PASS = 0")
 
     # 各Foldのファネルを個別保存して、後から比較可能にする。
     if funnel_rows:
@@ -187,6 +221,29 @@ def aggregate(fold_frames):
     if len(usable) != FOLDS:
         print(f"⚠️ 全{FOLDS} FoldのFinal PASSが揃っていません: {len(usable)}/{FOLDS}")
         return pd.DataFrame()
+
+    # profit_objectiveで使用する評価値は、全Foldで必須。
+    # 以前の p.get("oos_expected_value", 0) のような黙った0補完は行わない。
+    required_oos_metric_cols = [
+        "oos_expected_value",
+        "oos_avg_return",
+        "oos_pf",
+        "oos_monthly_positive_ratio",
+        "oos_compound_return",
+    ]
+    for fold_no, df in enumerate(usable, 1):
+        missing = [c for c in required_oos_metric_cols if c not in df.columns]
+        if missing:
+            raise RuntimeError(
+                f"Fold {fold_no}: Final candidates の必須OOS評価列が不足: "
+                + ", ".join(missing)
+            )
+        for col in required_oos_metric_cols:
+            values = pd.to_numeric(df[col], errors="coerce")
+            if values.isna().any():
+                raise RuntimeError(
+                    f"Fold {fold_no}: {col} に欠損/非数値があります。"
+                )
 
     common = set(usable[0]["strategy"].astype(str))
     for df in usable[1:]:
@@ -229,7 +286,7 @@ def aggregate(fold_frames):
         ))
         out["oos_avg_month_return"] = float(min(float(p.get("oos_avg_month_return", 0)) for p in parts))
         out["oos_worst_month_return"] = float(min(float(p.get("oos_worst_month_return", 0)) for p in parts))
-        out["oos_expected_value"] = float(min(float(p.get("oos_expected_value", 0)) for p in parts))
+        out["oos_expected_value"] = float(min(float(p["oos_expected_value"]) for p in parts))
 
         compound = 1.0
         for p in parts:
@@ -314,6 +371,7 @@ def main():
     print(f"Fold数: {FOLDS} / 各OOS: {OOS_DAYS}営業日 / TOP_N: {TOP_N}")
     print(f"候補日数: {len(dates)} / 必要目安: {required_days + 100}")
     print("診断: 条件を緩めず、各Foldの候補ファネルを同時保存")
+    print("期待利益: oos_expected_value を全Fold必須検証。欠落時は黙って0にしない")
     print("=" * 90)
 
     fold_frames = []
@@ -356,6 +414,7 @@ def main():
             f"  {r['strategy']} | 月間+率 {r['oos_monthly_positive_ratio']:.1f}%"
             f" | 複利 {r['oos_compound_return']:+.2f}%"
             f" | PF {r['oos_pf']:.2f} | DD {r['oos_dd']:.2f}%"
+            f" | 期待利益 {r['oos_expected_value']:+.3f}%"
         )
     return 0
 
