@@ -26,8 +26,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+      - name: Apply expanded stock universe
+        run: |
+          python apply_expanded_universe.py
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          expected = len(ast.literal_eval(ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8')).body[[isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='TICKERS' for t in n.targets) for n in ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8')).body].index(True)].value))
+          print(f'✅ Expanded runtime universe = {expected}銘柄')
+          if expected < 250: raise SystemExit('❌ 拡張ユニバースが250未満')
+          PY
       - name: Syntax check
         run: |
+          python -m py_compile expanded_universe.py
+          python -m py_compile apply_expanded_universe.py
+          python -m py_compile run_profit_loop.py
           python -m py_compile daily_model_retrain.py
           python -m py_compile walk_forward.py
           python -m py_compile adversarial_strategy_validator.py
@@ -37,19 +50,23 @@ jobs:
           python -m py_compile daily_directional_top1.py
           python -m py_compile profit_top10_paper.py
           python -m py_compile intraday_directional_top1_cycle.py
-      - name: Verify 100 tickers
+      - name: Verify expanded tickers
         run: |
           python - <<'PY'
           import ast
           from pathlib import Path
-          tree=ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8'))
-          tickers=None
-          for node in tree.body:
-              if isinstance(node,ast.Assign):
-                  for target in node.targets:
-                      if isinstance(target,ast.Name) and target.id=='TICKERS': tickers=ast.literal_eval(node.value)
-          if tickers is None or len(tickers)!=100 or len(set(tickers))!=100: raise SystemExit(f'❌ 100銘柄ユニバース不正: {0 if tickers is None else len(tickers)}')
-          print('✅ 100銘柄・重複なし')
+          files=['daily_directional_top1.py','walk_forward.py','stock_scan.py']
+          counts=[]
+          for f in files:
+              tree=ast.parse(Path(f).read_text(encoding='utf-8'))
+              vals=[]
+              for node in tree.body:
+                  if isinstance(node,ast.Assign):
+                      for target in node.targets:
+                          if isinstance(target,ast.Name) and target.id=='TICKERS': vals=ast.literal_eval(node.value)
+              if len(vals)<250 or len(vals)!=len(set(vals)): raise SystemExit(f'❌ {f}: {len(vals)}銘柄/重複あり')
+              counts.append(len(vals)); print(f'✅ {f}: {len(vals)}銘柄・重複なし')
+          if len(set(counts))!=1: raise SystemExit(f'❌ 3ファイルの銘柄数不一致: {counts}')
           PY
       - name: Check signing secret for validation (manual run only)
         if: github.event_name == 'workflow_dispatch'
@@ -119,7 +136,7 @@ jobs:
           if not hmac.compare_digest(str(p.get('approval_signature','')),expected): raise SystemExit('❌ policy署名不一致。手動変更または検証証跡破損を検知')
           print('✅ policy検証OK → TOP10実行可能')
           PY
-      - name: Run unified Profit Loop TOP10
+      - name: Run unified Profit Loop TOP10 (profit-first ranking)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
@@ -127,7 +144,7 @@ jobs:
           INTRADAY_FEE_RATE: '0.00055'
         run: |
           if [ -f policy_pending.marker ]; then echo '⏸ APPROVED policyなし。TOP10ペーパートレードは実行しません。'; exit 0; fi
-          python profit_top10_paper.py
+          python run_profit_loop.py
       - name: Verify TOP10 paper state
         run: |
           if [ -f policy_pending.marker ]; then echo '⏸ policy PENDING のため状態確認をスキップ'; exit 0; fi
