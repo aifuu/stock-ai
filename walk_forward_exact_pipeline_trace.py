@@ -12,7 +12,7 @@ TARGETS={"2026-08-18","2026-08-19","2026-08-20"}
 
 def patch_source(s):
     marker='candidate_history = []\n'
-    injected='''candidate_history = []\n\n# The generated temporary source executes in its own runpy namespace.\n# Define the trace output path inside that namespace so OUT is always available.\n_TRACE_OUT = Path(__file__).resolve().with_name("walk_forward_exact_pipeline_trace.csv")\n_TRACE_ROWS=[]\n_TRACE_TARGETS={"2026-08-18","2026-08-19","2026-08-20"}\n'''
+    injected='''candidate_history = []\n\n# The generated temporary source executes in its own runpy namespace.\n# Define both names because the real walk_forward.py also references OUT.\n_TRACE_OUT = Path(__file__).resolve().with_name("walk_forward_exact_pipeline_trace.csv")\nOUT = _TRACE_OUT\n_TRACE_ROWS=[]\n_TRACE_TARGETS={"2026-08-18","2026-08-19","2026-08-20"}\n'''
     if marker not in s: raise RuntimeError("candidate_history marker not found")
     s=s.replace(marker,injected,1)
 
