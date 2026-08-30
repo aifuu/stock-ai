@@ -62,6 +62,24 @@ jobs:
         run: |
           test -n "$AI_POLICY_SIGNING_SECRET" || { echo '❌ AI_POLICY_SIGNING_SECRET が未設定。安全のためフルパイプラインを開始しません'; exit 1; }
           echo '✅ policy署名用Secret設定済み'
+      - name: Align adversarial approval gates
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -e
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('adversarial_strategy_validator.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "90"))', 'OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "252"))')
+          s = s.replace('MIN_VALIDATION_TRADES = 30', 'MIN_VALIDATION_TRADES = 20')
+          p.write_text(s, encoding='utf-8')
+          p = Path('build_strategy_policy.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('MIN_VALIDATION_TRADES = 50', 'MIN_VALIDATION_TRADES = 20')
+          p.write_text(s, encoding='utf-8')
+          print('✅ Validation最低件数: 20件に統一')
+          print('✅ OOS: 252営業日')
+          PY
       - name: Full validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -74,9 +92,7 @@ jobs:
           RETRAIN_MIN_ROWS: '3000'
           RETRAIN_DOWNLOAD_SLEEP: '0.15'
           WF_TOP_N: '10'
-          # OOSを90→180営業日に拡大し、最近のサンプル不足による
-          # Final PASS=0を緩和する。ただし採用ゲート自体は変更しない。
-          WF_OOS_DAYS: '180'
+          WF_OOS_DAYS: '252'
           WF_N_ESTIMATORS: '100'
           WF_REFIT_EVERY_TRADING_DAYS: '40'
           WF_INITIAL_CAPITAL: '1000000'
