@@ -1,0 +1,9 @@
+﻿stage,count,excluded_from_previous
+RAW_OOS,21628,0
+UP>=45,16,21612
+UP>DOWN,16,0
+FLAT<50,16,0
+SCORE>=50,10,6
+NIKKEI_OFF(no_filter),10,0
+TOP_N<=10_per_day,10,0
+TP_SL_resolved(TP4.0_SL1.0_H7),10,0
