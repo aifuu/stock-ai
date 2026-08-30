@@ -230,6 +230,29 @@ def close_positions(state, policy, now):
     return messages
 
 
+
+def _market_regime(nlast):
+    kairi = float(nlast.get("kairi25", 0.0))
+    ret5 = float(nlast.get("ret5", 0.0))
+    if kairi > 0 and ret5 > 0:
+        return "RISK_ON"
+    if kairi < 0 and ret5 < 0:
+        return "RISK_OFF"
+    return "NEUTRAL"
+
+
+def _expected_return(policy, regime, strength):
+    raw = policy.get("regime_expectancy_json", "")
+    try:
+        table = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        table = {}
+    bucket = "LOW" if strength < 25 else "MID" if strength < 45 else "HIGH" if strength < 65 else "ELITE"
+    groups = table.get("groups", {})
+    regimes = table.get("regimes", {})
+    return float(groups.get(f"{regime}|{bucket}", regimes.get(regime, table.get("global", 0.0))))
+
+
 def scan_candidates(policy):
     nikkei, model = make_nikkei(), load_model()
     if nikkei is None or model is None:
@@ -253,20 +276,21 @@ def scan_candidates(policy):
             daily_price = float(df["Close"].iloc[-1])
             a = float(atr(df).iloc[-1])
             if not np.isfinite(a) or a <= 0: continue
-            if up * 100 < policy["up_threshold"] or up <= down or flat >= 50: continue
-            if score < policy["min_score_for_buy"]: continue
-            if policy["nikkei_filter"]:
-                nlast = nikkei.reindex(x.index).ffill().iloc[-1]
-                if not (float(nlast["kairi25"]) > 0 and float(nlast["ret5"]) > 0): continue
+            # No UP/Score/Nikkei pass-fail filters: rank every valid candidate by
+            # the historical expectancy of its market-regime × individual-strength pattern.
+            nlast = nikkei.reindex(x.index).ffill().iloc[-1]
+            regime = _market_regime(nlast)
+            strength = 0.45 * ((up - down) * 100.0) + 0.40 * score + 0.15 * float(last.get("relative_strength", 0.0)) * 100.0
+            expected_return = _expected_return(policy, regime, strength)
             intraday = download_5m(ticker)
             price = daily_price
             if intraday is not None and not intraday.empty:
                 latest = intraday[intraday.index <= datetime.now(TZ).replace(tzinfo=None)]
                 if not latest.empty: price = float(latest["Close"].iloc[-1])
-            candidates.append({"ticker": ticker, "company": NAMES.get(ticker, ticker), "score": score, "up_probability": up * 100, "down_probability": down * 100, "flat_probability": flat * 100, "price": price, "tp": price + a * policy["atr_tp_multiplier"], "sl": price - a * policy["atr_sl_multiplier"], "data_date": str(x.index[-1].date())})
+            candidates.append({"ticker": ticker, "company": NAMES.get(ticker, ticker), "score": score, "individual_strength": strength, "expected_return": expected_return, "market_regime": regime, "up_probability": up * 100, "down_probability": down * 100, "flat_probability": flat * 100, "price": price, "tp": price + a * policy["atr_tp_multiplier"], "sl": price - a * policy["atr_sl_multiplier"], "data_date": str(x.index[-1].date())})
         except Exception as e:
             print(ticker, "predict", e)
-    candidates.sort(key=lambda z: (z["score"], z["up_probability"]), reverse=True)
+    candidates.sort(key=lambda z: (z["expected_return"], z["individual_strength"]), reverse=True)
     return candidates, scanned
 
 
