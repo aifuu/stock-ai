@@ -12,6 +12,14 @@ concurrency:
   group: stock-ai-profit-optimizer
   cancel-in-progress: false
 
+env:
+  WF_TOP_N: '10'
+  WF_MULTI_OOS_FOLDS: '4'
+  WF_MULTI_OOS_DAYS: '239'
+  WF_INITIAL_CAPITAL: '1000000'
+  WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
+  WF_MAX_OOS_DD: '35'
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -52,15 +60,45 @@ jobs:
       - name: Run 4 independent OOS profit gate
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          WF_TOP_N: '10'
-          # 1076営業日の候補履歴に対して、4×239=956日OOSを確保し、
-          # Fold 1にも120営業日の学習前期間を残す。ゲート条件は変更しない。
-          WF_MULTI_OOS_FOLDS: '4'
-          WF_MULTI_OOS_DAYS: '239'
-          WF_INITIAL_CAPITAL: '1000000'
-          WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
-          WF_MAX_OOS_DD: '35'
         run: python multi_oos_profit_gate.py
+
+      - name: Verify diagnostic outputs without changing gates
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          src = Path('walk_forward_all_candidates.csv')
+          out = Path('multi_oos_threshold_diagnostics.csv')
+          c = pd.read_csv(src)
+          c['date'] = pd.to_datetime(c['date'], errors='coerce').dt.normalize()
+          for col in ['up_prob','down_prob','flat_prob','score']:
+              c[col] = pd.to_numeric(c[col], errors='coerce')
+          c['nikkei_uptrend'] = c['nikkei_uptrend'].astype(str).str.lower().isin(['true','1','yes'])
+          c = c.dropna(subset=['date','up_prob','down_prob','flat_prob','score'])
+          dates = sorted(c['date'].drop_duplicates())
+          folds, oos_days, purge, embargo = 4, 239, 7, 7
+          rows = []
+          for fold in range(1, folds+1):
+              end_pos = len(dates) - (folds-fold)*oos_days
+              oos = dates[end_pos-oos_days:end_pos]
+              pre = dates[:max(0, end_pos-oos_days)]
+              cut = int(len(pre)*0.60)
+              dev = pre[:max(1,cut-purge)]
+              val = pre[min(len(pre),cut+embargo):]
+              for phase, ds in [('DEV',dev),('VALIDATION',val),('OOS',oos)]:
+                  x = c[c.date.isin(ds)]
+                  for up in [45,50,55,60,65]:
+                      for score in [50,60,70,80]:
+                          for nikkei in [False,True]:
+                              y=x[(x.up_prob>=up)&(x.up_prob>x.down_prob)&(x.flat_prob<50)&(x.score>=score)]
+                              if nikkei: y=y[y.nikkei_uptrend]
+                              rows.append({'fold':fold,'phase':phase,'up':up,'score':score,'nikkei':nikkei,'candidate_count':len(y)})
+          pd.DataFrame(rows).to_csv(out,index=False,encoding='utf-8-sig')
+          print(f'診断CSV: {out} / {len(rows)} rows')
+          print(pd.DataFrame(rows).sort_values(['fold','phase','candidate_count'], ascending=[True,True,False]).groupby(['fold','phase']).head(5).to_string(index=False))
+          print('※これは診断専用。PASS条件・policy・閾値は変更しません。')
+          PY
 
       - name: Build verified policy
         run: python build_strategy_policy.py
@@ -88,13 +126,13 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv multi_oos_folds.csv multi_oos_results/ 2>/dev/null || true
+          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv multi_oos_folds.csv multi_oos_results/ multi_oos_fold_funnel.csv multi_oos_threshold_diagnostics.csv 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
             echo '変更なし'
             exit 0
           fi
-          git commit -m 'chore: require four independent OOS folds for policy approval [skip ci]'
+          git commit -m 'chore: add non-invasive OOS threshold diagnostics [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
@@ -120,4 +158,6 @@ jobs:
             adversarial_final_candidates.csv
             multi_oos_folds.csv
             multi_oos_results/**
+            multi_oos_fold_funnel.csv
+            multi_oos_threshold_diagnostics.csv
             strategy_policy.json
