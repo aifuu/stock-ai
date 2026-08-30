@@ -1,0 +1,4 @@
+﻿fold,phase,phase_start,phase_end,phase_days,candidate_rows,UP45_plus,UP_excluded,UP_gt_DOWN,UP_gt_DOWN_excluded,FLAT_lt_50,FLAT_excluded,SCORE50_plus,SCORE_excluded,NIKKEI_uptrend_reference
+2,DEV,2022-01-27,2022-12-13,208,18648,92,18556,92,0,92,0,24,68,0
+2,VALIDATION,2023-01-06,2023-07-25,130,11642,327,11315,327,0,327,0,153,174,153
+2,OOS,2023-08-16,2024-08-06,232,20946,574,20372,574,0,574,0,109,465,100
