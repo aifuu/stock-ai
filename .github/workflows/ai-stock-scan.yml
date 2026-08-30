@@ -69,7 +69,7 @@ jobs:
           test -n "$AI_POLICY_SIGNING_SECRET" || { echo '❌ AI_POLICY_SIGNING_SECRET が未設定。安全のためフルパイプラインを開始しません'; exit 1; }
           echo '✅ policy署名用Secret設定済み'
 
-      - name: Align profit-first validation gates
+      - name: Align profit-first validation and live ranking
         if: github.event_name == 'workflow_dispatch'
         run: |
           set -e
@@ -78,7 +78,7 @@ jobs:
           import re
 
           # ------------------------------------------------------------
-          # Adversarial validator settings
+          # Adversarial validator
           # ------------------------------------------------------------
           p = Path('adversarial_strategy_validator.py')
           s = p.read_text(encoding='utf-8')
@@ -89,30 +89,42 @@ jobs:
           s = s.replace('.sort_values("dev_objective", ascending=False).head(50)',
                         '.sort_values("dev_objective", ascending=False).head(200)')
 
-          # Profit-first selection inside each day: keep the existing AI score
-          # as a quality constraint, but rank candidates by an explicit
-          # probability-weighted TP/SL expected return estimate.
-          old = '''    # 日ごとにTOP_N。スコアだけでなくup_probも同点時の優先順位に使う.\n    return (\n        x.sort_values(["date", "score", "up_prob"], ascending=[True, False, False])\n        .groupby("date", group_keys=False)\n        .head(TOP_N)\n        .copy()\n    )'''
-          new = '''    # 日ごとにTOP_N。勝率ではなく期待利益を主順位にする。\n    # EV = P(up)*TP利益 - P(down)*SL損失。フラット確率は0寄与として保守的に扱う。\n    x["profit_ev"] = (\n        (x["up_prob"] / 100.0) * ((x["take_profit"] - x["price"]) / x["price"] * 100.0)\n        - (x["down_prob"] / 100.0) * ((x["price"] - x["stop_loss"]) / x["price"] * 100.0)\n    )\n    x["profit_rank"] = (0.70 * x["score"] + 0.30 * x["profit_ev"].clip(-5.0, 5.0) * 10.0).clip(0.0, 100.0)\n    return (\n        x.sort_values(["date", "profit_rank", "score", "up_prob"], ascending=[True, False, False, False])\n        .groupby("date", group_keys=False)\n        .head(TOP_N)\n        .copy()\n    )'''
-          if old in s:
-              s = s.replace(old, new, 1)
-          else:
-              print('ℹ️ validator profit-ranking block already differs; keeping current implementation')
+          pattern = re.compile(
+              r'    # 日ごとにTOP_N.*?\n    return \(\n        x\.sort_values\(\["date", "score", "up_prob"\].*?\n        \.groupby\("date", group_keys=False\)\n        \.head\(TOP_N\)\n        \.copy\(\)\n    \)',
+              re.S,
+          )
+          replacement = '''    # 日ごとにTOP_N。勝率ではなく確率加重の期待利益を主順位にする。\n    x["profit_ev"] = (\n        (x["up_prob"] / 100.0) * ((x["take_profit"] - x["price"]) / x["price"] * 100.0)\n        - (x["down_prob"] / 100.0) * ((x["price"] - x["stop_loss"]) / x["price"] * 100.0)\n    )\n    x["profit_rank"] = (0.70 * x["score"] + 0.30 * x["profit_ev"].clip(-5.0, 5.0) * 10.0).clip(0.0, 100.0)\n    return (\n        x.sort_values(["date", "profit_rank", "score", "up_prob"], ascending=[True, False, False, False])\n        .groupby("date", group_keys=False)\n        .head(TOP_N)\n        .copy()\n    )'''
+          s, n = pattern.subn(replacement, s, count=1)
+          if n == 0:
+              raise SystemExit('validator select_for_phase profit-ranking block not found')
           p.write_text(s, encoding='utf-8')
 
           # ------------------------------------------------------------
-          # Policy gate must use the same minimum validation sample.
+          # Policy minimum sample must match the validator.
           # ------------------------------------------------------------
           p = Path('build_strategy_policy.py')
           s = p.read_text(encoding='utf-8')
-          s = s.replace('MIN_VALIDATION_TRADES = 50',
-                        'MIN_VALIDATION_TRADES = 20')
+          s = s.replace('MIN_VALIDATION_TRADES = 50', 'MIN_VALIDATION_TRADES = 20')
           p.write_text(s, encoding='utf-8')
 
-          print('✅ Validation最低件数: 20件')
+          # ------------------------------------------------------------
+          # Live TOP10: use the same profit-oriented ranking among
+          # candidates that already pass the policy thresholds.
+          # ------------------------------------------------------------
+          p = Path('profit_top10_paper.py')
+          s = p.read_text(encoding='utf-8')
+          old = '    candidates.sort(key=lambda z: (z["score"], z["up_probability"]), reverse=True)'
+          new = '''    for z in candidates:\n        up = float(z["up_probability"]) / 100.0\n        down = float(z["down_probability"]) / 100.0\n        price = float(z["price"])\n        tp_ret = (float(z["tp"]) - price) / price * 100.0\n        sl_ret = (price - float(z["sl"])) / price * 100.0\n        z["expected_value"] = up * tp_ret - down * sl_ret\n        z["profit_score"] = float(np.clip(0.70 * float(z["score"]) + 0.30 * np.clip(z["expected_value"], -5.0, 5.0) * 10.0, 0.0, 100.0))\n    candidates.sort(key=lambda z: (z["profit_score"], z["score"], z["up_probability"]), reverse=True)'''
+          if old not in s:
+              raise SystemExit('profit_top10 paper ranking line not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+
           print('✅ OOS: 252営業日')
+          print('✅ Validation最低件数: 20件')
           print('✅ DEV shortlist: 200候補')
-          print('✅ TOP10選定: 確率加重期待利益を優先')
+          print('✅ 検証TOP10選定: 確率加重期待利益優先')
+          print('✅ 本番TOP10選定: 検証と同じ利益重視ランキング')
           PY
 
       - name: Full validation pipeline (manual run only)
@@ -138,21 +150,17 @@ jobs:
           echo '===== 1/4 DAILY MODEL RETRAIN ====='
           python daily_model_retrain.py
           echo '✅ モデル再学習ゲート完了（不合格時は前回modelを維持）'
-
           echo '===== 2/4 WALK-FORWARD ====='
           python walk_forward.py
           test -s walk_forward_all_candidates.csv
           echo '✅ walk_forward_all_candidates.csv 生成済み'
-
           echo '===== 3/4 ADVERSARIAL VALIDATION + MONTE CARLO ====='
           python adversarial_strategy_validator.py
           test -e adversarial_final_candidates.csv
           echo '✅ adversarial_final_candidates.csv 生成済み（空の場合は新規policyなし）'
-
           echo '===== 3.5/4 OOS GATE DIAGNOSTIC ====='
           python adversarial_oos_diagnostic.py
           echo '✅ OOSゲート診断完了'
-
           echo '===== 4/4 BUILD VERIFIED POLICY ====='
           python build_strategy_policy.py
           test -s strategy_policy.json
@@ -169,30 +177,22 @@ jobs:
           import os
           import sys
           from pathlib import Path
-
           p = json.loads(Path('strategy_policy.json').read_text(encoding='utf-8'))
           status = str(p.get('status', '')).upper()
-
-          # 自動5分スキャンではPENDINGは正常な待機状態として扱う。
-          # 手動フル検証では合格しなければ明示的に失敗させる。
           if status != 'APPROVED':
               msg = f'⏸ policyはAPPROVEDではありません: {p.get("status")}。新規ペーパートレードは停止します。'
               print(msg)
               if os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch':
                   raise SystemExit(msg)
-              print('ℹ️ 自動実行なのでジョブは正常終了します（売買なし）')
               Path('policy_pending.marker').write_text(msg, encoding='utf-8')
               sys.exit(0)
-
           if p.get('source') != 'adversarial_strategy_validator':
               raise SystemExit('❌ 検証パイプライン由来ではないpolicyです')
           if int(p.get('approval_signature_version', 0)) != 1:
               raise SystemExit('❌ policy承認署名バージョンが不正です')
-
           secret = os.getenv('AI_POLICY_SIGNING_SECRET', '').strip()
           if not secret:
               raise SystemExit('❌ AI_POLICY_SIGNING_SECRET 未設定。安全のため停止します')
-
           keys = ['status','updated_at','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals','validation_win_rate','validation_avg_return','validation_pf','validation_dd','oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd','oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd','strategy_name','source']
           covered = {k: p.get(k) for k in keys}
           payload = json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
