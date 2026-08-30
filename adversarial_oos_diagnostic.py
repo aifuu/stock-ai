@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 INPUT = Path("adversarial_oos_results.csv")
@@ -79,8 +78,7 @@ x.head(20).to_csv(NEAR, index=False, encoding="utf-8-sig")
 print("=" * 80)
 print("🔎 OOS GATE DIAGNOSTIC")
 print(f"候補数: {len(x)}")
-print(f"全7ゲート通過: {int((x.oos_gates_passed == 7).sum())}
-")
+print(f"全7ゲート通過: {int((x.oos_gates_passed == 7).sum())}")
 for _, r in x.head(10).iterrows():
     print(
         f"{r['strategy']} | 通過={int(r['oos_gates_passed'])}/7 | "
@@ -96,7 +94,10 @@ webhook = os.getenv("DISCORD_WEBHOOK", "").strip()
 if webhook:
     try:
         import requests
-        lines = ["🔎 AI OOS GATE DIAGNOSTIC", f"候補={len(x)} 全7ゲート={int((x.oos_gates_passed == 7).sum())}"]
+        lines = [
+            "🔎 AI OOS GATE DIAGNOSTIC",
+            f"候補={len(x)} 全7ゲート={int((x.oos_gates_passed == 7).sum())}",
+        ]
         for _, r in x.head(5).iterrows():
             lines.append(
                 f"{r['strategy']} | {int(r['oos_gates_passed'])}/7 | "
