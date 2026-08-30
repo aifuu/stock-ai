@@ -73,6 +73,9 @@ jobs:
           s = p.read_text(encoding='utf-8')
           s = s.replace('OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "90"))', 'OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "252"))')
           s = s.replace('MIN_VALIDATION_TRADES = 30', 'MIN_VALIDATION_TRADES = 20')
+          # Profit-first selection: widen the DEV shortlist so promising strategies
+          # are not discarded before Validation/OOS. Final OOS/MC gates remain strict.
+          s = s.replace('.sort_values("dev_objective", ascending=False).head(50)', '.sort_values("dev_objective", ascending=False).head(200)')
           p.write_text(s, encoding='utf-8')
           p = Path('build_strategy_policy.py')
           s = p.read_text(encoding='utf-8')
@@ -80,6 +83,7 @@ jobs:
           p.write_text(s, encoding='utf-8')
           print('✅ Validation最低件数: 20件に統一')
           print('✅ OOS: 252営業日')
+          print('✅ DEV shortlist: 50 → 200候補')
           PY
       - name: Full validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
