@@ -35,6 +35,7 @@ jobs:
           python -m py_compile daily_model_retrain.py
           python -m py_compile walk_forward.py
           python -m py_compile adversarial_strategy_validator.py
+          python -m py_compile adversarial_oos_diagnostic.py
           python -m py_compile build_strategy_policy.py
           python -m py_compile daily_directional_top1.py
           python -m py_compile profit_top10_paper.py
@@ -111,6 +112,9 @@ jobs:
           python adversarial_strategy_validator.py
           test -s adversarial_final_candidates.csv
           echo '✅ adversarial_final_candidates.csv 生成済み'
+          echo '===== 3.5/4 OOS GATE DIAGNOSTIC ====='
+          python adversarial_oos_diagnostic.py
+          echo '✅ OOSゲート診断完了'
           echo '===== 4/4 BUILD VERIFIED POLICY ====='
           python build_strategy_policy.py
           test -s strategy_policy.json
@@ -195,6 +199,7 @@ jobs:
           echo '❌ push失敗'
           exit 1
       - name: Upload full pipeline artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: profit-loop-top10-${{ github.run_id }}
@@ -205,6 +210,8 @@ jobs:
             adversarial_dev_all_results.csv
             adversarial_validation_results.csv
             adversarial_oos_results.csv
+            adversarial_oos_diagnostics.csv
+            adversarial_oos_near_miss.csv
             adversarial_final_candidates.csv
             strategy_policy.json
             daily_retrain_report.csv
