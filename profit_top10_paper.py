@@ -313,7 +313,15 @@ def main():
     closed = close_positions(state, policy, now)
     if daily_return <= -1.5:
         save_state(state)
-        msg = f"🛑 PROFIT LOOP｜日次損失上限\n📅 {today} {now:%H:%M} JST\n日次損益 {daily_return:+.2f}%｜新規停止\n💰 仮想資産 {state['capital']:,.0f}円\n⚠️ 実注文なし"
+        capital_now = float(state["capital"])
+        cumulative_return_pct = (capital_now / INITIAL_CAPITAL - 1.0) * 100.0
+        gained_yen = capital_now - INITIAL_CAPITAL
+        msg = (
+            f"🛑 PROFIT LOOP｜日次損失上限\n📅 {today} {now:%H:%M} JST\n"
+            f"日次損益 {daily_return:+.2f}%（{capital_now - start_capital:+,.0f}円）｜新規停止\n"
+            f"💰 仮想資産 {capital_now:,.0f}円｜累積利益率 {cumulative_return_pct:+.2f}%｜開始100万円から {gained_yen:+,.0f}円\n"
+            f"⚠️ 実注文なし"
+        )
         discord_send(msg)
         print(msg)
         return
@@ -323,10 +331,29 @@ def main():
     save_state(state)
     monthly = update_monthly()
 
+    # ★改善(2026-08): 「仮想資産」だけでは利益率が一目で分からないという
+    # 指摘を受け、本日損益・今月利益率・累積利益率・開始資金からの増加額を
+    # 明示的に算出する。勝率は主役ではなく参考値として残す。
+    capital_now = float(state["capital"])
+    daily_pnl_yen = capital_now - start_capital
+    cumulative_return_pct = (capital_now / INITIAL_CAPITAL - 1.0) * 100.0
+    gained_yen = capital_now - INITIAL_CAPITAL
+
     top_text = "\n".join(f"{i}. BUY {p['ticker']}｜score {p['score']:.1f}｜UP {p['up_probability']:.1f}%｜entry {p['entry_price']:,.1f}｜TP {p['tp']:,.1f}｜SL {p['sl']:,.1f}" for i, p in enumerate(state["positions"], 1)) or "条件成立銘柄なし"
     counts = ", ".join(f"{k}:{v}回" for k, v in sorted(state.get("trades_by_ticker_today", {}).items())) or "なし"
-    month_text = "確定取引なし" if not monthly else f"今月損益 {monthly['pnl']:+,.0f}円｜取引 {int(monthly['trades'])}｜勝率 {monthly['win_rate_pct']:.1f}%"
-    msg = ("🤖 PROFIT LOOP｜TOP10 5分足ペーパートレード\n" "━━━━━━━━━━━━━━━━━━\n" f"📅 {today} {now:%H:%M} JST\n⚠️ 実注文なし\n\n" f"🔗 Policy: APPROVED｜更新 {policy.get('updated_at')}\n" f"条件: UP≥{policy['up_threshold']:.0f}% / SCORE≥{policy['min_score_for_buy']:.0f}% / TP {policy['atr_tp_multiplier']:.2f}ATR / SL {policy['atr_sl_multiplier']:.2f}ATR\n" f"100銘柄対象｜取得成功 {scanned}｜候補 {len(candidates)}｜今回新規 {len(opened)}\n" f"🔁 同一銘柄 最大{MAX_TRADES_PER_TICKER_PER_DAY}回/日｜全体 最大{MAX_TOTAL_TRADES_PER_DAY}回/日\n" f"📊 本日銘柄別取引回数: {counts}\n\n" f"🏆 保有TOP10\n{top_text}\n\n" f"💰 仮想資産 {state['capital']:,.0f}円｜最大DD {state['max_dd']:.2f}%\n" f"📅 {month_text}\n\n" "① Optimizer → ② strategy_policy.json → ③ TOP10 → ④ 決済/再エントリー → ⑤ 月間損益")
+    if not monthly:
+        month_text = "確定取引なし"
+    else:
+        monthly_return_pct = float(monthly["pnl"]) / INITIAL_CAPITAL * 100.0
+        month_text = (
+            f"今月利益率 {monthly_return_pct:+.2f}%（損益 {monthly['pnl']:+,.0f}円）｜"
+            f"取引 {int(monthly['trades'])}件｜参考勝率 {monthly['win_rate_pct']:.1f}%"
+        )
+    profit_text = (
+        f"📈 本日損益 {daily_pnl_yen:+,.0f}円（{daily_return:+.2f}%）\n"
+        f"📊 累積利益率 {cumulative_return_pct:+.2f}%｜開始100万円から {gained_yen:+,.0f}円"
+    )
+    msg = ("🤖 PROFIT LOOP｜TOP10 5分足ペーパートレード\n" "━━━━━━━━━━━━━━━━━━\n" f"📅 {today} {now:%H:%M} JST\n⚠️ 実注文なし\n\n" f"🔗 Policy: APPROVED｜更新 {policy.get('updated_at')}\n" f"条件: UP≥{policy['up_threshold']:.0f}% / SCORE≥{policy['min_score_for_buy']:.0f}% / TP {policy['atr_tp_multiplier']:.2f}ATR / SL {policy['atr_sl_multiplier']:.2f}ATR\n" f"100銘柄対象｜取得成功 {scanned}｜候補 {len(candidates)}｜今回新規 {len(opened)}\n" f"🔁 同一銘柄 最大{MAX_TRADES_PER_TICKER_PER_DAY}回/日｜全体 最大{MAX_TOTAL_TRADES_PER_DAY}回/日\n" f"📊 本日銘柄別取引回数: {counts}\n\n" f"🏆 保有TOP10\n{top_text}\n\n" f"{profit_text}\n" f"💰 仮想資産 {capital_now:,.0f}円｜最大DD {state['max_dd']:.2f}%\n" f"📅 {month_text}\n\n" "① Optimizer → ② strategy_policy.json → ③ TOP10 → ④ 決済/再エントリー → ⑤ 月間損益")
     for m in closed:
         print(m)
     print(msg)
