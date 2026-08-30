@@ -53,8 +53,10 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           WF_TOP_N: '10'
+          # 1076営業日の候補履歴に対して、4×239=956日OOSを確保し、
+          # Fold 1にも120営業日の学習前期間を残す。ゲート条件は変更しない。
           WF_MULTI_OOS_FOLDS: '4'
-          WF_MULTI_OOS_DAYS: '252'
+          WF_MULTI_OOS_DAYS: '239'
           WF_INITIAL_CAPITAL: '1000000'
           WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
           WF_MAX_OOS_DD: '35'
