@@ -22,17 +22,14 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
-
       - name: Syntax check
         run: |
           python -m py_compile daily_model_retrain.py
@@ -42,7 +39,6 @@ jobs:
           python -m py_compile daily_directional_top1.py
           python -m py_compile profit_top10_paper.py
           python -m py_compile intraday_directional_top1_cycle.py
-
       - name: Verify 100 tickers
         run: |
           python - <<'PY'
@@ -59,7 +55,6 @@ jobs:
               raise SystemExit(f'❌ 100銘柄ユニバース不正: {0 if tickers is None else len(tickers)}')
           print('✅ 100銘柄・重複なし')
           PY
-
       - name: Check required signing secret (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -67,7 +62,6 @@ jobs:
         run: |
           test -n "$AI_POLICY_SIGNING_SECRET" || { echo '❌ AI_POLICY_SIGNING_SECRET が未設定。安全のためフルパイプラインを開始しません'; exit 1; }
           echo '✅ policy署名用Secret設定済み'
-
       - name: Full validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -80,9 +74,9 @@ jobs:
           RETRAIN_MIN_ROWS: '3000'
           RETRAIN_DOWNLOAD_SLEEP: '0.15'
           WF_TOP_N: '10'
-          # ★修正(2026-08): 以前合意していた高速化(n_estimators 300→100,
-          # 再学習間隔20→40営業日)が本番workflowの環境変数に反映されて
-          # おらず、想定より遅く実行されていた。ここで反映する。
+          # OOSを90→180営業日に拡大し、最近のサンプル不足による
+          # Final PASS=0を緩和する。ただし採用ゲート自体は変更しない。
+          WF_OOS_DAYS: '180'
           WF_N_ESTIMATORS: '100'
           WF_REFIT_EVERY_TRADING_DAYS: '40'
           WF_INITIAL_CAPITAL: '1000000'
@@ -93,22 +87,18 @@ jobs:
           echo '===== 1/4 DAILY MODEL RETRAIN ====='
           python daily_model_retrain.py
           echo '✅ モデル再学習ゲート完了（不合格時は前回modelを維持）'
-
           echo '===== 2/4 WALK-FORWARD ====='
           python walk_forward.py
           test -s walk_forward_all_candidates.csv
           echo '✅ walk_forward_all_candidates.csv 生成済み'
-
           echo '===== 3/4 ADVERSARIAL VALIDATION + MONTE CARLO ====='
           python adversarial_strategy_validator.py
           test -s adversarial_final_candidates.csv
           echo '✅ adversarial_final_candidates.csv 生成済み'
-
           echo '===== 4/4 BUILD VERIFIED POLICY ====='
           python build_strategy_policy.py
           test -s strategy_policy.json
           echo '✅ 検証済みpolicy生成完了'
-
       - name: Verify policy before TOP10
         env:
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
@@ -119,7 +109,6 @@ jobs:
           import json
           import os
           from pathlib import Path
-
           p = json.loads(Path('strategy_policy.json').read_text(encoding='utf-8'))
           if str(p.get('status', '')).upper() != 'APPROVED':
               raise SystemExit(f"❌ policyがAPPROVEDではありません: {p.get('status')}")
@@ -130,15 +119,7 @@ jobs:
           secret = os.getenv('AI_POLICY_SIGNING_SECRET', '').strip()
           if not secret:
               raise SystemExit('❌ AI_POLICY_SIGNING_SECRET 未設定。安全のため停止します')
-          keys = [
-              'status','updated_at','up_threshold','min_score_for_buy','nikkei_filter',
-              'atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals',
-              'validation_win_rate','validation_avg_return','validation_pf','validation_dd',
-              'oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd',
-              'oos_validation_pf_ratio','mc_sizing','mc_10y_probability',
-              'mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability',
-              'mc_p90_max_dd','strategy_name','source'
-          ]
+          keys = ['status','updated_at','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals','validation_win_rate','validation_avg_return','validation_pf','validation_dd','oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd','oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd','strategy_name','source']
           covered = {k: p.get(k) for k in keys}
           payload = json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
           expected = hmac.new(secret.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
@@ -146,7 +127,6 @@ jobs:
               raise SystemExit('❌ policy署名不一致。手動変更または検証証跡破損を検知')
           print('✅ policy検証OK → TOP10実行可能')
           PY
-
       - name: Run unified Profit Loop TOP10
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -154,7 +134,6 @@ jobs:
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
         run: python profit_top10_paper.py
-
       - name: Verify TOP10 paper state and monthly ledger
         run: |
           test -s profit_top10_paper_state.json
@@ -172,18 +151,12 @@ jobs:
           if Path('profit_top10_monthly_performance.csv').exists():
               print('✅ 月間損益台帳: profit_top10_monthly_performance.csv')
           PY
-
       - name: Persist validated model, policy and paper ledger
-        # ★修正(2026-08): if: always() だと profit_top10_paper.py が
-        # 異常終了しても、その時点の中途半端な状態ファイルをそのまま
-        # pushしてしまう。正常完了時のみ保存する。
         if: success()
         run: |
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # このworkflowがmainへ保存するのは、検証・売買で生成した成果物のみ。
-          # Pythonソースコードはここから変更しない。
           git add model.pkl 2>/dev/null || true
           git add strategy_policy.json 2>/dev/null || true
           git add profit_top10_paper_state.json 2>/dev/null || true
@@ -205,7 +178,6 @@ jobs:
           done
           echo '❌ push失敗'
           exit 1
-
       - name: Upload full pipeline artifacts
         uses: actions/upload-artifact@v4
         with:
