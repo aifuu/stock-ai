@@ -123,59 +123,63 @@ jobs:
           print(f"✅ 保有ポジション: {len(positions)}/10")
           print(f"✅ 本日新規: {int(s.get('trades_today',0))}件")
           PY
-      - name: Persist paper ledger
+      - name: Save paper ledger
+        id: ledger_save
         if: success()
         run: |
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           echo '💾 PAPER LEDGER SAVE START'
-          added=0
           for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv; do
             if [ -f "$f" ]; then
               git add "$f"
               echo "✅ ledger add: $f"
-              added=1
             else
               echo "ℹ️ ledger skip（未生成）: $f"
             fi
           done
-          if [ "$added" -eq 0 ]; then
-            echo 'ℹ️ 保存対象ファイルなし。ledger保存を正常終了'
-            exit 0
+          echo '🔍 working tree status (ledger以外を含む全体)'
+          git status --porcelain
+          OTHER_CHANGES=$(git status --porcelain | grep -v -E 'profit_top10_paper_state\.json|profit_top10_paper_history\.csv|profit_top10_monthly_performance\.csv' || true)
+          if [ -n "$OTHER_CHANGES" ]; then
+            echo '⚠️ ledger以外の未addファイルが存在します:'
+            echo "$OTHER_CHANGES"
           fi
           if git diff --cached --quiet; then
-            echo 'ℹ️ paper ledger変更なし'
+            echo 'ℹ️ ステージ済み変更なし。commitをスキップします'
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git diff --cached --name-only
           git commit -m 'chore: persist TOP10 paper ledger [skip ci]'
-          echo '🔄 PAPER LEDGER SYNC: fetch/rebase before push'
-          git fetch origin main
-          if ! git rebase --autostash origin/main; then
-            echo '❌ PAPER LEDGER REBASE FAILED'
-            git rebase --abort || true
-            exit 1
-          fi
-          echo '🚀 PAPER LEDGER PUSH START'
-          if git push origin HEAD:main; then
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+      - name: Push paper ledger
+        if: steps.ledger_save.outputs.changed == 'true'
+        run: |
+          set -e
+          push_once() {
+            echo '🔄 PAPER LEDGER SYNC: fetch/rebase --autostash -> push'
+            git fetch origin main
+            git rebase --autostash origin/main
+            echo '🚀 PAPER LEDGER PUSH START'
+            git push origin HEAD:main
+          }
+          if push_once; then
             echo '✅ PAPER LEDGER PUSH SUCCESS'
+            echo '✅ PAPER LEDGER SAVE SUCCESS (commit + push confirmed)'
           else
             echo '⚠️ PAPER LEDGER PUSH FAILED — retry once after fetch/rebase'
+            git rebase --abort || true
             git fetch origin main
-            if ! git rebase --autostash origin/main; then
-              echo '❌ PAPER LEDGER RETRY REBASE FAILED'
-              git rebase --abort || true
-              exit 1
-            fi
-            if git push origin HEAD:main; then
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
               echo '✅ PAPER LEDGER PUSH SUCCESS (RETRY)'
+              echo '✅ PAPER LEDGER SAVE SUCCESS (commit + push confirmed)'
             else
               echo '❌ PAPER LEDGER PUSH FAILED'
               exit 1
             fi
           fi
-          echo '✅ PAPER LEDGER SAVE SUCCESS (commit + push confirmed)'
       - name: Upload paper artifacts
         if: always()
         uses: actions/upload-artifact@v4
