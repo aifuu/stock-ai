@@ -152,14 +152,22 @@ jobs:
           git commit -m 'chore: persist TOP10 paper ledger [skip ci]'
           echo '🔄 PAPER LEDGER SYNC: fetch/rebase before push'
           git fetch origin main
-          git rebase origin/main
+          if ! git rebase --autostash origin/main; then
+            echo '❌ PAPER LEDGER REBASE FAILED'
+            git rebase --abort || true
+            exit 1
+          fi
           echo '🚀 PAPER LEDGER PUSH START'
           if git push origin HEAD:main; then
             echo '✅ PAPER LEDGER PUSH SUCCESS'
           else
             echo '⚠️ PAPER LEDGER PUSH FAILED — retry once after fetch/rebase'
             git fetch origin main
-            git rebase origin/main
+            if ! git rebase --autostash origin/main; then
+              echo '❌ PAPER LEDGER RETRY REBASE FAILED'
+              git rebase --abort || true
+              exit 1
+            fi
             if git push origin HEAD:main; then
               echo '✅ PAPER LEDGER PUSH SUCCESS (RETRY)'
             else
