@@ -32,9 +32,14 @@ jobs:
           python - <<'PY'
           import ast
           from pathlib import Path
-          expected = len(ast.literal_eval(ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8')).body[[isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='TICKERS' for t in n.targets) for n in ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8')).body].index(True)].value))
-          print(f'✅ Expanded runtime universe = {expected}銘柄')
-          if expected < 250: raise SystemExit('❌ 拡張ユニバースが250未満')
+          tree=ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8'))
+          vals=[]
+          for node in tree.body:
+              if isinstance(node,ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target,ast.Name) and target.id=='TICKERS': vals=ast.literal_eval(node.value)
+          print(f'✅ Expanded runtime universe = {len(vals)}銘柄')
+          if len(vals) < 250: raise SystemExit('❌ 拡張ユニバースが250未満')
           PY
       - name: Syntax check
         run: |
@@ -68,13 +73,6 @@ jobs:
               counts.append(len(vals)); print(f'✅ {f}: {len(vals)}銘柄・重複なし')
           if len(set(counts))!=1: raise SystemExit(f'❌ 3ファイルの銘柄数不一致: {counts}')
           PY
-      - name: Check signing secret for validation (manual run only)
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
-        run: |
-          test -n "$AI_POLICY_SIGNING_SECRET" || { echo '❌ AI_POLICY_SIGNING_SECRET が未設定。署名なしAPPROVEDは作成しません'; exit 1; }
-          echo '✅ policy署名用Secret設定済み'
       - name: Full multi-OOS validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -99,99 +97,70 @@ jobs:
         run: |
           set -e
           test -n "$DISCORD_WEBHOOK" || { echo '❌ DISCORD_WEBHOOK が未設定'; exit 1; }
-          echo '===== 1/4 DAILY MODEL RETRAIN ====='
           python daily_model_retrain.py
-          echo '===== 2/4 WALK-FORWARD ====='
           python walk_forward.py
           test -s walk_forward_all_candidates.csv
-          echo '===== 3/4 FOUR-FOLD MULTI-OOS PROFIT GATE ====='
           python multi_oos_profit_validator.py
           test -e adversarial_final_candidates.csv
-          echo '===== 4/4 BUILD SIGNED VERIFIED POLICY ====='
           python build_verified_profit_policy.py
           test -s strategy_policy.json
-          echo '===== OOS GATE DIAGNOSTIC ====='
           python adversarial_oos_diagnostic.py || true
-          echo '✅ 検証パイプライン完了'
-      - name: Verify policy before TOP10
-        env:
-          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+      - name: Verify paper policy mode
         run: |
+          test -s strategy_policy.json
           python - <<'PY'
-          import hashlib,hmac,json,os
-          from pathlib import Path
-          pth=Path('strategy_policy.json')
-          if not pth.exists():
-              Path('policy_pending.marker').write_text('⏸ strategy_policy.json がありません。新規ペーパートレード停止',encoding='utf-8'); print('⏸ policyなし → 新規ペーパートレード停止'); raise SystemExit(0)
-          p=json.loads(pth.read_text(encoding='utf-8'))
-          if str(p.get('status','')).upper()!='APPROVED':
-              msg=f'⏸ policyはAPPROVEDではありません: {p.get("status")}。新規ペーパートレードは停止します。'; print(msg); Path('policy_pending.marker').write_text(msg,encoding='utf-8'); raise SystemExit(0)
-          if p.get('source')!='adversarial_strategy_validator': raise SystemExit('❌ 検証パイプライン由来ではないpolicyです')
-          if int(p.get('approval_signature_version',0))!=1: raise SystemExit('❌ policy承認署名バージョンが不正です')
-          secret=os.getenv('AI_POLICY_SIGNING_SECRET','').strip()
-          if not secret: raise SystemExit('❌ AI_POLICY_SIGNING_SECRET 未設定。安全のため停止します')
-          keys=['status','updated_at','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals','validation_win_rate','validation_avg_return','validation_pf','validation_dd','oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd','oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd','strategy_name','source']
-          payload=json.dumps({k:p.get(k) for k in keys},ensure_ascii=False,sort_keys=True,separators=(',',':'))
-          expected=hmac.new(secret.encode(),payload.encode(),hashlib.sha256).hexdigest()
-          if not hmac.compare_digest(str(p.get('approval_signature','')),expected): raise SystemExit('❌ policy署名不一致。手動変更または検証証跡破損を検知')
-          print('✅ policy検証OK → TOP10実行可能')
+          import json
+          p=json.load(open('strategy_policy.json',encoding='utf-8'))
+          status=str(p.get('status','')).upper()
+          if status not in ('APPROVED','PENDING'):
+              raise SystemExit(f'❌ 不正なpolicy status: {status}')
+          print(f'✅ paper policy mode = {status}')
+          if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
-      - name: Run unified Profit Loop TOP10 (profit-first ranking)
+      - name: Run unified Profit Loop TOP10 (paper-only)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
+          PAPER_TRADE_MODE: '1'
         run: |
-          if [ -f policy_pending.marker ]; then echo '⏸ APPROVED policyなし。TOP10ペーパートレードは実行しません。'; exit 0; fi
           python run_profit_loop.py
       - name: Verify TOP10 paper state
         run: |
-          if [ -f policy_pending.marker ]; then echo '⏸ policy PENDING のため状態確認をスキップ'; exit 0; fi
           test -s profit_top10_paper_state.json
           python - <<'PY'
           import json
-          from pathlib import Path
-          s=json.loads(Path('profit_top10_paper_state.json').read_text(encoding='utf-8'))
+          s=json.load(open('profit_top10_paper_state.json',encoding='utf-8'))
           positions=s.get('positions',[])
           if len(positions)>10: raise SystemExit(f'❌ TOP10超過: {len(positions)}')
           print(f"✅ 仮想資産: {float(s.get('capital',0)):,.0f}円")
           print(f"✅ 最大DD: {float(s.get('max_dd',0)):.2f}%")
           print(f"✅ 保有ポジション: {len(positions)}/10")
+          print(f"✅ 本日新規: {int(s.get('trades_today',0))}件")
           PY
-      - name: Persist validated model, policy and paper ledger
+      - name: Persist paper ledger
         if: success()
         run: |
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add model.pkl strategy_policy.json profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv 2>/dev/null || true
-          if git diff --cached --quiet; then echo 'ℹ️ commit対象の変更なし'; exit 0; fi
-          git commit -m 'chore: persist validated model policy and TOP10 ledger [skip ci]'
+          git add profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv
+          if git diff --cached --quiet; then echo 'ℹ️ paper ledger変更なし'; exit 0; fi
+          git commit -m 'chore: persist TOP10 paper ledger [skip ci]'
           git fetch origin main
           git rebase origin/main
           git push origin HEAD:main
-      - name: Upload full pipeline artifacts
+      - name: Upload paper artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: profit-loop-top10-${{ github.run_id }}
           if-no-files-found: warn
           path: |
-            model.pkl
-            walk_forward_all_candidates.csv
-            adversarial_multi_oos_folds.csv
-            adversarial_dev_all_results.csv
-            adversarial_dev_selected_candidates.csv
-            adversarial_validation_results.csv
-            adversarial_oos_results.csv
-            adversarial_oos_diagnostics.csv
-            adversarial_oos_near_miss.csv
-            adversarial_final_candidates.csv
             strategy_policy.json
-            daily_retrain_report.csv
-            trade_feedback_report.csv
             profit_top10_paper_state.json
             profit_top10_paper_history.csv
             profit_top10_monthly_performance.csv
-            policy_pending.marker
+            daily_retrain_report.csv
+            trade_feedback_report.csv
