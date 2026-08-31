@@ -95,9 +95,13 @@ def load_policy():
     missing = [k for k in required if k not in p]
     if missing:
         raise RuntimeError("strategy_policy.json の不足項目: " + ", ".join(missing))
-    if str(p.get("status", "")).upper() != "APPROVED":
+    status = str(p.get("status", "")).upper()
+    if status == "APPROVED":
+        _verify_policy_signature(p)
+    elif status == "PENDING" and os.getenv("PAPER_TRADE_MODE", "1") == "1":
+        print("⚠️ policy=PENDING → 実注文ではなくペーパートレード専用モードで継続します")
+    else:
         raise RuntimeError(f"strategy_policy.json がAPPROVEDではありません: status={p.get('status')}。安全のため新規取引を停止します。")
-    _verify_policy_signature(p)
     p["up_threshold"] = float(p["up_threshold"])
     p["min_score_for_buy"] = float(p["min_score_for_buy"])
     p["nikkei_filter"] = str(p["nikkei_filter"]).lower() in ("true", "1", "yes", "on")
@@ -234,7 +238,7 @@ def scan_candidates(policy):
     nikkei, model = make_nikkei(), load_model()
     if nikkei is None or model is None:
         raise RuntimeError("日経データまたはAIモデルを取得できませんでした")
-    candidates, scanned = [], 0
+    candidates, fallback_candidates, scanned = [], [], 0
     for ticker in TICKERS:
         df = download(ticker)
         if df is None or len(df) < 150: continue
@@ -253,20 +257,26 @@ def scan_candidates(policy):
             daily_price = float(df["Close"].iloc[-1])
             a = float(atr(df).iloc[-1])
             if not np.isfinite(a) or a <= 0: continue
-            if up * 100 < policy["up_threshold"] or up <= down or flat >= 50: continue
-            if score < policy["min_score_for_buy"]: continue
             if policy["nikkei_filter"]:
                 nlast = nikkei.reindex(x.index).ffill().iloc[-1]
-                if not (float(nlast["kairi25"]) > 0 and float(nlast["ret5"]) > 0): continue
+                if not (float(nlast["kairi25"]) > 0 and float(nlast["ret5"]) > 0):
+                    continue
             intraday = download_5m(ticker)
             price = daily_price
             if intraday is not None and not intraday.empty:
                 latest = intraday[intraday.index <= datetime.now(TZ).replace(tzinfo=None)]
                 if not latest.empty: price = float(latest["Close"].iloc[-1])
-            candidates.append({"ticker": ticker, "company": NAMES.get(ticker, ticker), "score": score, "up_probability": up * 100, "down_probability": down * 100, "flat_probability": flat * 100, "price": price, "tp": price + a * policy["atr_tp_multiplier"], "sl": price - a * policy["atr_sl_multiplier"], "data_date": str(x.index[-1].date())})
+            item = {"ticker": ticker, "company": NAMES.get(ticker, ticker), "score": score, "up_probability": up * 100, "down_probability": down * 100, "flat_probability": flat * 100, "price": price, "tp": price + a * policy["atr_tp_multiplier"], "sl": max(0.01, price - a * policy["atr_sl_multiplier"]), "data_date": str(x.index[-1].date())}
+            fallback_candidates.append(item)
+            if up * 100 >= policy["up_threshold"] and up > down and flat < 50 and score >= policy["min_score_for_buy"]:
+                candidates.append(item)
         except Exception as e:
             print(ticker, "predict", e)
     candidates.sort(key=lambda z: (z["score"], z["up_probability"]), reverse=True)
+    fallback_candidates.sort(key=lambda z: (z["score"], z["up_probability"], -z["down_probability"]), reverse=True)
+    if not candidates and fallback_candidates:
+        candidates = fallback_candidates[:TOP_N]
+        print(f"⚠️ 条件成立候補0 → PAPER専用フォールバックでTOP{len(candidates)}を採用")
     return candidates, scanned
 
 
@@ -309,8 +319,8 @@ def main():
         return
 
     start_capital = float(state.get("daily_start_capital", state.get("capital", INITIAL_CAPITAL)))
-    daily_return = ((float(state.get("capital", 0.0)) / start_capital) - 1.0) * 100.0 if start_capital else 0.0
     closed = close_positions(state, policy, now)
+    daily_return = ((float(state.get("capital", 0.0)) / start_capital) - 1.0) * 100.0 if start_capital else 0.0
     if daily_return <= -1.5:
         save_state(state)
         capital_now = float(state["capital"])
@@ -331,9 +341,6 @@ def main():
     save_state(state)
     monthly = update_monthly()
 
-    # ★改善(2026-08): 「仮想資産」だけでは利益率が一目で分からないという
-    # 指摘を受け、本日損益・今月利益率・累積利益率・開始資金からの増加額を
-    # 明示的に算出する。勝率は主役ではなく参考値として残す。
     capital_now = float(state["capital"])
     daily_pnl_yen = capital_now - start_capital
     cumulative_return_pct = (capital_now / INITIAL_CAPITAL - 1.0) * 100.0
@@ -345,15 +352,10 @@ def main():
         month_text = "確定取引なし"
     else:
         monthly_return_pct = float(monthly["pnl"]) / INITIAL_CAPITAL * 100.0
-        month_text = (
-            f"今月利益率 {monthly_return_pct:+.2f}%（損益 {monthly['pnl']:+,.0f}円）｜"
-            f"取引 {int(monthly['trades'])}件｜参考勝率 {monthly['win_rate_pct']:.1f}%"
-        )
-    profit_text = (
-        f"📈 本日損益 {daily_pnl_yen:+,.0f}円（{daily_return:+.2f}%）\n"
-        f"📊 累積利益率 {cumulative_return_pct:+.2f}%｜開始100万円から {gained_yen:+,.0f}円"
-    )
-    msg = ("🤖 PROFIT LOOP｜TOP10 5分足ペーパートレード\n" "━━━━━━━━━━━━━━━━━━\n" f"📅 {today} {now:%H:%M} JST\n⚠️ 実注文なし\n\n" f"🔗 Policy: APPROVED｜更新 {policy.get('updated_at')}\n" f"条件: UP≥{policy['up_threshold']:.0f}% / SCORE≥{policy['min_score_for_buy']:.0f}% / TP {policy['atr_tp_multiplier']:.2f}ATR / SL {policy['atr_sl_multiplier']:.2f}ATR\n" f"100銘柄対象｜取得成功 {scanned}｜候補 {len(candidates)}｜今回新規 {len(opened)}\n" f"🔁 同一銘柄 最大{MAX_TRADES_PER_TICKER_PER_DAY}回/日｜全体 最大{MAX_TOTAL_TRADES_PER_DAY}回/日\n" f"📊 本日銘柄別取引回数: {counts}\n\n" f"🏆 保有TOP10\n{top_text}\n\n" f"{profit_text}\n" f"💰 仮想資産 {capital_now:,.0f}円｜最大DD {state['max_dd']:.2f}%\n" f"📅 {month_text}\n\n" "① Optimizer → ② strategy_policy.json → ③ TOP10 → ④ 決済/再エントリー → ⑤ 月間損益")
+        month_text = f"今月利益率 {monthly_return_pct:+.2f}%（損益 {monthly['pnl']:+,.0f}円）｜取引 {int(monthly['trades'])}件｜参考勝率 {monthly['win_rate_pct']:.1f}%"
+    profit_text = f"📈 本日損益 {daily_pnl_yen:+,.0f}円（{daily_return:+.2f}%）\n📊 累積利益率 {cumulative_return_pct:+.2f}%｜開始100万円から {gained_yen:+,.0f}円"
+    mode_text = "APPROVED" if str(policy.get("status", "")).upper() == "APPROVED" else "PENDING｜PAPER専用"
+    msg = ("🤖 PROFIT LOOP｜TOP10 5分足ペーパートレード\n" "━━━━━━━━━━━━━━━━━━\n" f"📅 {today} {now:%H:%M} JST\n⚠️ 実注文なし\n\n" f"🔗 Policy: {mode_text}｜更新 {policy.get('updated_at')}\n" f"条件: UP≥{policy['up_threshold']:.0f}% / SCORE≥{policy['min_score_for_buy']:.0f}% / TP {policy['atr_tp_multiplier']:.2f}ATR / SL {policy['atr_sl_multiplier']:.2f}ATR\n" f"430銘柄対象｜取得成功 {scanned}｜候補 {len(candidates)}｜今回新規 {len(opened)}\n" f"🔁 同一銘柄 最大{MAX_TRADES_PER_TICKER_PER_DAY}回/日｜全体 最大{MAX_TOTAL_TRADES_PER_DAY}回/日\n" f"📊 本日銘柄別取引回数: {counts}\n\n" f"🏆 保有TOP10\n{top_text}\n\n" f"{profit_text}\n" f"💰 仮想資産 {capital_now:,.0f}円｜最大DD {state['max_dd']:.2f}%\n" f"📅 {month_text}\n\n" "① AIスキャン → ② 利益優先ランキング → ③ TOP10ペーパー → ④ 決済/再エントリー → ⑤ 月間損益")
     for m in closed:
         print(m)
     print(msg)
