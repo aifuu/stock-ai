@@ -150,10 +150,24 @@ jobs:
           fi
           git diff --cached --name-only
           git commit -m 'chore: persist TOP10 paper ledger [skip ci]'
+          echo '🔄 PAPER LEDGER SYNC: fetch/rebase before push'
           git fetch origin main
           git rebase origin/main
-          git push origin HEAD:main
-          echo '✅ PAPER LEDGER SAVE SUCCESS'
+          echo '🚀 PAPER LEDGER PUSH START'
+          if git push origin HEAD:main; then
+            echo '✅ PAPER LEDGER PUSH SUCCESS'
+          else
+            echo '⚠️ PAPER LEDGER PUSH FAILED — retry once after fetch/rebase'
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              echo '✅ PAPER LEDGER PUSH SUCCESS (RETRY)'
+            else
+              echo '❌ PAPER LEDGER PUSH FAILED'
+              exit 1
+            fi
+          fi
+          echo '✅ PAPER LEDGER SAVE SUCCESS (commit + push confirmed)'
       - name: Upload paper artifacts
         if: always()
         uses: actions/upload-artifact@v4
