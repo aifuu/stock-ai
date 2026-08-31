@@ -43,18 +43,7 @@ jobs:
           PY
       - name: Syntax check
         run: |
-          python -m py_compile expanded_universe.py
-          python -m py_compile apply_expanded_universe.py
-          python -m py_compile run_profit_loop.py
-          python -m py_compile daily_model_retrain.py
-          python -m py_compile walk_forward.py
-          python -m py_compile adversarial_strategy_validator.py
-          python -m py_compile adversarial_oos_diagnostic.py
-          python -m py_compile multi_oos_profit_validator.py
-          python -m py_compile build_verified_profit_policy.py
-          python -m py_compile daily_directional_top1.py
-          python -m py_compile profit_top10_paper.py
-          python -m py_compile intraday_directional_top1_cycle.py
+          python -m py_compile expanded_universe.py apply_expanded_universe.py run_profit_loop.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py intraday_directional_top1_cycle.py
       - name: Verify expanded tickers
         run: |
           python - <<'PY'
@@ -63,8 +52,7 @@ jobs:
           files=['daily_directional_top1.py','walk_forward.py','stock_scan.py']
           counts=[]
           for f in files:
-              tree=ast.parse(Path(f).read_text(encoding='utf-8'))
-              vals=[]
+              tree=ast.parse(Path(f).read_text(encoding='utf-8')); vals=[]
               for node in tree.body:
                   if isinstance(node,ast.Assign):
                       for target in node.targets:
@@ -110,10 +98,8 @@ jobs:
           test -s strategy_policy.json
           python - <<'PY'
           import json
-          p=json.load(open('strategy_policy.json',encoding='utf-8'))
-          status=str(p.get('status','')).upper()
-          if status not in ('APPROVED','PENDING'):
-              raise SystemExit(f'❌ 不正なpolicy status: {status}')
+          p=json.load(open('strategy_policy.json',encoding='utf-8')); status=str(p.get('status','')).upper()
+          if status not in ('APPROVED','PENDING'): raise SystemExit(f'❌ 不正なpolicy status: {status}')
           print(f'✅ paper policy mode = {status}')
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
@@ -124,15 +110,13 @@ jobs:
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
           PAPER_TRADE_MODE: '1'
-        run: |
-          python run_profit_loop.py
+        run: python run_profit_loop.py
       - name: Verify TOP10 paper state
         run: |
           test -s profit_top10_paper_state.json
           python - <<'PY'
           import json
-          s=json.load(open('profit_top10_paper_state.json',encoding='utf-8'))
-          positions=s.get('positions',[])
+          s=json.load(open('profit_top10_paper_state.json',encoding='utf-8')); positions=s.get('positions',[])
           if len(positions)>10: raise SystemExit(f'❌ TOP10超過: {len(positions)}')
           print(f"✅ 仮想資産: {float(s.get('capital',0)):,.0f}円")
           print(f"✅ 最大DD: {float(s.get('max_dd',0)):.2f}%")
@@ -145,13 +129,31 @@ jobs:
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv
+          echo '💾 PAPER LEDGER SAVE START'
+          added=0
+          for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv; do
+            if [ -f "$f" ]; then
+              git add "$f"
+              echo "✅ ledger add: $f"
+              added=1
+            else
+              echo "ℹ️ ledger skip（未生成）: $f"
+            fi
+          done
+          if [ "$added" -eq 0 ]; then
+            echo 'ℹ️ 保存対象ファイルなし。ledger保存を正常終了'
+            exit 0
+          fi
+          if git diff --cached --quiet; then
+            echo 'ℹ️ paper ledger変更なし'
+            exit 0
+          fi
           git diff --cached --name-only
-          if git diff --cached --quiet; then echo 'ℹ️ paper ledger変更なし'; exit 0; fi
           git commit -m 'chore: persist TOP10 paper ledger [skip ci]'
           git fetch origin main
           git rebase origin/main
           git push origin HEAD:main
+          echo '✅ PAPER LEDGER SAVE SUCCESS'
       - name: Upload paper artifacts
         if: always()
         uses: actions/upload-artifact@v4
