@@ -145,7 +145,8 @@ jobs:
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv
+          git add -A profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv
+          git diff --cached --name-only
           if git diff --cached --quiet; then echo 'ℹ️ paper ledger変更なし'; exit 0; fi
           git commit -m 'chore: persist TOP10 paper ledger [skip ci]'
           git fetch origin main
