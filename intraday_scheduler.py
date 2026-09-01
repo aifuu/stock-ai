@@ -2,198 +2,210 @@ from __future__ import annotations
 
 """日中ペーパートレードの段階式スケジューラ。
 
-08:30-09:00  前日までの日足で寄り付き候補を準備
-09:00-09:10  寄り付き後の1分足/5分足・出来高・騰落トレンドで再評価
-09:30        支持抵抗・MA・VWAP・出来高・モメンタムを総合してTOP10/TOP1確定
-09:30以降    TOP1を中心に継続ペーパー売買
+08:30-09:00  前日までの日足データで寄り付き候補準備
+09:00-09:10  寄り付き後の1分足/5分足・出来高・騰落トレンド再評価
+09:10-09:30  継続再評価
+09:30以降    既存Profit LoopによるTOP10→TOP1ペーパートレード
 
-売買ルールは検証用OOSゲートとは独立した「ペーパー実行ルール」。
-同一銘柄のみ決済後30分クールダウンし、他銘柄は通常どおり候補にできる。
-1日最大30回、かつ通常候補がなくても14:45時点で0件ならforced_min_tradeを1回だけ発火する。
-forced_min_trade は本体シグナル成績から分離する前提。
+重要:
+- OOS/Adversarialの採用ゲートとは独立したペーパー実行ルール。
+- 同一銘柄は決済後30分だけ再取引禁止。別銘柄は選択可能。
+- 1日最大30回。
+- 1日最低1回は14:45時点で0件ならforced_min_tradeを発火するための状態フラグを保持。
+- forced_min_trade は normal シグナル成績から分離する前提。
+
+このモジュール自体は「時間フェーズと実行ルールの司令塔」であり、実際の
+銘柄評価・売買執行は既存の run_profit_loop.py / profit_top10_paper.py に接続する。
 """
 
+import argparse
+import json
 import logging
-import time
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, time as dtime
-from typing import Optional
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("intraday_scheduler")
 
-PREMARKET_START = dtime(8, 30)
-PREMARKET_END = dtime(9, 0)
-OPEN_RESCORE_START = dtime(9, 0)
-OPEN_RESCORE_END = dtime(9, 10)
-FINAL_DECISION_TIME = dtime(9, 30)
-MARKET_CLOSE = dtime(15, 30)
-
+JST = ZoneInfo("Asia/Tokyo")
+STATE_FILE = Path("intraday_scheduler_state.json")
+PREMARKET_START_MIN = 8 * 60 + 30
+OPEN_RESCORE_START_MIN = 9 * 60
+OPEN_RESCORE_END_MIN = 9 * 60 + 10
+FINAL_DECISION_MIN = 9 * 60 + 30
+MARKET_CLOSE_MIN = 15 * 60 + 30
 COOLDOWN_MINUTES = 30
 MAX_TRADES_PER_DAY = 30
 MIN_TRADES_PER_DAY = 1
-FORCE_MIN_TRADE_DEADLINE = dtime(14, 45)
-TRADING_LOOP_INTERVAL_MINUTES = 5
+FORCE_MIN_TRADE_DEADLINE_MIN = 14 * 60 + 45
 
 
-@dataclass
-class Candidate:
-    symbol: str
-    score: float
-    selection_mode: str = "normal"
+def now_jst() -> datetime:
+    return datetime.now(JST)
 
 
-@dataclass
-class TradeRecord:
-    symbol: str
-    timestamp: datetime
-    selection_mode: str
+def minute_of_day(dt: datetime) -> int:
+    return dt.hour * 60 + dt.minute
 
 
-@dataclass
-class SessionState:
-    trade_date: datetime
-    premarket_candidates: list[Candidate] = field(default_factory=list)
-    top10: list[Candidate] = field(default_factory=list)
-    top1: Optional[Candidate] = None
-    trades_today: list[TradeRecord] = field(default_factory=list)
-    symbol_last_trade_time: dict[str, datetime] = field(default_factory=dict)
-    forced_min_trade_done: bool = False
-
-    def trade_count(self) -> int:
-        return len(self.trades_today)
-
-    def is_symbol_in_cooldown(self, symbol: str, now: datetime) -> bool:
-        last = self.symbol_last_trade_time.get(symbol)
-        if last is None:
-            return False
-        return (now - last) < timedelta(minutes=COOLDOWN_MINUTES)
-
-    def record_trade(self, symbol: str, now: datetime, mode: str) -> None:
-        self.trades_today.append(TradeRecord(symbol, now, mode))
-        self.symbol_last_trade_time[symbol] = now
-
-
-# ---------------------------------------------------------------------------
-# 既存システム接続フック
-# ---------------------------------------------------------------------------
-
-def run_premarket_screening(state: SessionState) -> list[Candidate]:
-    """08:30-09:00: 前日までのデータで寄り付き候補を作る。
-
-    実運用では stock_scan.py / daily_directional_top1.py の既存スコアを
-    ここへ接続する。接続前は空リストを返して安全に停止する。
-    """
-    log.info("[08:30-09:00] 前日データによる寄り付き候補分析")
-    candidates: list[Candidate] = []
-    state.premarket_candidates = candidates
-    return candidates
+def load_state() -> dict:
+    today = now_jst().strftime("%Y-%m-%d")
+    default = {
+        "date": today,
+        "phase": "",
+        "premarket_done": False,
+        "open_rescore_done": False,
+        "final_decision_done": False,
+        "forced_min_trade_done": False,
+        "trades_today": 0,
+        "last_exit_by_ticker": {},
+    }
+    if not STATE_FILE.exists():
+        return default
+    try:
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if state.get("date") != today:
+            return default
+        default.update(state)
+        return default
+    except Exception as exc:
+        log.warning("scheduler state読込失敗: %s", exc)
+        return default
 
 
-def run_open_rescoring(state: SessionState) -> list[Candidate]:
-    """09:00-09:10: 1分足/5分足、出来高、騰落、トレンドで再評価。"""
-    log.info("[09:00-09:10] 寄り付き後の1分足/5分足・出来高・トレンド再評価")
-    rescored: list[Candidate] = []
-    # 実装接続後に state.premarket_candidates を再スコアする。
-    state.top10 = sorted(rescored, key=lambda c: c.score, reverse=True)[:10]
-    return state.top10
+def save_state(state: dict) -> None:
+    state["updated_at"] = now_jst().isoformat()
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def run_final_decision(state: SessionState) -> Optional[Candidate]:
-    """09:30: 支持/抵抗・MA・VWAP・出来高・モメンタム等でTOP10/TOP1確定。"""
-    log.info("[09:30] 支持抵抗/MA/VWAP/出来高/モメンタム総合評価")
-    final_top10: list[Candidate] = []
-    state.top10 = sorted(final_top10, key=lambda c: c.score, reverse=True)[:10]
-    state.top1 = state.top10[0] if state.top10 else None
-    if state.top1:
-        log.info("TOP1確定: %s score=%.3f", state.top1.symbol, state.top1.score)
-    return state.top1
+def determine_phase(now: datetime | None = None) -> str:
+    now = now or now_jst()
+    m = minute_of_day(now)
+    if PREMARKET_START_MIN <= m < OPEN_RESCORE_START_MIN:
+        return "premarket"
+    if OPEN_RESCORE_START_MIN <= m < OPEN_RESCORE_END_MIN:
+        return "open"
+    if OPEN_RESCORE_END_MIN <= m < FINAL_DECISION_MIN:
+        return "rescore"
+    if FINAL_DECISION_MIN <= m < MARKET_CLOSE_MIN:
+        return "trading"
+    if m >= MARKET_CLOSE_MIN:
+        return "closed"
+    return "before_premarket"
 
 
-def select_next_trade_candidate(state: SessionState, now: datetime) -> Optional[Candidate]:
-    """TOP10から、同一銘柄30分クールダウン外の最有力銘柄を選ぶ。"""
-    if state.trade_count() >= MAX_TRADES_PER_DAY:
-        return None
-    eligible = [c for c in state.top10 if not state.is_symbol_in_cooldown(c.symbol, now)]
-    if not eligible:
-        log.info("TOP10全銘柄が同一銘柄クールダウン中")
-        return None
-    eligible.sort(key=lambda c: c.score, reverse=True)
-    return eligible[0]
-
-
-def execute_paper_trade(state: SessionState, candidate: Candidate, now: datetime) -> None:
-    """ペーパートレードを記録する。"""
-    log.info(
-        "ペーパー発注: %s mode=%s score=%.3f trades_today=%d",
-        candidate.symbol,
-        candidate.selection_mode,
-        candidate.score,
-        state.trade_count() + 1,
-    )
-    state.record_trade(candidate.symbol, now, candidate.selection_mode)
-
-
-def enforce_minimum_daily_trade(state: SessionState, now: datetime) -> None:
-    """14:45時点で0件なら、通常ゲートとは別のforced_min_tradeを1回だけ行う。"""
-    if state.forced_min_trade_done or state.trade_count() >= MIN_TRADES_PER_DAY:
-        return
-    if now.time() < FORCE_MIN_TRADE_DEADLINE:
-        return
-
-    candidate = state.top1 or (state.top10[0] if state.top10 else None)
-    if candidate is None:
-        log.warning("forced_min_trade: TOP10/TOP1が存在しないため発注不能")
-        return
-    if state.is_symbol_in_cooldown(candidate.symbol, now):
-        alternatives = [c for c in state.top10 if not state.is_symbol_in_cooldown(c.symbol, now)]
-        candidate = alternatives[0] if alternatives else None
-    if candidate is None:
-        log.warning("forced_min_trade: クールダウン外の銘柄がありません")
-        return
-
-    forced = Candidate(candidate.symbol, candidate.score, "forced_min_trade")
-    execute_paper_trade(state, forced, now)
-    state.forced_min_trade_done = True
-
-
-def run_trading_loop(
-    state: SessionState,
-    now_provider=datetime.now,
-    sleep_seconds: int = 60,
-) -> None:
-    log.info("[09:30以降] ペーパートレードループ開始")
-    last_cycle_time: Optional[datetime] = None
-
-    while True:
-        now = now_provider()
-        if now.time() >= MARKET_CLOSE:
-            break
-
-        enforce_minimum_daily_trade(state, now)
-
-        if state.trade_count() < MAX_TRADES_PER_DAY:
-            if last_cycle_time is None or (now - last_cycle_time) >= timedelta(minutes=TRADING_LOOP_INTERVAL_MINUTES):
-                candidate = select_next_trade_candidate(state, now)
-                if candidate is not None:
-                    execute_paper_trade(state, candidate, now)
-                last_cycle_time = now
-
-        time.sleep(sleep_seconds)
-
-
-def run_full_day(trade_date: Optional[datetime] = None) -> SessionState:
-    trade_date = trade_date or datetime.now()
-    state = SessionState(trade_date=trade_date)
-    run_premarket_screening(state)
-    run_open_rescoring(state)
-    run_final_decision(state)
-    run_trading_loop(state)
-    normal = sum(t.selection_mode == "normal" for t in state.trades_today)
-    forced = sum(t.selection_mode == "forced_min_trade" for t in state.trades_today)
-    log.info("当日取引件数=%d (normal=%d forced_min_trade=%d)", state.trade_count(), normal, forced)
+def update_phase_state(phase: str) -> dict:
+    state = load_state()
+    state["phase"] = phase
+    if phase == "premarket":
+        state["premarket_done"] = True
+        log.info("[08:30-09:00] 前日データ候補分析フェーズ")
+    elif phase == "open":
+        state["open_rescore_done"] = True
+        log.info("[09:00-09:10] 寄り付き後1分足/5分足・出来高・騰落トレンド再評価フェーズ")
+    elif phase == "rescore":
+        log.info("[09:10-09:30] TOP10継続再評価フェーズ")
+    elif phase == "trading":
+        state["final_decision_done"] = True
+        log.info("[09:30-15:30] TOP10→TOP1ペーパー取引フェーズ")
+    elif phase == "closed":
+        log.info("[15:30以降] 市場終了")
+    else:
+        log.info("現在フェーズ: %s", phase)
+    save_state(state)
     return state
 
 
+def apply_exit_cooldown(ticker: str, exit_time: datetime | None = None) -> dict:
+    state = load_state()
+    ts = exit_time or now_jst()
+    state.setdefault("last_exit_by_ticker", {})[ticker] = ts.isoformat()
+    save_state(state)
+    log.info("⏳ 同一銘柄クールダウン開始: %s %d分", ticker, COOLDOWN_MINUTES)
+    return state
+
+
+def is_in_cooldown(ticker: str, now: datetime | None = None) -> bool:
+    state = load_state()
+    raw = state.get("last_exit_by_ticker", {}).get(ticker)
+    if not raw:
+        return False
+    try:
+        last = datetime.fromisoformat(raw)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=JST)
+        current = now or now_jst()
+        remaining = (last + timedelta(minutes=COOLDOWN_MINUTES) - current).total_seconds()
+        if remaining > 0:
+            log.info("⏸ 同一銘柄クールダウン中: %s 残り約%d分", ticker, int((remaining + 59) // 60))
+            return True
+        state["last_exit_by_ticker"].pop(ticker, None)
+        save_state(state)
+        return False
+    except Exception:
+        return False
+
+
+def can_start_paper_trading(now: datetime | None = None) -> bool:
+    now = now or now_jst()
+    return minute_of_day(now) >= FINAL_DECISION_MIN and minute_of_day(now) < MARKET_CLOSE_MIN
+
+
+def can_force_min_trade(now: datetime | None = None) -> bool:
+    now = now or now_jst()
+    state = load_state()
+    if state.get("forced_min_trade_done"):
+        return False
+    return state.get("trades_today", 0) < MIN_TRADES_PER_DAY and minute_of_day(now) >= FORCE_MIN_TRADE_DEADLINE_MIN
+
+
+def record_trade(ticker: str, mode: str = "normal") -> dict:
+    state = load_state()
+    trades = int(state.get("trades_today", 0))
+    if trades >= MAX_TRADES_PER_DAY:
+        raise RuntimeError(f"1日最大取引回数{MAX_TRADES_PER_DAY}回に到達")
+    state["trades_today"] = trades + 1
+    if mode == "forced_min_trade":
+        state["forced_min_trade_done"] = True
+    save_state(state)
+    log.info("📄 paper trade recorded: %s mode=%s count=%d/%d", ticker, mode, state["trades_today"], MAX_TRADES_PER_DAY)
+    return state
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--phase", choices=["auto", "premarket", "open", "rescore", "final", "trading", "closed"], default="auto")
+    parser.add_argument("--record-trade", dest="record_trade_ticker")
+    parser.add_argument("--record-mode", choices=["normal", "forced_min_trade"], default="normal")
+    parser.add_argument("--record-exit", dest="record_exit_ticker")
+    args = parser.parse_args()
+
+    now = now_jst()
+    phase = determine_phase(now) if args.phase == "auto" else args.phase
+    if phase == "final":
+        phase = "trading"
+
+    state = update_phase_state(phase)
+
+    if args.record_exit_ticker:
+        apply_exit_cooldown(args.record_exit_ticker, now)
+
+    if args.record_trade_ticker:
+        if is_in_cooldown(args.record_trade_ticker, now):
+            raise SystemExit(f"❌ {args.record_trade_ticker}: 同一銘柄30分クールダウン中")
+        record_trade(args.record_trade_ticker, args.record_mode)
+
+    print("========================================")
+    print("INTRADAY SCHEDULER")
+    print("========================================")
+    print(f"JST: {now:%Y-%m-%d %H:%M:%S}")
+    print(f"phase: {phase}")
+    print(f"paper trading start: {'YES' if can_start_paper_trading(now) else 'NO'}")
+    print(f"trades today: {state.get('trades_today', 0)}/{MAX_TRADES_PER_DAY}")
+    print(f"minimum-trade force due: {'YES' if can_force_min_trade(now) else 'NO'}")
+
+
 if __name__ == "__main__":
-    run_full_day()
+    main()
