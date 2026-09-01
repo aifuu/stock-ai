@@ -15,9 +15,6 @@ MAX_DAILY_TRADES = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
 MAX_TICKER_TRADES = int(os.getenv("MAX_TRADES_PER_TICKER_PER_DAY", "10"))
 SAME_TICKER_COOLDOWN_MINUTES = int(os.getenv("SAME_TICKER_COOLDOWN_MINUTES", "30"))
 
-# Paper-only progressive entry levels.
-# Level 1 is strict; lower levels widen the pool. These values are runtime
-# candidates, not research/OOS approval thresholds.
 PAPER_ENTRY_LEVELS = [
     {"level": 1, "up_threshold": 60.0, "min_score": 70.0, "nikkei_filter": True},
     {"level": 2, "up_threshold": 55.0, "min_score": 65.0, "nikkei_filter": True},
@@ -40,7 +37,6 @@ def profit_priority(candidates):
             reward = max(0.0, (tp / price - 1.0) * 100.0)
             risk = max(0.0, (1.0 - sl / price) * 100.0)
             ev = up * reward - (1.0 - up) * risk
-        # Profit expectation has priority, score remains a tie-breaker.
         rank = 0.65 * float(c.get("score", 0)) + 0.35 * max(-10.0, min(10.0, ev)) * 10.0
         item = dict(c)
         item["profit_ev_pct"] = round(ev, 4)
@@ -80,12 +76,6 @@ def _passes_level(candidate, spec):
 
 
 def scan_candidates_progressive(policy):
-    """Try paper-only levels from strict to relaxed until candidates exist.
-
-    The underlying scanner may return its own fallback candidates when a policy
-    produces no strict matches. Those fallback rows are filtered back out here,
-    so a loose fallback cannot prematurely bypass the progressive levels.
-    """
     last_scanned = 0
     last_pool = []
 
@@ -118,8 +108,6 @@ def scan_candidates_progressive(policy):
                 c["selection_mode"] = "normal" if spec["level"] == 1 else "progressive_level"
             return top10, scanned, int(spec["level"])
 
-    # Final paper-only fallback: use the last available candidates, but tag it
-    # separately. This is independent from OOS/research approval gates.
     if last_pool:
         ranked = profit_priority(last_pool)
         top10 = ranked[:TOP10]
@@ -152,7 +140,6 @@ def close_positions_with_cooldown(state, policy, now):
 
 
 def open_top1_only(state, policy, candidates, today):
-    """Open only the highest profit-priority eligible candidate from TOP10."""
     cooldowns = state.setdefault("last_exit_by_ticker", {})
     now = datetime.now(app.TZ)
     active = {str(p.get("ticker")) for p in state.get("positions", []) if p.get("ticker")}
@@ -174,6 +161,7 @@ def open_top1_only(state, policy, candidates, today):
             except Exception:
                 remaining = 0
             if remaining > 0:
+                print(f"⏸ 同一銘柄クールダウン中: {ticker} 残り約{int(remaining // 60) + 1}分")
                 continue
             cooldowns.pop(ticker, None)
         eligible.append(candidate)
