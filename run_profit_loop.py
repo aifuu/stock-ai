@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Unified Profit Loop: progressive levels -> TOP10 -> TOP1 paper trade.
+"""Unified Profit Loop: progressive levels -> up to TOP10 -> TOP1 paper trade.
 
 Research/OOS gates remain separate. This runtime path is for paper execution only.
-It progressively relaxes entry thresholds until a full TOP10 candidate set exists,
-then ranks the best candidates by profit priority and opens only TOP1.
+It progressively relaxes entry thresholds and executes as soon as at least ONE
+qualified candidate exists. TOP10 is a ranking ceiling, not a minimum requirement.
 """
 from datetime import datetime, timedelta
 import os
@@ -17,7 +17,8 @@ SAME_TICKER_COOLDOWN_MINUTES = int(os.getenv("SAME_TICKER_COOLDOWN_MINUTES", "30
 
 # 候補抽出だけを段階的に緩める。
 # 採用/OOSゲートそのものはここでは緩めない。
-# 各LEVELは「TOP10が揃うまで」次へ進む。
+# ★1銘柄でも条件を満たしたら、そのLEVELで即TOP1選出へ進む。
+# TOP10は「最大10銘柄」であり、最低10銘柄を要求しない。
 PAPER_ENTRY_LEVELS = [
     {"level": 1, "up_threshold": 60.0, "min_score": 70.0, "nikkei_filter": True},
     {"level": 2, "up_threshold": 55.0, "min_score": 65.0, "nikkei_filter": True},
@@ -46,11 +47,7 @@ def profit_priority(candidates):
         item["profit_ev_pct"] = round(ev, 4)
         item["profit_priority"] = round(rank, 4)
         ranked.append(item)
-    return sorted(
-        ranked,
-        key=lambda x: (x["profit_priority"], x.get("score", 0), x.get("up_probability", 0)),
-        reverse=True,
-    )
+    return sorted(ranked, key=lambda x: (x["profit_priority"], x.get("score", 0), x.get("up_probability", 0)), reverse=True)
 
 
 _original_scan = app.scan_candidates
@@ -71,12 +68,7 @@ def _passes_level(candidate, spec):
     down = float(candidate.get("down_probability", 0) or 0)
     flat = float(candidate.get("flat_probability", 0) or 0)
     score = float(candidate.get("score", 0) or 0)
-    return (
-        up >= float(spec["up_threshold"])
-        and up > down
-        and flat < 50.0
-        and score >= float(spec["min_score"])
-    )
+    return up >= float(spec["up_threshold"]) and up > down and flat < 50.0 and score >= float(spec["min_score"])
 
 
 def scan_candidates_progressive(policy):
@@ -93,16 +85,15 @@ def scan_candidates_progressive(policy):
         top10 = ranked[:TOP10]
 
         print(
-            f"🧭 PAPER LEVEL {spec['level']}: "
-            f"UP≥{spec['up_threshold']:.0f}% SCORE≥{spec['min_score']:.0f} "
-            f"NIKKEI={'ON' if spec['nikkei_filter'] else 'OFF'} "
+            f"🧭 PAPER LEVEL {spec['level']}: UP≥{spec['up_threshold']:.0f}% "
+            f"SCORE≥{spec['min_score']:.0f} NIKKEI={'ON' if spec['nikkei_filter'] else 'OFF'} "
             f"qualified={len(qualified)} / TOP10={len(top10)}"
         )
 
-        # ★重要: 1～9銘柄で止めない。
-        # TOP10が揃った場合だけ、このLEVELを採用してTOP1へ進む。
-        if len(top10) >= TOP10:
-            print(f"🏁 採用LEVEL={spec['level']} / TOP10={len(top10)}")
+        # ★最重要: 1銘柄以上あれば即採用候補としてこのLEVELで確定。
+        # TOP10を埋めるために、さらに条件を緩めることはしない。
+        if len(top10) >= 1:
+            print(f"🏁 実行LEVEL={spec['level']} / 候補={len(top10)} → TOP1へ")
             for rank, c in enumerate(top10, 1):
                 c["selection_level"] = int(spec["level"])
                 c["selection_mode"] = "normal" if spec["level"] == 1 else "progressive_level"
@@ -114,27 +105,11 @@ def scan_candidates_progressive(policy):
                 )
             return top10, scanned, int(spec["level"])
 
-        # TOP10未満なら、より緩いLEVELへ進む。
-        print(
-            f"  ↳ TOP10未達({len(top10)}/10) → 次のLEVELへ条件緩和"
-        )
+        print(f"  ↳ 候補0 → 次のLEVELへ条件緩和")
 
-    # 全LEVELでも10銘柄に届かない場合のみ、最後の安全なpaper fallback。
-    # これは「採用」ではなく、毎日取引の稼働率を確認するための紙取引専用。
-    if last_pool:
-        ranked = profit_priority(last_pool)
-        top10 = ranked[:TOP10]
-        for rank, c in enumerate(top10, 1):
-            c["selection_level"] = len(PAPER_ENTRY_LEVELS) + 1
-            c["selection_mode"] = "forced_min_trade"
-            c["top10_rank"] = rank
-        print(
-            f"⚠️ 全通常LEVELでTOP10未達 "
-            f"→ paper fallback={len(top10)}件（採用判定とは分離）"
-        )
-        return top10, last_scanned, len(PAPER_ENTRY_LEVELS) + 1
-
-    print("❌ 全LEVELで候補0。paper fallbackも実行しません")
+    # 全LEVELでも候補0なら、無理に取引しない。
+    # 「1銘柄でも揃えば実行」の条件を満たさないため停止する。
+    print("❌ 全LEVELで候補0。paper tradeは実行しません")
     return [], last_scanned, 0
 
 
@@ -185,7 +160,7 @@ def open_top1_only(state, policy, candidates, today):
         eligible.append(candidate)
 
     if not eligible:
-        print("⏸ TOP10内に新規エントリー可能なTOP1なし")
+        print("⏸ 候補内に新規エントリー可能なTOP1なし")
         return []
 
     top1 = eligible[0]
@@ -209,9 +184,8 @@ def open_top1_only(state, policy, candidates, today):
         p["selection_level"] = int(top1.get("selection_level", 1))
         p["top10_rank"] = int(top1.get("top10_rank", 1))
         print(
-            f"🏆 TOP10→TOP1 ENTRY: {top1['ticker']} "
-            f"LEVEL={p['selection_level']} MODE={p['selection_mode']} "
-            f"score={top1['score']:.1f} UP={top1['up_probability']:.1f}%"
+            f"🏆 TOP→TOP1 ENTRY: {top1['ticker']} LEVEL={p['selection_level']} "
+            f"MODE={p['selection_mode']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}%"
         )
     return opened
 
