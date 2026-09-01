@@ -62,21 +62,14 @@ jobs:
               counts.append(len(vals)); print(f'✅ {f}: {len(vals)}銘柄・重複なし')
           if len(set(counts))!=1: raise SystemExit(f'❌ 3ファイルの銘柄数不一致: {counts}')
           PY
-      - name: Morning premarket phase (08:30-09:00 JST)
+      - name: Record current scheduler phase
+        run: python intraday_scheduler.py --phase auto
+      - name: Morning premarket phase marker
         if: github.event_name == 'schedule' && github.event.schedule == '30 23 * * 1-5'
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python intraday_scheduler.py --phase premarket
-      - name: Open rescore phase (09:00-09:10 JST)
-        if: github.event.schedule == '*/5 0-6 * * 1-5'
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python intraday_scheduler.py --phase open
-      - name: Final decision phase (09:30 JST)
-        if: github.event.schedule == '*/5 0-6 * * 1-5'
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python intraday_scheduler.py --phase final
+      - name: Open rescore phase marker
+        if: github.event_name == 'schedule' && github.event.schedule == '*/5 0-6 * * 1-5' && (success())
+        run: python intraday_scheduler.py --phase auto
       - name: Full multi-OOS validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -119,7 +112,7 @@ jobs:
           print(f'✅ paper policy mode = {status}')
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
-      - name: Run unified Profit Loop TOP10 (paper-only)
+      - name: Run unified Profit Loop TOP10 (paper-only, 09:30 onward)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
@@ -128,7 +121,21 @@ jobs:
           PAPER_TRADE_MODE: '1'
           MAX_TRADES_PER_DAY: '30'
           SAME_TICKER_COOLDOWN_MINUTES: '30'
-        run: python run_profit_loop.py
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo('Asia/Tokyo'))
+          minutes = now.hour * 60 + now.minute
+          if minutes < 570:
+              print(f'⏸ 09:30前のためペーパートレード開始を待機: {now:%H:%M JST}')
+              raise SystemExit(0)
+          if minutes >= 930:
+              print(f'⏸ 市場終了後のためペーパートレードを実行しません: {now:%H:%M JST}')
+              raise SystemExit(0)
+          print(f'▶ 09:30以降: Profit Loop TOP10を実行 {now:%H:%M JST}')
+          PY
+          python run_profit_loop.py
       - name: Verify TOP10 paper state
         run: |
           test -s profit_top10_paper_state.json
