@@ -1,0 +1,2 @@
+﻿date,train_rows,oos_days,oos_trades,oos_pf,oos_win_rate,oos_max_dd_pct,deployed,reason,live_recent_trades,live_recent_win_rate,live_recent_pnl
+2026-09-01,45378,63,15,0.69,26.67,-30.38,False,"OOSゲート未通過(PF=0.69, 最大DD=-30.4%)",0,,0.0
