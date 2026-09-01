@@ -2,7 +2,7 @@
 """Unified Profit Loop: progressive levels -> TOP10 -> TOP1 paper trade.
 
 Research/OOS gates remain separate. This runtime path is for paper execution only.
-It progressively relaxes entry thresholds until a usable candidate set exists,
+It progressively relaxes entry thresholds until a full TOP10 candidate set exists,
 then ranks the best candidates by profit priority and opens only TOP1.
 """
 from datetime import datetime, timedelta
@@ -15,12 +15,16 @@ MAX_DAILY_TRADES = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
 MAX_TICKER_TRADES = int(os.getenv("MAX_TRADES_PER_TICKER_PER_DAY", "10"))
 SAME_TICKER_COOLDOWN_MINUTES = int(os.getenv("SAME_TICKER_COOLDOWN_MINUTES", "30"))
 
+# 候補抽出だけを段階的に緩める。
+# 採用/OOSゲートそのものはここでは緩めない。
+# 各LEVELは「TOP10が揃うまで」次へ進む。
 PAPER_ENTRY_LEVELS = [
     {"level": 1, "up_threshold": 60.0, "min_score": 70.0, "nikkei_filter": True},
     {"level": 2, "up_threshold": 55.0, "min_score": 65.0, "nikkei_filter": True},
     {"level": 3, "up_threshold": 50.0, "min_score": 60.0, "nikkei_filter": False},
     {"level": 4, "up_threshold": 45.0, "min_score": 55.0, "nikkei_filter": False},
     {"level": 5, "up_threshold": 40.0, "min_score": 50.0, "nikkei_filter": False},
+    {"level": 6, "up_threshold": 35.0, "min_score": 45.0, "nikkei_filter": False},
 ]
 
 
@@ -92,31 +96,45 @@ def scan_candidates_progressive(policy):
             f"🧭 PAPER LEVEL {spec['level']}: "
             f"UP≥{spec['up_threshold']:.0f}% SCORE≥{spec['min_score']:.0f} "
             f"NIKKEI={'ON' if spec['nikkei_filter'] else 'OFF'} "
-            f"qualified={len(qualified)}"
+            f"qualified={len(qualified)} / TOP10={len(top10)}"
         )
 
-        if top10:
-            for i, c in enumerate(top10, 1):
+        # ★重要: 1～9銘柄で止めない。
+        # TOP10が揃った場合だけ、このLEVELを採用してTOP1へ進む。
+        if len(top10) >= TOP10:
+            print(f"🏁 採用LEVEL={spec['level']} / TOP10={len(top10)}")
+            for rank, c in enumerate(top10, 1):
+                c["selection_level"] = int(spec["level"])
+                c["selection_mode"] = "normal" if spec["level"] == 1 else "progressive_level"
+                c["top10_rank"] = rank
                 print(
-                    f"  {i:02d}. {c['ticker']} score={c['score']:.1f} "
+                    f"  {rank:02d}. {c['ticker']} score={c['score']:.1f} "
                     f"UP={c['up_probability']:.1f}% EV={c.get('profit_ev_pct', 0):+.2f}% "
                     f"rank={c.get('profit_priority', 0):.1f}"
                 )
-            print(f"🏁 採用LEVEL={spec['level']} / TOP10={len(top10)}")
-            for c in top10:
-                c["selection_level"] = int(spec["level"])
-                c["selection_mode"] = "normal" if spec["level"] == 1 else "progressive_level"
             return top10, scanned, int(spec["level"])
 
+        # TOP10未満なら、より緩いLEVELへ進む。
+        print(
+            f"  ↳ TOP10未達({len(top10)}/10) → 次のLEVELへ条件緩和"
+        )
+
+    # 全LEVELでも10銘柄に届かない場合のみ、最後の安全なpaper fallback。
+    # これは「採用」ではなく、毎日取引の稼働率を確認するための紙取引専用。
     if last_pool:
         ranked = profit_priority(last_pool)
         top10 = ranked[:TOP10]
-        for c in top10:
+        for rank, c in enumerate(top10, 1):
             c["selection_level"] = len(PAPER_ENTRY_LEVELS) + 1
             c["selection_mode"] = "forced_min_trade"
-        print("⚠️ 全通常LEVELで候補なし → 最終paper fallbackでTOP1候補を確保")
+            c["top10_rank"] = rank
+        print(
+            f"⚠️ 全通常LEVELでTOP10未達 "
+            f"→ paper fallback={len(top10)}件（採用判定とは分離）"
+        )
         return top10, last_scanned, len(PAPER_ENTRY_LEVELS) + 1
 
+    print("❌ 全LEVELで候補0。paper fallbackも実行しません")
     return [], last_scanned, 0
 
 
@@ -189,7 +207,7 @@ def open_top1_only(state, policy, candidates, today):
         p["allocation"] = 1.0
         p["selection_mode"] = top1.get("selection_mode", "normal")
         p["selection_level"] = int(top1.get("selection_level", 1))
-        p["top10_rank"] = 1
+        p["top10_rank"] = int(top1.get("top10_rank", 1))
         print(
             f"🏆 TOP10→TOP1 ENTRY: {top1['ticker']} "
             f"LEVEL={p['selection_level']} MODE={p['selection_mode']} "
