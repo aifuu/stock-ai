@@ -67,9 +67,6 @@ jobs:
       - name: Morning premarket phase marker
         if: github.event_name == 'schedule' && github.event.schedule == '30 23 * * 1-5'
         run: python intraday_scheduler.py --phase premarket
-      - name: Open rescore phase marker
-        if: github.event_name == 'schedule' && github.event.schedule == '*/5 0-6 * * 1-5' && (success())
-        run: python intraday_scheduler.py --phase auto
       - name: Full multi-OOS validation pipeline (manual run only)
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -137,11 +134,20 @@ jobs:
           PY
           python run_profit_loop.py
       - name: Verify TOP10 paper state
+        if: github.event_name != 'schedule' || github.event.schedule != '30 23 * * 1-5'
         run: |
-          test -s profit_top10_paper_state.json
           python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo('Asia/Tokyo'))
+          if now.hour * 60 + now.minute < 570:
+              print(f'⏸ 09:30前なのでstate検証をスキップ: {now:%H:%M JST}')
+              raise SystemExit(0)
           import json
-          s=json.load(open('profit_top10_paper_state.json',encoding='utf-8')); positions=s.get('positions',[])
+          from pathlib import Path
+          p=Path('profit_top10_paper_state.json')
+          if not p.exists(): raise SystemExit('❌ 09:30以降なのにpaper stateがありません')
+          s=json.loads(p.read_text(encoding='utf-8')); positions=s.get('positions',[])
           if len(positions)>10: raise SystemExit(f'❌ TOP10超過: {len(positions)}')
           if int(s.get('trades_today',0))>30: raise SystemExit(f"❌ 1日30回超過: {s.get('trades_today')}")
           print(f"✅ 仮想資産: {float(s.get('capital',0)):,.0f}円")
