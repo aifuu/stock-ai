@@ -2,9 +2,8 @@
 """Unified Profit Loop: progressive levels -> TOP10 -> TOP1 paper trade.
 
 Research/OOS gates remain separate. This runtime path is for paper execution only.
-It progressively relaxes entry thresholds and executes as soon as at least ONE
-qualified candidate exists. TOP10 is a ranking ceiling, not a minimum requirement.
-Both BUY and SHORT candidates are evaluated symmetrically.
+Both BUY and SHORT are evaluated. Market regime determines the preferred direction:
+Nikkei bullish -> BUY priority, bearish -> SHORT priority, neutral -> AI direction.
 """
 from datetime import datetime, timedelta
 import os
@@ -26,7 +25,33 @@ PAPER_ENTRY_LEVELS = [
 ]
 
 
+def _market_regime():
+    """日経の状態を bullish / bearish / neutral に分類する。"""
+    try:
+        nikkei = app.make_nikkei()
+        if nikkei is None or nikkei.empty:
+            return "neutral", None, None
+        last = nikkei.ffill().iloc[-1]
+        kairi = float(last["kairi25"])
+        ret5 = float(last["ret5"])
+        if kairi > 0 and ret5 > 0:
+            return "bullish", kairi, ret5
+        if kairi < 0 and ret5 < 0:
+            return "bearish", kairi, ret5
+        return "neutral", kairi, ret5
+    except Exception as exc:
+        print(f"⚠️ 日経レジーム判定失敗 → neutral: {exc}")
+        return "neutral", None, None
+
+
 def profit_priority(candidates):
+    """利益期待値を中心に、日経レジームと方向一致を優先する。"""
+    regime, kairi25, ret5 = _market_regime()
+    print(
+        f"🌐 日経レジーム: {regime.upper()}"
+        + (f"｜25MA乖離 {kairi25:+.2f}%｜5日騰落 {ret5:+.2f}%" if kairi25 is not None else "")
+    )
+
     ranked = []
     for c in candidates:
         direction = str(c.get("direction", "BUY")).upper()
@@ -45,14 +70,37 @@ def profit_priority(candidates):
             reward = max(0.0, (tp / price - 1.0) * 100.0)
             risk = max(0.0, (1.0 - sl / price) * 100.0)
             ev = up * reward - (1.0 - up) * risk
-        rank = 0.65 * float(c.get("score", 0)) + 0.35 * max(-10.0, min(10.0, ev)) * 10.0
+
+        if regime == "bullish":
+            preferred = direction == "BUY"
+        elif regime == "bearish":
+            preferred = direction == "SHORT"
+        else:
+            preferred = False
+
+        # 方向一致を優先。ただし利益期待値・AI scoreを消さない範囲の加点。
+        regime_bonus = 10.0 if preferred else 0.0
+        rank = (
+            0.65 * float(c.get("score", 0))
+            + 0.35 * max(-10.0, min(10.0, ev)) * 10.0
+            + regime_bonus
+        )
         item = dict(c)
+        item["market_regime"] = regime
+        item["regime_preferred"] = bool(preferred)
+        item["regime_bonus"] = regime_bonus
         item["profit_ev_pct"] = round(ev, 4)
         item["profit_priority"] = round(rank, 4)
         ranked.append(item)
+
     return sorted(
         ranked,
-        key=lambda x: (x["profit_priority"], x.get("score", 0), max(x.get("up_probability", 0), x.get("down_probability", 0))),
+        key=lambda x: (
+            x["regime_preferred"],
+            x["profit_priority"],
+            x.get("score", 0),
+            max(x.get("up_probability", 0), x.get("down_probability", 0)),
+        ),
         reverse=True,
     )
 
@@ -66,7 +114,9 @@ def _policy_for_level(base_policy, spec):
     p = dict(base_policy)
     p["up_threshold"] = float(spec["up_threshold"])
     p["min_score_for_buy"] = float(spec["min_score"])
-    p["nikkei_filter"] = bool(spec["nikkei_filter"])
+    # 日経の方向は「フィルターで片側を消す」のではなく、
+    # profit_priority() で BUY/SHORT の優先順位として使う。
+    p["nikkei_filter"] = False
     return p
 
 
@@ -86,14 +136,13 @@ def _passes_level(candidate, spec):
 
 
 def _print_gate_diagnostics(emergency_pool, scanned):
-    """各LEVELでどの固定条件で候補が減ったかを可視化する。"""
     pool = emergency_pool or []
     print("")
     print("=" * 86)
     print("🔎 PAPER候補ゲート診断（ペーパー専用。OOS/Adversarialとは独立）")
     print("=" * 86)
     print(f"スキャン成功: {int(scanned or 0)}")
-    print("固定条件通過: LONG=UP>DOWN / SHORT=DOWN>UP かつ Flat<50%")
+    print("固定条件通過: BUY=UP>DOWN / SHORT=DOWN>UP かつ Flat<50%")
     print(f"固定条件通過件数: {len(pool)}")
     print("")
     print("LEVEL | 方向 | 確率条件 | SCORE条件 | 両方通過")
@@ -103,27 +152,25 @@ def _print_gate_diagnostics(emergency_pool, scanned):
         short_both = [c for c in pool if str(c.get("direction", "BUY")).upper() == "SHORT" and _passes_level(c, spec)]
         print(f" {spec['level']:>2}   | BUY   | UP≥{spec['up_threshold']:>3.0f}%   | SCORE≥{spec['min_score']:>3.0f}     | {len(long_both):>8}")
         print(f" {spec['level']:>2}   | SHORT | DOWN≥{spec['up_threshold']:>3.0f}% | SCORE≥{spec['min_score']:>3.0f}     | {len(short_both):>8}")
-    print("注: 日経フィルターONのLEVELは、上記件数に加えて日経条件でさらに減る場合があります。")
+    print("注: 日経レジームは候補を消さず、TOP10/TOP1の方向優先順位に反映します。")
     print("=" * 86)
 
 
 def scan_candidates_progressive(policy):
     last_scanned = 0
-    last_pool = []
 
     for spec in PAPER_ENTRY_LEVELS:
         level_policy = _policy_for_level(policy, spec)
         raw, scanned = _original_scan(level_policy)
         last_scanned = max(last_scanned, int(scanned or 0))
-        last_pool = raw or []
-        qualified = [c for c in last_pool if _passes_level(c, spec)]
+        pool = raw or []
+        qualified = [c for c in pool if _passes_level(c, spec)]
         ranked = profit_priority(qualified)
         top10 = ranked[:TOP10]
 
         print(
             f"🧭 PAPER LEVEL {spec['level']}: BUY UP≥{spec['up_threshold']:.0f}% / SHORT DOWN≥{spec['up_threshold']:.0f}% "
-            f"SCORE≥{spec['min_score']:.0f} NIKKEI={'ON' if spec['nikkei_filter'] else 'OFF'} "
-            f"qualified={len(qualified)} / TOP10={len(top10)}"
+            f"SCORE≥{spec['min_score']:.0f} REGIME-AWARE qualified={len(qualified)} / TOP10={len(top10)}"
         )
 
         if top10:
@@ -135,6 +182,7 @@ def scan_candidates_progressive(policy):
                 print(
                     f"  {rank:02d}. {c.get('direction', 'BUY')} {c['ticker']} score={c['score']:.1f} "
                     f"UP={c['up_probability']:.1f}% DOWN={c.get('down_probability', 0):.1f}% "
+                    f"REGIME={'PREFERRED' if c.get('regime_preferred') else 'OTHER'} "
                     f"EV={c.get('profit_ev_pct', 0):+.2f}% rank={c.get('profit_priority', 0):.1f}"
                 )
             return top10, last_scanned, int(spec["level"])
@@ -162,7 +210,7 @@ def scan_candidates_progressive(policy):
             c["selection_level"] = len(PAPER_ENTRY_LEVELS) + 1
             c["selection_mode"] = "forced_min_trade"
             c["top10_rank"] = rank
-        print(f"🟠 最終PAPER強制経路: スキャン済み候補={len(emergency_pool)} → TOP10={len(top10)} → TOP1を必ず選出")
+        print(f"🟠 最終PAPER強制経路: スキャン済み候補={len(emergency_pool)} → TOP10={len(top10)} → TOP1を選出")
         return top10, last_scanned, len(PAPER_ENTRY_LEVELS) + 1
 
     print("❌ 銘柄データ自体を取得できないため、paper trade候補を生成できません")
@@ -239,9 +287,12 @@ def open_top1_only(state, policy, candidates, today):
         p["selection_mode"] = top1.get("selection_mode", "normal")
         p["selection_level"] = int(top1.get("selection_level", 1))
         p["top10_rank"] = int(top1.get("top10_rank", 1))
+        p["market_regime"] = top1.get("market_regime", "neutral")
+        p["regime_preferred"] = bool(top1.get("regime_preferred", False))
         print(
             f"🏆 TOP→TOP1 ENTRY: {top1.get('direction', 'BUY')} {top1['ticker']} "
             f"LEVEL={p['selection_level']} MODE={p['selection_mode']} "
+            f"REGIME={p['market_regime']} PREFERRED={p['regime_preferred']} "
             f"score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability', 0):.1f}%"
         )
     return opened
