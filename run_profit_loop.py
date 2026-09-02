@@ -15,8 +15,6 @@ MAX_DAILY_TRADES = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
 MAX_TICKER_TRADES = int(os.getenv("MAX_TRADES_PER_TICKER_PER_DAY", "10"))
 SAME_TICKER_COOLDOWN_MINUTES = int(os.getenv("SAME_TICKER_COOLDOWN_MINUTES", "30"))
 
-# Paper-only progressive entry levels.
-# Research/OOS/Adversarial approval thresholds are NOT changed by these levels.
 PAPER_ENTRY_LEVELS = [
     {"level": 1, "up_threshold": 60.0, "min_score": 70.0, "nikkei_filter": True},
     {"level": 2, "up_threshold": 55.0, "min_score": 65.0, "nikkei_filter": True},
@@ -78,6 +76,41 @@ def _passes_level(candidate, spec):
     )
 
 
+def _print_gate_diagnostics(emergency_pool, scanned):
+    """各LEVELでどの固定条件で候補が減ったかを可視化する。"""
+    pool = emergency_pool or []
+    print("")
+    print("=" * 86)
+    print("🔎 PAPER候補ゲート診断（ペーパー専用。OOS/Adversarialとは独立）")
+    print("=" * 86)
+    print(f"スキャン成功: {int(scanned or 0)}")
+    print("固定条件通過: UP>DOWN かつ Flat<50%（profit_top10_paper側）")
+    print(f"固定条件通過件数: {len(pool)}")
+    print("")
+    print("LEVEL | UP条件 | SCORE条件 | UP通過 | SCORE通過 | 両方通過")
+    print("------+----------+------------+---------+------------+----------")
+    for spec in PAPER_ENTRY_LEVELS:
+        up_ok = [
+            c for c in pool
+            if float(c.get("up_probability", 0) or 0) >= float(spec["up_threshold"])
+        ]
+        score_ok = [
+            c for c in pool
+            if float(c.get("score", 0) or 0) >= float(spec["min_score"])
+        ]
+        both = [c for c in pool if _passes_level(c, spec)]
+        print(
+            f" {spec['level']:>2}   | "
+            f"{spec['up_threshold']:>5.0f}%    | "
+            f"{spec['min_score']:>6.0f}      | "
+            f"{len(up_ok):>7} | "
+            f"{len(score_ok):>10} | "
+            f"{len(both):>8}"
+        )
+    print("注: 日経フィルターONのLEVELは、上記件数に加えて日経条件でさらに減る場合があります。")
+    print("=" * 86)
+
+
 def scan_candidates_progressive(policy):
     last_scanned = 0
     last_pool = []
@@ -112,14 +145,6 @@ def scan_candidates_progressive(policy):
 
         print("  ↳ 候補0 → 次のLEVELへ条件緩和")
 
-    # =========================================================
-    # ★ 最終PAPER専用強制経路
-    #
-    # ここはOOS/Adversarial/risk approvalとは別の「稼働率検証」経路。
-    # 全通常LEVELで候補0でも、スキャナが取得できた銘柄群からTOP1候補を
-    # 1件だけ確保するため、入口条件をゼロまで下げて再取得する。
-    # この候補には forced_min_trade を付与し、本体成績と分離する。
-    # =========================================================
     emergency_policy = dict(policy)
     emergency_policy["up_threshold"] = 0.0
     emergency_policy["min_score_for_buy"] = 0.0
@@ -132,6 +157,8 @@ def scan_candidates_progressive(policy):
         print(f"⚠️ PAPER強制経路の再スキャン失敗: {exc}")
 
     last_scanned = max(last_scanned, int(emergency_scanned or 0))
+    _print_gate_diagnostics(emergency_pool, last_scanned)
+
     if emergency_pool:
         ranked = profit_priority(emergency_pool)
         top10 = ranked[:TOP10]
@@ -145,7 +172,6 @@ def scan_candidates_progressive(policy):
         )
         return top10, last_scanned, len(PAPER_ENTRY_LEVELS) + 1
 
-    # スキャナ自体が銘柄データを1件も返せない場合だけ、外部データ取得失敗として停止。
     print("❌ 銘柄データ自体を取得できないため、paper trade候補を生成できません")
     return [], last_scanned, 0
 
