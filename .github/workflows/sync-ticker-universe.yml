@@ -8,9 +8,10 @@ on:
 permissions:
   contents: write
 
-# Share the same writer lock as the daily TOP1 workflow.
+# Ticker synchronization has its own writer lock so it never blocks
+# paper trading, retraining, or OOS profit optimization.
 concurrency:
-  group: stock-ai-main-writer
+  group: stock-ai-ticker-sync
   cancel-in-progress: false
 
 jobs:
@@ -20,6 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Setup Python
@@ -46,17 +48,38 @@ jobs:
                       for target in node.targets:
                           if isinstance(target, ast.Name) and target.id == "TICKERS":
                               tickers = ast.literal_eval(node.value)
+              if tickers is None:
+                  raise SystemExit(f"❌ {name}: TICKERS が見つかりません")
               print(f"{name}: {len(tickers)}銘柄")
           PY
 
       - name: Commit synchronized files
         run: |
           set -e
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add stock_scan.py walk_forward.py
-          git diff --cached --quiet || git commit -m "Sync stock universe to 100 tickers [skip ci]"
-          git fetch origin main
-          git rebase origin/main
-          git push origin HEAD:main
-          echo "✅ ticker sync push成功"
+          if git diff --cached --quiet; then
+            echo "変更なし"
+            exit 0
+          fi
+          git commit -m "Sync stock universe to 100 tickers [skip ci]"
+
+          success=0
+          for i in 1 2 3 4 5; do
+            echo "🔄 main push attempt $i/5"
+            git fetch origin main
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
+              echo "✅ ticker sync push成功"
+              success=1
+              break
+            fi
+            echo "⚠️ push failed, retry $i/5"
+            git rebase --abort 2>/dev/null || true
+            sleep $((RANDOM % 10 + 5))
+          done
+
+          if [ "$success" -ne 1 ]; then
+            echo "❌ ticker sync push失敗: 5回とも失敗しました"
+            exit 1
+          fi
