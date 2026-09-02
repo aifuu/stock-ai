@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified Profit Loop: progressive levels -> up to TOP10 -> TOP1 paper trade.
+"""Unified Profit Loop: progressive levels -> TOP10 -> TOP1 paper trade.
 
 Research/OOS gates remain separate. This runtime path is for paper execution only.
 It progressively relaxes entry thresholds and executes as soon as at least ONE
@@ -15,10 +15,8 @@ MAX_DAILY_TRADES = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
 MAX_TICKER_TRADES = int(os.getenv("MAX_TRADES_PER_TICKER_PER_DAY", "10"))
 SAME_TICKER_COOLDOWN_MINUTES = int(os.getenv("SAME_TICKER_COOLDOWN_MINUTES", "30"))
 
-# 候補抽出だけを段階的に緩める。
-# 採用/OOSゲートそのものはここでは緩めない。
-# ★1銘柄でも条件を満たしたら、そのLEVELで即TOP1選出へ進む。
-# TOP10は「最大10銘柄」であり、最低10銘柄を要求しない。
+# Paper-only progressive entry levels.
+# Research/OOS/Adversarial approval thresholds are NOT changed by these levels.
 PAPER_ENTRY_LEVELS = [
     {"level": 1, "up_threshold": 60.0, "min_score": 70.0, "nikkei_filter": True},
     {"level": 2, "up_threshold": 55.0, "min_score": 65.0, "nikkei_filter": True},
@@ -47,7 +45,11 @@ def profit_priority(candidates):
         item["profit_ev_pct"] = round(ev, 4)
         item["profit_priority"] = round(rank, 4)
         ranked.append(item)
-    return sorted(ranked, key=lambda x: (x["profit_priority"], x.get("score", 0), x.get("up_probability", 0)), reverse=True)
+    return sorted(
+        ranked,
+        key=lambda x: (x["profit_priority"], x.get("score", 0), x.get("up_probability", 0)),
+        reverse=True,
+    )
 
 
 _original_scan = app.scan_candidates
@@ -68,7 +70,12 @@ def _passes_level(candidate, spec):
     down = float(candidate.get("down_probability", 0) or 0)
     flat = float(candidate.get("flat_probability", 0) or 0)
     score = float(candidate.get("score", 0) or 0)
-    return up >= float(spec["up_threshold"]) and up > down and flat < 50.0 and score >= float(spec["min_score"])
+    return (
+        up >= float(spec["up_threshold"])
+        and up > down
+        and flat < 50.0
+        and score >= float(spec["min_score"])
+    )
 
 
 def scan_candidates_progressive(policy):
@@ -78,7 +85,7 @@ def scan_candidates_progressive(policy):
     for spec in PAPER_ENTRY_LEVELS:
         level_policy = _policy_for_level(policy, spec)
         raw, scanned = _original_scan(level_policy)
-        last_scanned = scanned
+        last_scanned = max(last_scanned, int(scanned or 0))
         last_pool = raw or []
         qualified = [c for c in last_pool if _passes_level(c, spec)]
         ranked = profit_priority(qualified)
@@ -90,9 +97,7 @@ def scan_candidates_progressive(policy):
             f"qualified={len(qualified)} / TOP10={len(top10)}"
         )
 
-        # ★最重要: 1銘柄以上あれば即採用候補としてこのLEVELで確定。
-        # TOP10を埋めるために、さらに条件を緩めることはしない。
-        if len(top10) >= 1:
+        if top10:
             print(f"🏁 実行LEVEL={spec['level']} / 候補={len(top10)} → TOP1へ")
             for rank, c in enumerate(top10, 1):
                 c["selection_level"] = int(spec["level"])
@@ -103,13 +108,45 @@ def scan_candidates_progressive(policy):
                     f"UP={c['up_probability']:.1f}% EV={c.get('profit_ev_pct', 0):+.2f}% "
                     f"rank={c.get('profit_priority', 0):.1f}"
                 )
-            return top10, scanned, int(spec["level"])
+            return top10, last_scanned, int(spec["level"])
 
-        print(f"  ↳ 候補0 → 次のLEVELへ条件緩和")
+        print("  ↳ 候補0 → 次のLEVELへ条件緩和")
 
-    # 全LEVELでも候補0なら、無理に取引しない。
-    # 「1銘柄でも揃えば実行」の条件を満たさないため停止する。
-    print("❌ 全LEVELで候補0。paper tradeは実行しません")
+    # =========================================================
+    # ★ 最終PAPER専用強制経路
+    #
+    # ここはOOS/Adversarial/risk approvalとは別の「稼働率検証」経路。
+    # 全通常LEVELで候補0でも、スキャナが取得できた銘柄群からTOP1候補を
+    # 1件だけ確保するため、入口条件をゼロまで下げて再取得する。
+    # この候補には forced_min_trade を付与し、本体成績と分離する。
+    # =========================================================
+    emergency_policy = dict(policy)
+    emergency_policy["up_threshold"] = 0.0
+    emergency_policy["min_score_for_buy"] = 0.0
+    emergency_policy["nikkei_filter"] = False
+
+    try:
+        emergency_pool, emergency_scanned = _original_scan(emergency_policy)
+    except Exception as exc:
+        emergency_pool, emergency_scanned = [], 0
+        print(f"⚠️ PAPER強制経路の再スキャン失敗: {exc}")
+
+    last_scanned = max(last_scanned, int(emergency_scanned or 0))
+    if emergency_pool:
+        ranked = profit_priority(emergency_pool)
+        top10 = ranked[:TOP10]
+        for rank, c in enumerate(top10, 1):
+            c["selection_level"] = len(PAPER_ENTRY_LEVELS) + 1
+            c["selection_mode"] = "forced_min_trade"
+            c["top10_rank"] = rank
+        print(
+            f"🟠 最終PAPER強制経路: スキャン済み候補={len(emergency_pool)} "
+            f"→ TOP10={len(top10)} → TOP1を必ず選出"
+        )
+        return top10, last_scanned, len(PAPER_ENTRY_LEVELS) + 1
+
+    # スキャナ自体が銘柄データを1件も返せない場合だけ、外部データ取得失敗として停止。
+    print("❌ 銘柄データ自体を取得できないため、paper trade候補を生成できません")
     return [], last_scanned, 0
 
 
