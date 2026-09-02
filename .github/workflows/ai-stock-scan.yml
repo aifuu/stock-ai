@@ -54,7 +54,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile expanded_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py intraday_directional_top1_cycle.py
+          python -m py_compile expanded_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py intraday_directional_top1_cycle.py
 
       - name: Verify expanded tickers
         run: |
@@ -103,9 +103,13 @@ jobs:
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
-          PAPER_TRADE_MODE: '1'
+          AI_DAILY_STOP_LOSS: '0.015'
+          AI_MAX_DRAWDOWN: '0.30'
+          AI_MAX_POSITIONS: '10'
           MAX_TRADES_PER_DAY: '30'
+          MAX_TRADES_PER_TICKER_PER_DAY: '10'
           SAME_TICKER_COOLDOWN_MINUTES: '30'
+          PAPER_TRADE_MODE: '1'
         run: |
           python - <<'PY'
           from datetime import datetime
@@ -120,7 +124,7 @@ jobs:
               raise SystemExit(0)
           print(f'▶ 09:30以降: Profit Loop TOP10を実行 {now:%H:%M JST}')
           PY
-          python run_profit_loop.py
+          python paper_profit_entrypoint.py
 
       - name: Verify TOP10 paper state
         if: github.event_name != 'schedule' || github.event.schedule != '30 23 * * 1-5'
