@@ -1,33 +1,41 @@
 name: AI Stock Scan - Profit Loop TOP10 Paper Trade
+
 on:
   schedule:
     - cron: '30 23 * * 1-5'
     - cron: '*/5 0-6 * * 1-5'
   workflow_dispatch: {}
+
 permissions:
   contents: write
+
+# Paper trading is completely independent from research / retraining / OOS.
+# Manual OOS runs must never occupy this concurrency group.
 concurrency:
-  # Paper trading must never wait behind research/retraining workflows.
   group: stock-ai-paper-trading
   cancel-in-progress: false
+
 jobs:
   profit-loop-top10:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
       - name: Apply expanded stock universe
         run: |
           python apply_expanded_universe.py
@@ -43,9 +51,11 @@ jobs:
           print(f'✅ Expanded runtime universe = {len(vals)}銘柄')
           if len(vals) < 250: raise SystemExit('❌ 拡張ユニバースが250未満')
           PY
+
       - name: Syntax check
         run: |
           python -m py_compile expanded_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py intraday_directional_top1_cycle.py
+
       - name: Verify expanded tickers
         run: |
           python - <<'PY'
@@ -63,53 +73,30 @@ jobs:
               counts.append(len(vals)); print(f'✅ {f}: {len(vals)}銘柄・重複なし')
           if len(set(counts))!=1: raise SystemExit(f'❌ 3ファイルの銘柄数不一致: {counts}')
           PY
+
       - name: Record current scheduler phase
         run: python intraday_scheduler.py --phase auto
+
       - name: Morning premarket phase marker
         if: github.event_name == 'schedule' && github.event.schedule == '30 23 * * 1-5'
         run: python intraday_scheduler.py --phase premarket
-      - name: Full multi-OOS validation pipeline (manual run only)
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
-          RETRAIN_HOLDOUT_DAYS: '90'
-          RETRAIN_MIN_OOS_TRADES: '15'
-          RETRAIN_MIN_OOS_PF: '1.0'
-          RETRAIN_MAX_OOS_DD_PCT: '30.0'
-          RETRAIN_MIN_ROWS: '3000'
-          RETRAIN_DOWNLOAD_SLEEP: '0.15'
-          WF_TOP_N: '10'
-          WF_OOS_DAYS: '252'
-          WF_OOS_FOLDS: '4'
-          WF_PURGE_DAYS: '7'
-          WF_EMBARGO_DAYS: '7'
-          WF_INITIAL_CAPITAL: '1000000'
-          WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
-          WF_MAX_OOS_DD: '35'
-          WF_MIN_POSITIVE_FOLDS: '3'
-          WF_MIN_TOTAL_OOS_TRADES: '20'
-        run: |
-          set -e
-          test -n "$DISCORD_WEBHOOK" || { echo '❌ DISCORD_WEBHOOK が未設定'; exit 1; }
-          python daily_model_retrain.py
-          python walk_forward.py
-          test -s walk_forward_all_candidates.csv
-          python multi_oos_profit_validator.py
-          test -e adversarial_final_candidates.csv
-          python build_verified_profit_policy.py
-          test -s strategy_policy.json
-          python adversarial_oos_diagnostic.py || true
+
+      # IMPORTANT: No OOS, retraining, walk-forward, or optimizer is executed here.
+      # Those systems have their own workflows/concurrency groups.
       - name: Verify paper policy mode
         run: |
           test -s strategy_policy.json
           python - <<'PY'
           import json
-          p=json.load(open('strategy_policy.json',encoding='utf-8')); status=str(p.get('status','')).upper()
-          if status not in ('APPROVED','PENDING'): raise SystemExit(f'❌ 不正なpolicy status: {status}')
+          p=json.load(open('strategy_policy.json',encoding='utf-8'))
+          status=str(p.get('status','')).upper()
+          if status not in ('APPROVED','PENDING'):
+              raise SystemExit(f'❌ 不正なpolicy status: {status}')
           print(f'✅ paper policy mode = {status}')
-          if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
+          if status == 'PENDING':
+              print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
+
       - name: Run unified Profit Loop TOP10 (paper-only, 09:30 onward)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -134,6 +121,7 @@ jobs:
           print(f'▶ 09:30以降: Profit Loop TOP10を実行 {now:%H:%M JST}')
           PY
           python run_profit_loop.py
+
       - name: Verify TOP10 paper state
         if: github.event_name != 'schedule' || github.event.schedule != '30 23 * * 1-5'
         run: |
@@ -156,6 +144,7 @@ jobs:
           print(f"✅ 保有ポジション: {len(positions)}/10")
           print(f"✅ 本日新規: {int(s.get('trades_today',0))}/30")
           PY
+
       - name: Save paper ledger
         id: ledger_save
         if: success()
@@ -169,18 +158,23 @@ jobs:
           if git diff --cached --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; exit 0; fi
           git commit -m 'chore: persist intraday paper trading state [skip ci]'
           echo 'changed=true' >> "$GITHUB_OUTPUT"
+
       - name: Push paper ledger
         if: steps.ledger_save.outputs.changed == 'true'
         run: |
           set -e
           for i in 1 2 3 4 5; do
             git fetch origin main
-            if git rebase --autostash origin/main && git push origin HEAD:main; then echo '✅ paper ledger push成功'; exit 0; fi
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
+              echo '✅ paper ledger push成功'
+              exit 0
+            fi
             git rebase --abort || true
             sleep $((i * 3))
           done
           echo '❌ paper ledger push失敗'
           exit 1
+
       - name: Upload paper artifacts
         if: always()
         uses: actions/upload-artifact@v4
