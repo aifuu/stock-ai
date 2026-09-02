@@ -4,6 +4,7 @@
 Research/OOS gates remain separate. This runtime path is for paper execution only.
 It progressively relaxes entry thresholds and executes as soon as at least ONE
 qualified candidate exists. TOP10 is a ranking ceiling, not a minimum requirement.
+Both BUY and SHORT candidates are evaluated symmetrically.
 """
 from datetime import datetime, timedelta
 import os
@@ -28,12 +29,18 @@ PAPER_ENTRY_LEVELS = [
 def profit_priority(candidates):
     ranked = []
     for c in candidates:
+        direction = str(c.get("direction", "BUY")).upper()
         price = float(c.get("price", 0) or 0)
         tp = float(c.get("tp", 0) or 0)
         sl = float(c.get("sl", 0) or 0)
         up = float(c.get("up_probability", 0) or 0) / 100.0
+        down = float(c.get("down_probability", 0) or 0) / 100.0
         if price <= 0:
             ev = -999.0
+        elif direction == "SHORT":
+            reward = max(0.0, (1.0 - tp / price) * 100.0)
+            risk = max(0.0, (sl / price - 1.0) * 100.0)
+            ev = down * reward - (1.0 - down) * risk
         else:
             reward = max(0.0, (tp / price - 1.0) * 100.0)
             risk = max(0.0, (1.0 - sl / price) * 100.0)
@@ -45,7 +52,7 @@ def profit_priority(candidates):
         ranked.append(item)
     return sorted(
         ranked,
-        key=lambda x: (x["profit_priority"], x.get("score", 0), x.get("up_probability", 0)),
+        key=lambda x: (x["profit_priority"], x.get("score", 0), max(x.get("up_probability", 0), x.get("down_probability", 0))),
         reverse=True,
     )
 
@@ -64,16 +71,18 @@ def _policy_for_level(base_policy, spec):
 
 
 def _passes_level(candidate, spec):
+    direction = str(candidate.get("direction", "BUY")).upper()
     up = float(candidate.get("up_probability", 0) or 0)
     down = float(candidate.get("down_probability", 0) or 0)
     flat = float(candidate.get("flat_probability", 0) or 0)
     score = float(candidate.get("score", 0) or 0)
-    return (
-        up >= float(spec["up_threshold"])
-        and up > down
-        and flat < 50.0
-        and score >= float(spec["min_score"])
-    )
+    threshold = float(spec["up_threshold"])
+    score_min = float(spec["min_score"])
+    if flat >= 50.0 or score < score_min:
+        return False
+    if direction == "SHORT":
+        return down >= threshold and down > up
+    return up >= threshold and up > down
 
 
 def _print_gate_diagnostics(emergency_pool, scanned):
@@ -84,29 +93,16 @@ def _print_gate_diagnostics(emergency_pool, scanned):
     print("🔎 PAPER候補ゲート診断（ペーパー専用。OOS/Adversarialとは独立）")
     print("=" * 86)
     print(f"スキャン成功: {int(scanned or 0)}")
-    print("固定条件通過: UP>DOWN かつ Flat<50%（profit_top10_paper側）")
+    print("固定条件通過: LONG=UP>DOWN / SHORT=DOWN>UP かつ Flat<50%")
     print(f"固定条件通過件数: {len(pool)}")
     print("")
-    print("LEVEL | UP条件 | SCORE条件 | UP通過 | SCORE通過 | 両方通過")
-    print("------+----------+------------+---------+------------+----------")
+    print("LEVEL | 方向 | 確率条件 | SCORE条件 | 両方通過")
+    print("------+-------+----------+------------+----------")
     for spec in PAPER_ENTRY_LEVELS:
-        up_ok = [
-            c for c in pool
-            if float(c.get("up_probability", 0) or 0) >= float(spec["up_threshold"])
-        ]
-        score_ok = [
-            c for c in pool
-            if float(c.get("score", 0) or 0) >= float(spec["min_score"])
-        ]
-        both = [c for c in pool if _passes_level(c, spec)]
-        print(
-            f" {spec['level']:>2}   | "
-            f"{spec['up_threshold']:>5.0f}%    | "
-            f"{spec['min_score']:>6.0f}      | "
-            f"{len(up_ok):>7} | "
-            f"{len(score_ok):>10} | "
-            f"{len(both):>8}"
-        )
+        long_both = [c for c in pool if str(c.get("direction", "BUY")).upper() != "SHORT" and _passes_level(c, spec)]
+        short_both = [c for c in pool if str(c.get("direction", "BUY")).upper() == "SHORT" and _passes_level(c, spec)]
+        print(f" {spec['level']:>2}   | BUY   | UP≥{spec['up_threshold']:>3.0f}%   | SCORE≥{spec['min_score']:>3.0f}     | {len(long_both):>8}")
+        print(f" {spec['level']:>2}   | SHORT | DOWN≥{spec['up_threshold']:>3.0f}% | SCORE≥{spec['min_score']:>3.0f}     | {len(short_both):>8}")
     print("注: 日経フィルターONのLEVELは、上記件数に加えて日経条件でさらに減る場合があります。")
     print("=" * 86)
 
@@ -125,7 +121,7 @@ def scan_candidates_progressive(policy):
         top10 = ranked[:TOP10]
 
         print(
-            f"🧭 PAPER LEVEL {spec['level']}: UP≥{spec['up_threshold']:.0f}% "
+            f"🧭 PAPER LEVEL {spec['level']}: BUY UP≥{spec['up_threshold']:.0f}% / SHORT DOWN≥{spec['up_threshold']:.0f}% "
             f"SCORE≥{spec['min_score']:.0f} NIKKEI={'ON' if spec['nikkei_filter'] else 'OFF'} "
             f"qualified={len(qualified)} / TOP10={len(top10)}"
         )
@@ -137,9 +133,9 @@ def scan_candidates_progressive(policy):
                 c["selection_mode"] = "normal" if spec["level"] == 1 else "progressive_level"
                 c["top10_rank"] = rank
                 print(
-                    f"  {rank:02d}. {c['ticker']} score={c['score']:.1f} "
-                    f"UP={c['up_probability']:.1f}% EV={c.get('profit_ev_pct', 0):+.2f}% "
-                    f"rank={c.get('profit_priority', 0):.1f}"
+                    f"  {rank:02d}. {c.get('direction', 'BUY')} {c['ticker']} score={c['score']:.1f} "
+                    f"UP={c['up_probability']:.1f}% DOWN={c.get('down_probability', 0):.1f}% "
+                    f"EV={c.get('profit_ev_pct', 0):+.2f}% rank={c.get('profit_priority', 0):.1f}"
                 )
             return top10, last_scanned, int(spec["level"])
 
@@ -166,10 +162,7 @@ def scan_candidates_progressive(policy):
             c["selection_level"] = len(PAPER_ENTRY_LEVELS) + 1
             c["selection_mode"] = "forced_min_trade"
             c["top10_rank"] = rank
-        print(
-            f"🟠 最終PAPER強制経路: スキャン済み候補={len(emergency_pool)} "
-            f"→ TOP10={len(top10)} → TOP1を必ず選出"
-        )
+        print(f"🟠 最終PAPER強制経路: スキャン済み候補={len(emergency_pool)} → TOP10={len(top10)} → TOP1を必ず選出")
         return top10, last_scanned, len(PAPER_ENTRY_LEVELS) + 1
 
     print("❌ 銘柄データ自体を取得できないため、paper trade候補を生成できません")
@@ -247,8 +240,9 @@ def open_top1_only(state, policy, candidates, today):
         p["selection_level"] = int(top1.get("selection_level", 1))
         p["top10_rank"] = int(top1.get("top10_rank", 1))
         print(
-            f"🏆 TOP→TOP1 ENTRY: {top1['ticker']} LEVEL={p['selection_level']} "
-            f"MODE={p['selection_mode']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}%"
+            f"🏆 TOP→TOP1 ENTRY: {top1.get('direction', 'BUY')} {top1['ticker']} "
+            f"LEVEL={p['selection_level']} MODE={p['selection_mode']} "
+            f"score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability', 0):.1f}%"
         )
     return opened
 
