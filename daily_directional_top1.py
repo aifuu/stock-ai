@@ -36,6 +36,7 @@ TICKERS = [
     "7203.T","7269.T","285A.T","9984.T","4980.T","8031.T","8058.T","9509.T","9501.T","8362.T","8306.T","5803.T","6526.T","6613.T","6758.T","6861.T","6857.T","8035.T","6920.T","6146.T","6501.T","6503.T","6701.T","6702.T","6902.T","6901.T","7270.T","7267.T","7201.T","7202.T","7205.T","7211.T","7261.T","7272.T","8316.T","8411.T","8331.T","8308.T","8309.T","8354.T","8355.T","7182.T","7186.T","8697.T","8001.T","8002.T","8015.T","2768.T","8053.T","8056.T","8032.T","8012.T","8014.T","8037.T","9432.T","9433.T","9434.T","9613.T","9983.T","4755.T","4689.T","6098.T","2413.T","3659.T","4063.T","4188.T","4005.T","4004.T","4204.T","4502.T","4503.T","4519.T","4523.T","4568.T","5401.T","5411.T","5711.T","5801.T","5802.T","5713.T","6301.T","6302.T","6367.T","7011.T","7012.T","7013.T","9101.T","9104.T","9107.T","9020.T","9021.T","9022.T","8801.T","8802.T","2914.T","3382.T","6762.T","7735.T","6981.T","4543.T",
 ]
 NAMES = {}
+_FUTURES_FEATURE_CACHE = None
 
 
 def download(ticker, period="3y"):
@@ -57,13 +58,13 @@ def rsi(close, period=14):
 
 
 def atr(df, period=14):
-    h,l,c = df["High"].squeeze(),df["Low"].squeeze(),df["Close"].squeeze(); pc=c.shift(1)
-    tr = pd.concat([h-l,(h-pc).abs(),(l-pc).abs()],axis=1).max(axis=1)
+    h,l,c=df["High"].squeeze(),df["Low"].squeeze(),df["Close"].squeeze(); pc=c.shift(1)
+    tr=pd.concat([h-l,(h-pc).abs(),(l-pc).abs()],axis=1).max(axis=1)
     return tr.ewm(alpha=1/period,adjust=False).mean()
 
 
 def adx(df, period=14):
-    h,l,c = df["High"].squeeze(),df["Low"].squeeze(),df["Close"].squeeze(); pc=c.shift(1)
+    h,l,c=df["High"].squeeze(),df["Low"].squeeze(),df["Close"].squeeze(); pc=c.shift(1)
     tr=pd.concat([h-l,(h-pc).abs(),(l-pc).abs()],axis=1).max(axis=1); up,down=h.diff(),-l.diff()
     plus=pd.Series(np.where((up>down)&(up>0),up,0.0),index=h.index); minus=pd.Series(np.where((down>up)&(down>0),down,0.0),index=h.index)
     a=tr.ewm(alpha=1/period,adjust=False).mean(); p=plus.ewm(alpha=1/period,adjust=False).mean(); m=minus.ewm(alpha=1/period,adjust=False).mean()
@@ -71,7 +72,31 @@ def adx(df, period=14):
     return dx.ewm(alpha=1/period,adjust=False).mean()
 
 
-def features(df, nikkei):
+def make_futures_features():
+    """日経225先物(NIY=F)を学習時と同じ定義・1日ラグで特徴量化する。"""
+    f = download("NIY=F")
+    if f is None or f.empty:
+        print("⚠ 日経225先物(NIY=F)取得失敗: future_*特徴量はNaNにして予測を止めます")
+        return None
+    c = f["Close"].squeeze()
+    out = pd.DataFrame(index=pd.to_datetime(f.index).normalize())
+    out["future_return"] = c.to_numpy() / c.shift(1).to_numpy() - 1.0
+    out["future_ma5"] = c.rolling(5).mean().to_numpy()
+    out["future_rsi"] = rsi(c).to_numpy()
+    out["future_gap"] = (c - c.shift(1)).to_numpy() / c.shift(1).to_numpy()
+    out = out.shift(1)
+    out = out[~out.index.duplicated(keep="last")]
+    return out
+
+
+def _get_futures_features():
+    global _FUTURES_FEATURE_CACHE
+    if _FUTURES_FEATURE_CACHE is None:
+        _FUTURES_FEATURE_CACHE = make_futures_features()
+    return _FUTURES_FEATURE_CACHE
+
+
+def features(df, nikkei, futures_df=None):
     x=df.copy(); c,v=x["Close"].squeeze(),x["Volume"].squeeze()
     x["ret1"]=c.pct_change(); x["ma25"]=c.rolling(25).mean(); x["ma75"]=c.rolling(75).mean(); x["vol_ratio"]=v/v.rolling(20).mean(); x["rsi"]=rsi(c); x["adx"]=adx(x)
     e12,e26=c.ewm(span=12,adjust=False).mean(),c.ewm(span=26,adjust=False).mean(); x["macd"]=e12-e26; x["signal"]=x["macd"].ewm(span=9,adjust=False).mean()
@@ -82,7 +107,17 @@ def features(df, nikkei):
     x["momentum_score"]=ms.clip(0,100); bbm,bbs=c.rolling(20).mean(),c.rolling(20).std(); upper,lower=bbm+2*bbs,bbm-2*bbs; x["bb_position"]=(c-lower)/(upper-lower); x["bb_width"]=(upper-lower)/bbm*100
     direction=np.sign(c.diff()); obv=(v*direction).fillna(0).cumsum(); x["obv_change"]=obv.diff(5)/v.rolling(5).sum()*100; a=atr(x); x["atr_ratio"]=a/c*100; av20,av60=v.rolling(20).mean(),v.rolling(60).mean(); x["volatility20"]=x["ret1"].rolling(20).std()*100; x["avg_volume_ratio"]=av20/av60.replace(0,np.nan)
     n=nikkei.reindex(x.index).ffill(); x["nikkei_kairi25"]=n["kairi25"]; x["nikkei_rsi"]=n["rsi"]; x["nikkei_macd"]=n["macd"]; x["nikkei_return_5d"]=n["ret5"]; x["relative_strength"]=x["_stock_ret5"]-n["ret5_raw"]
-    x["future_return"]=0.0; x["future_ma5"]=0.0; x["future_rsi"]=50.0; x["future_gap"]=0.0
+    if futures_df is None:
+        futures_df = _get_futures_features()
+    if futures_df is None:
+        x["future_return"]=np.nan; x["future_ma5"]=np.nan; x["future_rsi"]=np.nan; x["future_gap"]=np.nan
+    else:
+        aligned=futures_df.reindex(pd.to_datetime(x.index).normalize()).ffill()
+        aligned.index=x.index
+        x["future_return"]=aligned["future_return"].to_numpy()
+        x["future_ma5"]=aligned["future_ma5"].to_numpy()
+        x["future_rsi"]=aligned["future_rsi"].to_numpy()
+        x["future_gap"]=aligned["future_gap"].to_numpy()
     return x
 
 
@@ -100,8 +135,7 @@ def load_model():
             if np.array_equal(m.classes_,np.array([0,1,2])):return m
         except Exception:pass
     if not os.path.exists(TRAIN_FILE):return None
-    try:
-        df=pd.read_csv(TRAIN_FILE).dropna(subset=FEATURES+["target"])
+    try:df=pd.read_csv(TRAIN_FILE).dropna(subset=FEATURES+["target"])
     except Exception:return None
     if len(df)<100 or df["target"].nunique()!=3:return None
     m=RandomForestClassifier(n_estimators=300,max_depth=7,random_state=42,class_weight="balanced",n_jobs=-1); m.fit(df[FEATURES],df["target"].astype(int)); joblib.dump(m,MODEL_FILE); return m
@@ -208,7 +242,7 @@ def main():
             tp,sl=(price+a*TP_MULT,price-a*SL_MULT) if direction=="BUY" else (price-a*TP_MULT,price+a*SL_MULT)
             candidates.append({"ticker":ticker,"company":NAMES.get(ticker,ticker),"direction":direction,"score":score,"long_score":long_s,"short_score":short_s,"up_probability":up*100,"down_probability":down*100,"price":price,"tp":tp,"sl":sl,"data_date":str(x.index[-1].date())})
         except Exception as exc:print(ticker,"predict",exc)
-    if not candidates:send("❌ DAILY TOP1｜有効候補なし");return
+    if not candidates:send("❌ DAILY TOP1｜有効候補なし（先物特徴量取得/整合性を確認）");return
     candidates.sort(key=lambda z:z["score"],reverse=True)
     normal=[]
     for c in candidates:
