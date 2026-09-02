@@ -9,8 +9,9 @@ on:
 permissions:
   contents: write
 
+# Research/retraining must not block the independent paper-trading workflow.
 concurrency:
-  group: stock-ai-main-writer
+  group: stock-ai-research
   cancel-in-progress: false
 
 jobs:
@@ -93,7 +94,6 @@ jobs:
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # ファイルを1つずつaddして、存在しない成果物があっても他の成果物のstageを妨げない。
           git add model.pkl 2>/dev/null || true
           git add train_data.csv 2>/dev/null || true
           git add daily_retrain_report.csv 2>/dev/null || true
@@ -104,7 +104,7 @@ jobs:
           git commit -m 'chore: daily model retrain and feedback [skip ci]'
           for i in 1 2 3 4 5; do
             git fetch origin main
-            if git rebase origin/main && git push origin HEAD:main; then
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
               echo '✅ daily model retrain/feedback push成功'
               exit 0
             fi
