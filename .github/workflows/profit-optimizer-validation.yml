@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      AI_POLICY_SIGNING_SECRET: 'stock-ai-local-integrity-v1'
+      AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -157,17 +157,17 @@ jobs:
               dev = pre[:max(1,cut-purge)]
               val = pre[min(len(pre),cut+embargo):]
               for phase, ds in [('DEV',dev),('VALIDATION',val),('OOS',oos)]:
-                  x = c[c.date.isin(ds)]
+                  x=c[c.date.isin(ds)]
                   for up in [45,50,55,60,65]:
                       for score in [50,60,70,80]:
                           for nikkei in [False,True]:
                               y=x[(x.up_prob>=up)&(x.up_prob>x.down_prob)&(x.flat_prob<50)&(x.score>=score)]
                               if nikkei: y=y[y.nikkei_uptrend]
                               rows.append({'fold':fold,'phase':phase,'up':up,'score':score,'nikkei':nikkei,'candidate_count':len(y)})
-          d = pd.DataFrame(rows)
+          d=pd.DataFrame(rows)
           d.to_csv(out,index=False,encoding='utf-8-sig')
           print(f'診断CSV: {out} / {len(d)} rows')
-          print(d.sort_values(['fold','phase','candidate_count'], ascending=[True,True,False]).groupby(['fold','phase']).head(5).to_string(index=False))
+          print(d.sort_values(['fold','phase','candidate_count'],ascending=[True,True,False]).groupby(['fold','phase']).head(5).to_string(index=False))
           print('※診断専用。PASS条件・policy・閾値は変更しません。')
           PY
 
