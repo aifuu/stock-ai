@@ -7,6 +7,8 @@ Nikkei bullish -> BUY priority, bearish -> SHORT priority, neutral -> AI directi
 """
 from datetime import datetime, timedelta
 import os
+import numpy as np
+import pandas as pd
 
 import profit_top10_paper as app
 
@@ -55,6 +57,31 @@ def profit_priority(candidates):
 _original_scan = app.scan_candidates
 _original_close = app.close_positions
 _original_open = app.open_positions
+_original_load_model = app.load_model
+
+class _FeatureSafeModel:
+    """Adapter that guarantees sklearn receives exactly the feature columns used at fit time."""
+    def __init__(self, model):
+        self._model = model
+        self.classes_ = getattr(model, "classes_", np.array([0, 1, 2]))
+        self.feature_names_in_ = getattr(model, "feature_names_in_", np.array([]))
+    def predict_proba(self, X):
+        cols = list(getattr(self._model, "feature_names_in_", []))
+        if cols:
+            missing = [c for c in cols if c not in X.columns]
+            if missing:
+                raise ValueError("trained feature missing: " + ", ".join(missing))
+            X = X.loc[:, cols]
+        return self._model.predict_proba(X)
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+def _load_model_feature_safe():
+    model = _original_load_model()
+    if model is None: return None
+    return _FeatureSafeModel(model)
+
+app.load_model = _load_model_feature_safe
 
 def _policy_for_level(base_policy, spec):
     p = dict(base_policy); p["up_threshold"] = float(spec["up_threshold"]); p["min_score_for_buy"] = float(spec["min_score"]); p["nikkei_filter"] = False; return p
