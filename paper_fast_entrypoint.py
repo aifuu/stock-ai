@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fast paper-trading entrypoint with paper-only continuity fallbacks."""
+import argparse
 import math
 
 import numpy as np
@@ -141,9 +142,38 @@ def cached_scan(policy):
     return _cache["result"]
 
 
+def run_analysis_only():
+    """09:30前の分析・再評価だけを実行し、ポジションは絶対に開かない。"""
+    loop.app.scan_candidates = loop.scan_candidates_progressive
+    policy = loop.app.load_policy()
+    candidates = loop.scan_candidates_progressive(policy)
+    print("========================================")
+    print("PRE-09:30 ANALYSIS ONLY / NO TRADE")
+    print("========================================")
+    if not candidates:
+        print("⚠️ 候補なし。取引は実行せず、次回スケジュールで再評価します。")
+        return 0
+    for i, c in enumerate(candidates[:10], 1):
+        print(
+            f"TOP{i}: {c.get('company', c.get('ticker',''))} "
+            f"({c.get('ticker','')}) | {str(c.get('direction','BUY')).upper()} | "
+            f"score={float(c.get('score',0) or 0):.1f} | "
+            f"UP={float(c.get('up_probability',0) or 0):.1f}% | "
+            f"DOWN={float(c.get('down_probability',0) or 0):.1f}% | "
+            f"EV={float(c.get('profit_ev_pct',0) or 0):+.2f}%"
+        )
+    print("🛑 PRE-09:30: 売買執行なし。09:30以降に最終TOP1選定→ペーパートレードします。")
+    return 0
+
+
 loop._original_scan = cached_scan
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--analysis-only", action="store_true", help="09:30前の分析のみ。売買は一切しない")
+    args = parser.parse_args()
+    if args.analysis_only:
+        raise SystemExit(run_analysis_only())
     loop.app.scan_candidates = loop.scan_candidates_progressive
     loop.app.close_positions = loop.close_positions_with_cooldown
     loop.app.open_positions = loop.open_top1_only
