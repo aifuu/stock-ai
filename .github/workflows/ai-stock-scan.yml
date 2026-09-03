@@ -97,6 +97,33 @@ jobs:
               print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
 
+      - name: Pre-09:30 analysis/re-score (paper-only, NO TRADE)
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+          AI_INITIAL_CAPITAL: '1000000'
+          INTRADAY_FEE_RATE: '0.00055'
+          AI_DAILY_STOP_LOSS: '0.015'
+          AI_MAX_DRAWDOWN: '0.30'
+          AI_MAX_POSITIONS: '10'
+          MAX_TRADES_PER_DAY: '30'
+          MAX_TRADES_PER_TICKER_PER_DAY: '10'
+          SAME_TICKER_COOLDOWN_MINUTES: '30'
+          PAPER_TRADE_MODE: '1'
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import subprocess
+          now = datetime.now(ZoneInfo('Asia/Tokyo'))
+          minutes = now.hour * 60 + now.minute
+          if minutes < 570:
+              print(f'▶ 09:30前: 分析・TOP10再評価のみ実行 {now:%H:%M JST}')
+              subprocess.run(['python', 'paper_fast_entrypoint.py', '--analysis-only'], check=True)
+          else:
+              print(f'⏭ 09:30以降: pre-09:30分析フェーズをスキップ {now:%H:%M JST}')
+          PY
+
       - name: Run unified Profit Loop TOP10 (paper-only, 09:30 onward)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
