@@ -66,12 +66,20 @@ jobs:
           test -s trade_feedback_policy.json
           test -f trade_feedback_report.csv
           python - <<'PY'
+          import json
           import os
           import joblib
           import pandas as pd
           train = pd.read_csv('train_data.csv')
           report = pd.read_csv('daily_retrain_report.csv')
-          policy = pd.read_json('trade_feedback_policy.json')
+          with open('trade_feedback_policy.json', encoding='utf-8') as f:
+              policy = json.load(f)
+          if not isinstance(policy, dict):
+              raise ValueError('trade_feedback_policy.json must contain a JSON object')
+          required_keys = {'version', 'generated_at', 'source', 'direction_weights'}
+          missing = required_keys - policy.keys()
+          if missing:
+              raise ValueError(f'trade_feedback_policy.json missing keys: {sorted(missing)}')
           print(f'✅ 学習データ: {len(train):,}行')
           print(f'✅ 再学習レポート: {len(report):,}行')
           print('✅ feedback policy生成済み')
