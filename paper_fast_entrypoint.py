@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Fast paper-trading entrypoint.
-
-Every 5-minute run does one cheap broad-market prefilter, then runs the full
-AI/5-minute analysis only on the best candidates. Progressive LEVEL1-6 reuses
-the same detailed candidate pool, so it never repeats yfinance downloads.
-
-Paper-only continuity fallbacks are used when the research model or futures
-feed is unavailable. They are never connected to live orders.
-"""
+"""Fast paper-trading entrypoint with paper-only continuity fallbacks."""
 import math
 
 import numpy as np
@@ -15,6 +7,7 @@ import pandas as pd
 import yfinance as yf
 
 import run_profit_loop as loop
+import daily_directional_top1 as directional
 
 DETAIL_UNIVERSE = 50
 _original_scan = loop._original_scan
@@ -22,8 +15,8 @@ _cache = {"result": None}
 
 
 class PaperFallbackDirectionalModel:
-    """Paper-only DOWN/FLAT/UP model used when the real model is unavailable."""
-    feature_names_in_ = np.array(loop.app.FEATURES)
+    """Paper-only DOWN/FLAT/UP fallback used when the real model is unavailable."""
+    feature_names_in_ = np.array(directional.FEATURES)
     classes_ = np.array([0, 1, 2])
 
     def predict_proba(self, X):
@@ -36,24 +29,24 @@ class PaperFallbackDirectionalModel:
                     return v if np.isfinite(v) else default
                 except Exception:
                     return default
-
             momentum = (num("momentum_score") - 50.0) / 25.0
             trend = num("trend_alignment") - 1.5
             ret5 = max(-3.0, min(3.0, num("ret5") / 3.0))
             macd_scale = max(abs(num("ma25")) * 0.003, 1e-9)
             macd_bias = max(-3.0, min(3.0, (num("macd") - num("signal")) / macd_scale))
             rsi_bias = max(-2.0, min(2.0, (num("rsi", 50.0) - 50.0) / 20.0))
-            directional = 0.55 * momentum + 0.65 * trend + 0.35 * ret5 + 0.25 * macd_bias - 0.15 * rsi_bias
-            strength = min(3.0, abs(directional))
+            directional_score = 0.55 * momentum + 0.65 * trend + 0.35 * ret5 + 0.25 * macd_bias - 0.15 * rsi_bias
+            strength = min(3.0, abs(directional_score))
             flat = max(0.08, 0.42 - 0.10 * strength)
-            up_raw = math.exp(max(-5.0, min(5.0, directional)))
-            down_raw = math.exp(max(-5.0, min(5.0, -directional)))
+            up_raw = math.exp(max(-5.0, min(5.0, directional_score)))
+            down_raw = math.exp(max(-5.0, min(5.0, -directional_score)))
             total = up_raw + down_raw + flat
             out.append([down_raw / total, flat / total, up_raw / total])
         return np.asarray(out, dtype=float)
 
 
 _original_load_model = loop.app.load_model
+_original_features = loop.app.features
 
 
 def _load_model_for_paper():
@@ -68,56 +61,34 @@ def _load_model_for_paper():
     return PaperFallbackDirectionalModel()
 
 
-loop.app.load_model = _load_model_for_paper
-
-_original_features = loop.app.features
-
-
 def _features_for_paper(df, nikkei, futures_df=None):
-    """Keep candidates usable when Yahoo's futures symbol is temporarily absent."""
     x = _original_features(df, nikkei, futures_df)
-    futures_cols = ["future_return", "future_ma5", "future_rsi", "future_gap"]
     if x is None:
         return x
-    missing = [c for c in futures_cols if c not in x.columns or x[c].isna().all()]
-    if missing:
+    futures_cols = ["future_return", "future_ma5", "future_rsi", "future_gap"]
+    if any(c not in x.columns or x[c].isna().all() for c in futures_cols):
         n = nikkei.reindex(x.index).ffill()
-        if "future_return" in missing:
-            x["future_return"] = n["ret5_raw"].fillna(0.0)
-        if "future_ma5" in missing:
-            base = pd.Series(index=x.index, dtype=float)
-            base[:] = 0.0
-            x["future_ma5"] = base
-        if "future_rsi" in missing:
-            x["future_rsi"] = n["rsi"].fillna(50.0)
-        if "future_gap" in missing:
-            x["future_gap"] = n["ret5_raw"].fillna(0.0)
+        x["future_return"] = n["ret5_raw"].fillna(0.0)
+        x["future_ma5"] = 0.0
+        x["future_rsi"] = n["rsi"].fillna(50.0)
+        x["future_gap"] = n["ret5_raw"].fillna(0.0)
         print("🟡 PAPER FUTURES FALLBACK: NIY=F欠損 → 日経現物由来の代替特徴量で継続")
     return x
 
 
+loop.app.load_model = _load_model_for_paper
 loop.app.features = _features_for_paper
 
 
 def _prefilter_universe(tickers):
-    """Batch-download daily bars once and select the most active/trending names."""
     if not tickers:
         return []
     print(f"⚡ PAPER PREFILTER: {len(tickers)}銘柄を日足バッチ取得 → TOP{DETAIL_UNIVERSE}")
     try:
-        data = yf.download(
-            tickers,
-            period="60d",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            threads=True,
-            group_by="ticker",
-        )
+        data = yf.download(tickers, period="60d", interval="1d", auto_adjust=False, progress=False, threads=True, group_by="ticker")
     except Exception as exc:
         print(f"⚠️ 日足バッチ取得失敗: {exc} → 元ユニバースをそのまま使用")
         return list(tickers)
-
     rows = []
     for ticker in tickers:
         try:
@@ -133,22 +104,15 @@ def _prefilter_universe(tickers):
             volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
             if len(close) < 26 or len(volume) < 20:
                 continue
-            price = float(close.iloc[-1])
-            ma25 = float(close.rolling(25).mean().iloc[-1])
-            ret5 = float(close.iloc[-1] / close.iloc[-6] - 1.0)
-            avg20 = float(volume.tail(20).mean())
-            recent5 = float(volume.tail(5).mean())
+            price = float(close.iloc[-1]); ma25 = float(close.rolling(25).mean().iloc[-1])
+            ret5 = float(close.iloc[-1] / close.iloc[-6] - 1.0); avg20 = float(volume.tail(20).mean()); recent5 = float(volume.tail(5).mean())
             if price <= 0 or avg20 <= 0:
                 continue
-            vol_ratio = recent5 / avg20
-            kairi = abs(price / ma25 - 1.0) if ma25 > 0 else 0.0
-            momentum = abs(ret5)
-            activity = max(0.0, min(vol_ratio, 5.0))
+            vol_ratio = recent5 / avg20; kairi = abs(price / ma25 - 1.0) if ma25 > 0 else 0.0; momentum = abs(ret5); activity = max(0.0, min(vol_ratio, 5.0))
             score = 0.45 * math.log1p(activity) + 0.35 * min(momentum * 10.0, 2.0) + 0.20 * min(kairi * 10.0, 2.0)
             rows.append((score, vol_ratio, ticker))
         except Exception:
             continue
-
     rows.sort(reverse=True)
     selected = [ticker for _, _, ticker in rows[:DETAIL_UNIVERSE]]
     if not selected:
@@ -164,7 +128,6 @@ def cached_scan(policy):
         base_policy["up_threshold"] = 0.0
         base_policy["min_score_for_buy"] = 0.0
         base_policy["nikkei_filter"] = False
-
         original_tickers = list(loop.app.TICKERS)
         detail_tickers = _prefilter_universe(original_tickers)
         loop.app.TICKERS = detail_tickers
