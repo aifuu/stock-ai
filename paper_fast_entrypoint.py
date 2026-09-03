@@ -11,7 +11,9 @@ import run_profit_loop as loop
 import daily_directional_top1 as directional
 
 DETAIL_UNIVERSE = 50
-_original_scan = loop._original_scan
+# Keep the real/base scanner separately.  Do not overwrite run_profit_loop._original_scan
+# because scan_candidates_progressive() resolves that module-global name at runtime.
+_base_scan = loop._original_scan
 _cache = {"result": None}
 
 
@@ -124,6 +126,7 @@ def _prefilter_universe(tickers):
 
 
 def cached_scan(policy):
+    """Run the base scanner once on a fast TOP50 prefilter and cache its raw pool."""
     if _cache["result"] is None:
         base_policy = dict(policy)
         base_policy["up_threshold"] = 0.0
@@ -134,7 +137,7 @@ def cached_scan(policy):
         loop.app.TICKERS = detail_tickers
         try:
             print(f"🔬 DETAIL SCAN: {len(detail_tickers)}銘柄だけ5分足＋AI詳細分析")
-            _cache["result"] = _original_scan(base_policy)
+            _cache["result"] = _base_scan(base_policy)
         finally:
             loop.app.TICKERS = original_tickers
     else:
@@ -142,11 +145,20 @@ def cached_scan(policy):
     return _cache["result"]
 
 
+def scan_progressive_with_prefilter(policy):
+    """Use the cached TOP50 detail pool as the base of the existing progressive LEVEL1-6 logic."""
+    previous = loop._original_scan
+    loop._original_scan = cached_scan
+    try:
+        return loop.scan_candidates_progressive(policy)
+    finally:
+        loop._original_scan = previous
+
+
 def run_analysis_only():
     """09:30前の分析・再評価だけを実行し、ポジションは絶対に開かない。"""
-    loop.app.scan_candidates = loop.scan_candidates_progressive
     policy = loop.app.load_policy()
-    candidates = loop.scan_candidates_progressive(policy)
+    candidates, _ = scan_progressive_with_prefilter(policy)
     print("========================================")
     print("PRE-09:30 ANALYSIS ONLY / NO TRADE")
     print("========================================")
@@ -166,15 +178,13 @@ def run_analysis_only():
     return 0
 
 
-loop._original_scan = cached_scan
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis-only", action="store_true", help="09:30前の分析のみ。売買は一切しない")
     args = parser.parse_args()
     if args.analysis_only:
         raise SystemExit(run_analysis_only())
-    loop.app.scan_candidates = loop.scan_candidates_progressive
-    loop.app.close_positions = loop.close_positions_with_cooldown
+    loop.app.scan = scan_progressive_with_prefilter
+    loop.app.mark_and_close = loop.close_positions_with_cooldown
     loop.app.open_positions = loop.open_top1_only
     loop.app.main()
