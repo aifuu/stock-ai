@@ -11,7 +11,8 @@ import yfinance as yf
 from sklearn.ensemble import RandomForestClassifier
 
 TZ = ZoneInfo("Asia/Tokyo")
-MODEL_FILE = "model.pkl"
+# ★重要: stock_scan.py の汎用 model.pkl と共有しない。方向性TOP1専用モデルを分離する。
+MODEL_FILE = "directional_model.pkl"
 TRAIN_FILE = "train_data.csv"
 HISTORY_FILE = "directional_paper_history.csv"
 STATE_FILE = "directional_paper_state.json"
@@ -129,16 +130,26 @@ def make_nikkei():
 
 
 def load_model():
+    expected = list(FEATURES)
     if os.path.exists(MODEL_FILE):
         try:
             m=joblib.load(MODEL_FILE)
-            if np.array_equal(m.classes_,np.array([0,1,2])):return m
-        except Exception:pass
+            actual = list(getattr(m, "feature_names_in_", []))
+            if np.array_equal(m.classes_,np.array([0,1,2])) and actual == expected:
+                return m
+            print("⚠️ directional_model.pkl の特徴量セット不一致 → 現行FEATURESで再学習します")
+        except Exception as exc:
+            print(f"⚠️ directional_model.pkl 読込失敗 → 再学習します: {exc}")
     if not os.path.exists(TRAIN_FILE):return None
-    try:df=pd.read_csv(TRAIN_FILE).dropna(subset=FEATURES+["target"])
+    try:df=pd.read_csv(TRAIN_FILE)
     except Exception:return None
+    required = expected + ["target"]
+    if any(col not in df.columns for col in required):
+        print("❌ train_data.csv に現行TOP1特徴量が不足しているため、旧モデルへフォールバックしません")
+        return None
+    df=df.dropna(subset=required)
     if len(df)<100 or df["target"].nunique()!=3:return None
-    m=RandomForestClassifier(n_estimators=300,max_depth=7,random_state=42,class_weight="balanced",n_jobs=-1); m.fit(df[FEATURES],df["target"].astype(int)); joblib.dump(m,MODEL_FILE); return m
+    m=RandomForestClassifier(n_estimators=300,max_depth=7,random_state=42,class_weight="balanced",n_jobs=-1); m.fit(df[expected],df["target"].astype(int)); joblib.dump(m,MODEL_FILE); return m
 
 
 def directional_score(row,up,down):
