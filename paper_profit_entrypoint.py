@@ -8,6 +8,23 @@ run_profit_loop.py の選定ロジックはそのまま使い、
 import run_profit_loop as loop
 from paper_risk_policy import position_allowed
 
+# run_profit_loop.py の progressive scanner は内部メタデータとして
+# (candidates, scanned, selection_level) の3要素を返すが、
+# profit_top10_paper.main() の公開インターフェースは (candidates, scanned) の2要素。
+# 実行入口で2要素へ正規化し、今日発生した unpack エラーを恒久的に防ぐ。
+_original_scan = loop.app.scan_candidates
+
+
+def compatible_scan_candidates(policy):
+    result = _original_scan(policy)
+    if not isinstance(result, tuple) or len(result) < 2:
+        raise RuntimeError("scan_candidates returned an invalid result")
+    candidates, scanned = result[0], result[1]
+    return candidates, scanned
+
+
+loop.app.scan_candidates = compatible_scan_candidates
+
 _original_open = loop.app.open_positions
 
 
