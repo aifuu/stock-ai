@@ -5,9 +5,8 @@ Every 5-minute run does one cheap broad-market prefilter, then runs the full
 AI/5-minute analysis only on the best candidates. Progressive LEVEL1-6 reuses
 the same detailed candidate pool, so it never repeats yfinance downloads.
 
-If the research workflow has not produced a compatible directional model yet,
-a paper-only heuristic model is used instead of silently producing zero trades.
-This fallback is never used for live orders.
+Paper-only continuity fallbacks are used when the research model or futures
+feed is unavailable. They are never connected to live orders.
 """
 import math
 
@@ -23,7 +22,7 @@ _cache = {"result": None}
 
 
 class PaperFallbackDirectionalModel:
-    """Paper-only DOWN/FLAT/UP model used only when the real model is unavailable."""
+    """Paper-only DOWN/FLAT/UP model used when the real model is unavailable."""
     feature_names_in_ = np.array(loop.app.FEATURES)
     classes_ = np.array([0, 1, 2])
 
@@ -70,6 +69,34 @@ def _load_model_for_paper():
 
 
 loop.app.load_model = _load_model_for_paper
+
+_original_features = loop.app.features
+
+
+def _features_for_paper(df, nikkei, futures_df=None):
+    """Keep candidates usable when Yahoo's futures symbol is temporarily absent."""
+    x = _original_features(df, nikkei, futures_df)
+    futures_cols = ["future_return", "future_ma5", "future_rsi", "future_gap"]
+    if x is None:
+        return x
+    missing = [c for c in futures_cols if c not in x.columns or x[c].isna().all()]
+    if missing:
+        n = nikkei.reindex(x.index).ffill()
+        if "future_return" in missing:
+            x["future_return"] = n["ret5_raw"].fillna(0.0)
+        if "future_ma5" in missing:
+            base = pd.Series(index=x.index, dtype=float)
+            base[:] = 0.0
+            x["future_ma5"] = base
+        if "future_rsi" in missing:
+            x["future_rsi"] = n["rsi"].fillna(50.0)
+        if "future_gap" in missing:
+            x["future_gap"] = n["ret5_raw"].fillna(0.0)
+        print("🟡 PAPER FUTURES FALLBACK: NIY=F欠損 → 日経現物由来の代替特徴量で継続")
+    return x
+
+
+loop.app.features = _features_for_paper
 
 
 def _prefilter_universe(tickers):
