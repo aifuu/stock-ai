@@ -1,11 +1,11 @@
 {
   "date": "2026-09-03",
-  "phase": "trading",
+  "phase": "closed",
   "premarket_done": false,
   "open_rescore_done": false,
   "final_decision_done": true,
   "forced_min_trade_done": false,
   "trades_today": 0,
   "last_exit_by_ticker": {},
-  "updated_at": "2026-09-03T15:09:06.777054+09:00"
+  "updated_at": "2026-09-03T15:46:48.923373+09:00"
 }
