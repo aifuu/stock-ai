@@ -2,8 +2,8 @@
 """Unified Profit Loop: progressive levels -> TOP10 -> TOP1 paper trade.
 
 Research/OOS gates remain separate. This runtime path is for paper execution only.
-Both BUY and SHORT are evaluated. Market regime determines the preferred direction:
-Nikkei bullish -> BUY priority, bearish -> SHORT priority, neutral -> AI direction.
+Both BUY and SHORT are evaluated. Market regime determines the direction:
+Nikkei bullish -> BUY only, bearish -> SHORT only, neutral -> compare both.
 """
 from datetime import datetime, timedelta
 import os
@@ -29,30 +29,58 @@ PAPER_ENTRY_LEVELS = [
 def _market_regime():
     try:
         nikkei = app.make_nikkei()
-        if nikkei is None or nikkei.empty: return "neutral", None, None
-        last = nikkei.ffill().iloc[-1]; kairi = float(last["kairi25"]); ret5 = float(last["ret5"])
-        if kairi > 0 and ret5 > 0: return "bullish", kairi, ret5
-        if kairi < 0 and ret5 < 0: return "bearish", kairi, ret5
+        if nikkei is None or nikkei.empty:
+            return "neutral", None, None
+        last = nikkei.ffill().iloc[-1]
+        kairi = float(last["kairi25"])
+        ret5 = float(last["ret5"])
+        if kairi > 0 and ret5 > 0:
+            return "bullish", kairi, ret5
+        if kairi < 0 and ret5 < 0:
+            return "bearish", kairi, ret5
         return "neutral", kairi, ret5
     except Exception as exc:
-        print(f"⚠️ 日経レジーム判定失敗 → neutral: {exc}"); return "neutral", None, None
+        print(f"⚠️ 日経レジーム判定失敗 → neutral: {exc}")
+        return "neutral", None, None
 
 def profit_priority(candidates):
+    """Regime gate: bearish means SHORT candidates only; bullish means BUY only.
+    Neutral compares BUY/SHORT by expected value and score."""
     regime, kairi25, ret5 = _market_regime()
     print(f"🌐 日経レジーム: {regime.upper()}" + (f"｜25MA乖離 {kairi25:+.2f}%｜5日騰落 {ret5:+.2f}%" if kairi25 is not None else ""))
     ranked = []
     for c in candidates:
-        direction = str(c.get("direction", "BUY")).upper(); price = float(c.get("price", 0) or 0); tp = float(c.get("tp", 0) or 0); sl = float(c.get("sl", 0) or 0)
-        up = float(c.get("up_probability", 0) or 0) / 100.0; down = float(c.get("down_probability", 0) or 0) / 100.0
-        if price <= 0: ev = -999.0
+        direction = str(c.get("direction", "BUY")).upper()
+        if regime == "bullish" and direction != "BUY":
+            continue
+        if regime == "bearish" and direction != "SHORT":
+            continue
+        price = float(c.get("price", 0) or 0)
+        tp = float(c.get("tp", 0) or 0)
+        sl = float(c.get("sl", 0) or 0)
+        up = float(c.get("up_probability", 0) or 0) / 100.0
+        down = float(c.get("down_probability", 0) or 0) / 100.0
+        if price <= 0:
+            ev = -999.0
         elif direction == "SHORT":
-            reward = max(0.0, (1.0 - tp / price) * 100.0); risk = max(0.0, (sl / price - 1.0) * 100.0); ev = down * reward - (1.0 - down) * risk
+            reward = max(0.0, (1.0 - tp / price) * 100.0)
+            risk = max(0.0, (sl / price - 1.0) * 100.0)
+            ev = down * reward - (1.0 - down) * risk
         else:
-            reward = max(0.0, (tp / price - 1.0) * 100.0); risk = max(0.0, (1.0 - sl / price) * 100.0); ev = up * reward - (1.0 - up) * risk
+            reward = max(0.0, (tp / price - 1.0) * 100.0)
+            risk = max(0.0, (1.0 - sl / price) * 100.0)
+            ev = up * reward - (1.0 - up) * risk
         preferred = (regime == "bullish" and direction == "BUY") or (regime == "bearish" and direction == "SHORT")
-        regime_bonus = 10.0 if preferred else 0.0; rank = 0.65 * float(c.get("score", 0)) + 0.35 * max(-10.0, min(10.0, ev)) * 10.0 + regime_bonus
-        item = dict(c); item["market_regime"] = regime; item["regime_preferred"] = bool(preferred); item["regime_bonus"] = regime_bonus; item["profit_ev_pct"] = round(ev, 4); item["profit_priority"] = round(rank, 4); ranked.append(item)
-    return sorted(ranked, key=lambda x: (x["regime_preferred"], x["profit_priority"], x.get("score", 0), max(x.get("up_probability", 0), x.get("down_probability", 0))), reverse=True)
+        regime_bonus = 10.0 if preferred else 0.0
+        rank = 0.65 * float(c.get("score", 0)) + 0.35 * max(-10.0, min(10.0, ev)) * 10.0 + regime_bonus
+        item = dict(c)
+        item["market_regime"] = regime
+        item["regime_preferred"] = bool(preferred)
+        item["regime_bonus"] = regime_bonus
+        item["profit_ev_pct"] = round(ev, 4)
+        item["profit_priority"] = round(rank, 4)
+        ranked.append(item)
+    return sorted(ranked, key=lambda x: (x["profit_priority"], x.get("score", 0), max(x.get("up_probability", 0), x.get("down_probability", 0))), reverse=True)
 
 _original_scan = app.scan_candidates
 _original_close = app.close_positions
@@ -97,7 +125,7 @@ def _print_gate_diagnostics(emergency_pool, scanned):
     for spec in PAPER_ENTRY_LEVELS:
         long_both = [c for c in pool if str(c.get("direction", "BUY")).upper() != "SHORT" and _passes_level(c, spec)]; short_both = [c for c in pool if str(c.get("direction", "BUY")).upper() == "SHORT" and _passes_level(c, spec)]
         print(f" {spec['level']:>2}   | BUY   | UP≥{spec['up_threshold']:>3.0f}%   | SCORE≥{spec['min_score']:>3.0f}     | {len(long_both):>8}"); print(f" {spec['level']:>2}   | SHORT | DOWN≥{spec['up_threshold']:>3.0f}% | SCORE≥{spec['min_score']:>3.0f}     | {len(short_both):>8}")
-    print("注: 日経レジームは候補を消さず、TOP10/TOP1の方向優先順位に反映します。\n" + "=" * 86)
+    print("注: 日経レジーム判定後、弱気=SHORTのみ、強気=BUYのみ、neutral=両方向比較でTOP1を決定します。\n" + "=" * 86)
 
 def scan_candidates_progressive(policy):
     last_scanned = 0
@@ -132,8 +160,11 @@ def close_positions_with_cooldown(state, policy, now):
 
 def open_top1_only(state, policy, candidates, today):
     cooldowns = state.setdefault("last_exit_by_ticker", {}); now = datetime.now(app.TZ); active = {str(p.get("ticker")) for p in state.get("positions", []) if p.get("ticker")}; eligible = []
+    regime, _, _ = _market_regime()
     for candidate in profit_priority(candidates)[:TOP10]:
-        ticker = str(candidate.get("ticker", "")).strip()
+        ticker = str(candidate.get("ticker", "")).strip(); direction = str(candidate.get("direction", "BUY")).upper()
+        if regime == "bearish" and direction != "SHORT": continue
+        if regime == "bullish" and direction != "BUY": continue
         if not ticker or ticker in active: continue
         if int(state.get("trades_by_ticker_today", {}).get(ticker, 0)) >= MAX_TICKER_TRADES: continue
         if int(state.get("trades_today", 0)) >= MAX_DAILY_TRADES: break
@@ -151,7 +182,7 @@ def open_top1_only(state, policy, candidates, today):
     finally:
         app.TOP_N = old_top_n; app.MAX_TOTAL_TRADES_PER_DAY = old_max_total; app.MAX_TRADES_PER_TICKER_PER_DAY = old_max_ticker
     if opened:
-        p = state["positions"][-1]; p["allocation"] = 1.0; p["selection_mode"] = top1.get("selection_mode", "normal"); p["selection_level"] = int(top1.get("selection_level", 1)); p["top10_rank"] = int(top1.get("top10_rank", 1)); p["market_regime"] = top1.get("market_regime", "neutral"); p["regime_preferred"] = bool(top1.get("regime_preferred", False)); p["profit_ev_pct"] = float(top1.get("profit_ev_pct", 0.0)); p["profit_priority"] = float(top1.get("profit_priority", 0.0)); print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction', 'BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} PREFERRED={p['regime_preferred']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability', 0):.1f}%")
+        p = state["positions"][-1]; p["allocation"] = 1.0; p["selection_mode"] = top1.get("selection_mode", "normal"); p["selection_level"] = int(top1.get("selection_level", 1)); p["top10_rank"] = int(top1.get("top10_rank", 1)); p["market_regime"] = top1.get("market_regime", regime); p["regime_preferred"] = bool(top1.get("regime_preferred", False)); p["profit_ev_pct"] = float(top1.get("profit_ev_pct", 0.0)); p["profit_priority"] = float(top1.get("profit_priority", 0.0)); print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction', 'BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} PREFERRED={p['regime_preferred']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability', 0):.1f}%")
     return opened
 
 app.scan_candidates = scan_candidates_progressive
