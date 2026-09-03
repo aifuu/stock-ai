@@ -4,6 +4,10 @@
 Every 5-minute run does one cheap broad-market prefilter, then runs the full
 AI/5-minute analysis only on the best candidates. Progressive LEVEL1-6 reuses
 the same detailed candidate pool, so it never repeats yfinance downloads.
+
+If the research workflow has not produced a compatible directional model yet,
+a paper-only heuristic model is used instead of silently producing zero trades.
+This fallback is never used for live orders.
 """
 import math
 
@@ -16,6 +20,56 @@ import run_profit_loop as loop
 DETAIL_UNIVERSE = 50
 _original_scan = loop._original_scan
 _cache = {"result": None}
+
+
+class PaperFallbackDirectionalModel:
+    """Paper-only DOWN/FLAT/UP model used only when the real model is unavailable."""
+    feature_names_in_ = np.array(loop.app.FEATURES)
+    classes_ = np.array([0, 1, 2])
+
+    def predict_proba(self, X):
+        rows = pd.DataFrame(X)
+        out = []
+        for _, r in rows.iterrows():
+            def num(name, default=0.0):
+                try:
+                    v = float(r.get(name, default))
+                    return v if np.isfinite(v) else default
+                except Exception:
+                    return default
+
+            momentum = (num("momentum_score") - 50.0) / 25.0
+            trend = num("trend_alignment") - 1.5
+            ret5 = max(-3.0, min(3.0, num("ret5") / 3.0))
+            macd_scale = max(abs(num("ma25")) * 0.003, 1e-9)
+            macd_bias = max(-3.0, min(3.0, (num("macd") - num("signal")) / macd_scale))
+            rsi_bias = max(-2.0, min(2.0, (num("rsi", 50.0) - 50.0) / 20.0))
+            directional = 0.55 * momentum + 0.65 * trend + 0.35 * ret5 + 0.25 * macd_bias - 0.15 * rsi_bias
+            strength = min(3.0, abs(directional))
+            flat = max(0.08, 0.42 - 0.10 * strength)
+            up_raw = math.exp(max(-5.0, min(5.0, directional)))
+            down_raw = math.exp(max(-5.0, min(5.0, -directional)))
+            total = up_raw + down_raw + flat
+            out.append([down_raw / total, flat / total, up_raw / total])
+        return np.asarray(out, dtype=float)
+
+
+_original_load_model = loop.app.load_model
+
+
+def _load_model_for_paper():
+    try:
+        model = _original_load_model()
+        if model is not None:
+            print("✅ directional AI model loaded")
+            return model
+    except Exception as exc:
+        print(f"⚠️ directional AIモデル取得失敗: {exc}")
+    print("🟠 PAPER FALLBACK: directional_model.pkl が未準備/不一致 → 紙取引専用モデルで継続")
+    return PaperFallbackDirectionalModel()
+
+
+loop.app.load_model = _load_model_for_paper
 
 
 def _prefilter_universe(tickers):
@@ -60,7 +114,6 @@ def _prefilter_universe(tickers):
             if price <= 0 or avg20 <= 0:
                 continue
             vol_ratio = recent5 / avg20
-            # Direction-neutral: strong movement in either direction + liquidity + trend displacement.
             kairi = abs(price / ma25 - 1.0) if ma25 > 0 else 0.0
             momentum = abs(ret5)
             activity = max(0.0, min(vol_ratio, 5.0))
