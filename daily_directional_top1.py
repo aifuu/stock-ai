@@ -11,7 +11,6 @@ import yfinance as yf
 from sklearn.ensemble import RandomForestClassifier
 
 TZ = ZoneInfo("Asia/Tokyo")
-# ★重要: stock_scan.py の汎用 model.pkl と共有しない。方向性TOP1専用モデルを分離する。
 MODEL_FILE = "directional_model.pkl"
 TRAIN_FILE = "train_data.csv"
 HISTORY_FILE = "directional_paper_history.csv"
@@ -74,7 +73,6 @@ def adx(df, period=14):
 
 
 def make_futures_features():
-    """日経225先物(NIY=F)を学習時と同じ定義・1日ラグで特徴量化する。"""
     f = download("NIY=F")
     if f is None or f.empty:
         print("⚠ 日経225先物(NIY=F)取得失敗: future_*特徴量はNaNにして予測を止めます")
@@ -115,10 +113,7 @@ def features(df, nikkei, futures_df=None):
     else:
         aligned=futures_df.reindex(pd.to_datetime(x.index).normalize()).ffill()
         aligned.index=x.index
-        x["future_return"]=aligned["future_return"].to_numpy()
-        x["future_ma5"]=aligned["future_ma5"].to_numpy()
-        x["future_rsi"]=aligned["future_rsi"].to_numpy()
-        x["future_gap"]=aligned["future_gap"].to_numpy()
+        x["future_return"]=aligned["future_return"].to_numpy(); x["future_ma5"]=aligned["future_ma5"].to_numpy(); x["future_rsi"]=aligned["future_rsi"].to_numpy(); x["future_gap"]=aligned["future_gap"].to_numpy()
     return x
 
 
@@ -133,20 +128,16 @@ def load_model():
     expected = list(FEATURES)
     if os.path.exists(MODEL_FILE):
         try:
-            m=joblib.load(MODEL_FILE)
-            actual = list(getattr(m, "feature_names_in_", []))
-            if np.array_equal(m.classes_,np.array([0,1,2])) and actual == expected:
-                return m
+            m=joblib.load(MODEL_FILE); actual=list(getattr(m,"feature_names_in_",[]))
+            if np.array_equal(m.classes_,np.array([0,1,2])) and actual==expected:return m
             print("⚠️ directional_model.pkl の特徴量セット不一致 → 現行FEATURESで再学習します")
-        except Exception as exc:
-            print(f"⚠️ directional_model.pkl 読込失敗 → 再学習します: {exc}")
+        except Exception as exc:print(f"⚠️ directional_model.pkl 読込失敗 → 再学習します: {exc}")
     if not os.path.exists(TRAIN_FILE):return None
     try:df=pd.read_csv(TRAIN_FILE)
     except Exception:return None
-    required = expected + ["target"]
+    required=expected+["target"]
     if any(col not in df.columns for col in required):
-        print("❌ train_data.csv に現行TOP1特徴量が不足しているため、旧モデルへフォールバックしません")
-        return None
+        print("❌ train_data.csv に現行TOP1特徴量が不足しているため、旧モデルへフォールバックしません"); return None
     df=df.dropna(subset=required)
     if len(df)<100 or df["target"].nunique()!=3:return None
     m=RandomForestClassifier(n_estimators=300,max_depth=7,random_state=42,class_weight="balanced",n_jobs=-1); m.fit(df[expected],df["target"].astype(int)); joblib.dump(m,MODEL_FILE); return m
@@ -168,8 +159,7 @@ def load_state():
 
 def save_state(state):
     tmp=STATE_FILE+".tmp"
-    with open(tmp,"w",encoding="utf-8") as f:
-        json.dump(state,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    with open(tmp,"w",encoding="utf-8") as f:json.dump(state,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,STATE_FILE)
 
 
@@ -205,8 +195,21 @@ def update_open_position(state):
     if exit_reason is None and len(bars)>=HOLD_DAYS:exit_date,exit_price,exit_reason=bars.index[HOLD_DAYS-1],float(bars.iloc[HOLD_DAYS-1]["Close"]),"TIME"
     if exit_reason is None:return None
     entry=float(p["entry_price"]); ret=(exit_price-entry)/entry*100 if p["direction"]=="BUY" else (entry-exit_price)/entry*100; pnl=state["capital"]*ret/100; state["capital"]+=pnl; state["position"]=None; state["peak"]=max(float(state.get("peak",state["capital"])),state["capital"]); state["max_dd"]=max(float(state.get("max_dd",0)),((state["peak"]-state["capital"])/state["peak"]*100 if state["peak"] else 0))
-    append_history({"entry_date":p["entry_date"],"exit_date":str(pd.Timestamp(exit_date).date()),"ticker":p["ticker"],"company":p["company"],"direction":p["direction"],"selection_mode":p.get("selection_mode","unknown"),"entry_price":entry,"exit_price":exit_price,"tp":p["tp"],"sl":p["sl"],"score":p["score"],"up_probability":p["up_probability"],"down_probability":p["down_probability"],"return_pct":round(ret,3),"pnl":round(pnl,2),"result":exit_reason,"hold_days":len(pd.bdate_range(entry_date,pd.Timestamp(exit_date))),"capital_after":round(state["capital"],2)})
-    return f"決済 {p.get('selection_mode','unknown')} {p['direction']} {p['ticker']} {exit_reason} {ret:+.2f}%"
+    hold_days=len(pd.bdate_range(entry_date,pd.Timestamp(exit_date)))
+    append_history({"entry_date":p["entry_date"],"exit_date":str(pd.Timestamp(exit_date).date()),"ticker":p["ticker"],"company":p["company"],"direction":p["direction"],"selection_mode":p.get("selection_mode","unknown"),"entry_price":entry,"exit_price":exit_price,"tp":p["tp"],"sl":p["sl"],"score":p["score"],"up_probability":p["up_probability"],"down_probability":p["down_probability"],"return_pct":round(ret,3),"pnl":round(pnl,2),"result":exit_reason,"hold_days":hold_days,"capital_after":round(state["capital"],2)})
+    result_label={"TP":"利確(TP)","SL":"損切(SL)","TIME":"期限到達"}.get(exit_reason,exit_reason)
+    emoji="✅" if pnl>=0 else "❌"
+    text=(f"{emoji} DAILY TOP1｜決済\n━━━━━━━━━━━━━━\n"
+          f"📅 {str(pd.Timestamp(exit_date).date())}\n"
+          f"選定区分: {p.get('selection_mode','unknown')}\n"
+          f"{p['direction']}｜{p['ticker']} {p['company']}\n"
+          f"エントリー: {entry:,.0f} → 決済: {exit_price:,.0f}\n"
+          f"結果: {result_label}（{ret:+.2f}%）\n"
+          f"損益: {pnl:+,.0f}円\n"
+          f"保有: {hold_days}営業日\n\n"
+          f"💰 仮想資産: {state['capital']:,.0f}円")
+    send(text)
+    return text
 
 
 def monthly_report():
@@ -233,8 +236,7 @@ def send(msg):
 
 
 def main():
-    today=datetime.now(TZ).strftime("%Y-%m-%d"); state=load_state(); state.setdefault("forced_top1_used_date",None); closed=update_open_position(state)
-    if closed:print(closed)
+    today=datetime.now(TZ).strftime("%Y-%m-%d"); state=load_state(); state.setdefault("forced_top1_used_date",None); update_open_position(state)
     state=load_state(); state.setdefault("forced_top1_used_date",None)
     if state.get("position"):
         save_state(state); return
@@ -260,10 +262,8 @@ def main():
         if c["direction"]=="BUY":ok=(c["up_probability"]>=NORMAL_UP_MIN*100 and c["up_probability"]>c["down_probability"] and c["score"]>=NORMAL_SCORE_MIN)
         else:ok=(c["down_probability"]>=NORMAL_UP_MIN*100 and c["down_probability"]>c["up_probability"] and c["score"]>=NORMAL_SCORE_MIN)
         if ok:normal.append(c)
-    if normal:
-        top=normal[0]; selection_mode="normal"
-    elif FORCED_TOP1_ENABLED and state.get("forced_top1_used_date")!=today:
-        top=candidates[0]; selection_mode="forced_top1"
+    if normal:top=normal[0]; selection_mode="normal"
+    elif FORCED_TOP1_ENABLED and state.get("forced_top1_used_date")!=today:top=candidates[0]; selection_mode="forced_top1"
     else:
         save_state(state); send(f"🟡 DAILY TOP1｜通常候補なし・forced_top1本日使用済み\n候補数: {len(candidates)}\n※ペーパートレード");return
     state["position"]={"entry_date":today,"entry_time":datetime.now(TZ).strftime("%H:%M"),"ticker":top["ticker"],"company":top["company"],"direction":top["direction"],"entry_price":top["price"],"tp":top["tp"],"sl":top["sl"],"score":top["score"],"up_probability":top["up_probability"],"down_probability":top["down_probability"],"selection_mode":selection_mode}
