@@ -1,437 +1,155 @@
-import hashlib
-import hmac
-import json
-import os
+import hashlib, hmac, json, os
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
-
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_model, features, atr, directional_score, append_history
 
-from daily_directional_top1 import (
-    TICKERS, NAMES, download, make_nikkei, load_model, features,
-    atr, directional_score, append_history,
-)
+TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
+INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000')); TOP_N=10; MAX_TRADES_PER_TICKER_PER_DAY=10; MAX_TOTAL_TRADES_PER_DAY=30; FEE_RATE=float(os.getenv('INTRADAY_FEE_RATE','0.00055')); FORCED_EXIT=dtime(15,25); SHORT_ENABLED=os.getenv('ENABLE_SHORT_PAPER','1').lower() in ('1','true','yes','on')
 
-TZ = ZoneInfo("Asia/Tokyo")
-POLICY_FILE = "strategy_policy.json"
-STATE_FILE = "profit_top10_paper_state.json"
-HISTORY_FILE = "profit_top10_paper_history.csv"
-MONTHLY_FILE = "profit_top10_monthly_performance.csv"
-INITIAL_CAPITAL = float(os.getenv("AI_INITIAL_CAPITAL", "1000000"))
-TOP_N = 10
-MAX_TRADES_PER_TICKER_PER_DAY = 10
-MAX_TOTAL_TRADES_PER_DAY = 30
-FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
-FORCED_EXIT = dtime(15, 25)
-SHORT_ENABLED = os.getenv("ENABLE_SHORT_PAPER", "1").lower() in ("1", "true", "yes", "on")
-
-
-def discord_send(message, required=False):
-    webhook = os.getenv("DISCORD_WEBHOOK", "").strip()
+def discord_send(message,required=False):
+    webhook=os.getenv('DISCORD_WEBHOOK','').strip()
     if not webhook:
-        text = "❌ DISCORD_WEBHOOK がGitHub Actionsに設定されていません。Discord通知を送信できません。"
-        print(text)
-        if required:
-            raise RuntimeError(text)
-        return False
+        print('❌ DISCORD_WEBHOOK 未設定'); return False
     try:
-        import requests
-        r = requests.post(webhook, json={"content": message[:1950]}, timeout=30)
-        r.raise_for_status()
-        print("✅ Discord通知送信成功")
-        return True
-    except Exception as exc:
-        print(f"❌ Discord通知送信失敗: {exc}")
-        if required:
-            raise
+        import requests; r=requests.post(webhook,json={'content':message[:1950]},timeout=30); r.raise_for_status(); return True
+    except Exception as e:
+        print(f'❌ Discord通知失敗: {e}')
+        if required: raise
         return False
 
-
-def _canonical_policy_payload(policy):
-    covered = {k: policy.get(k) for k in (
-        "status", "updated_at", "up_threshold", "min_score_for_buy",
-        "nikkei_filter", "atr_tp_multiplier", "atr_sl_multiplier", "hold_days",
-        "validation_signals", "validation_win_rate", "validation_avg_return",
-        "validation_pf", "validation_dd", "oos_signals", "oos_win_rate",
-        "oos_avg_return", "oos_pf", "oos_dd", "oos_validation_pf_ratio",
-        "mc_sizing", "mc_10y_probability", "mc_15y_probability",
-        "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",
-        "strategy_name", "source",
-    )}
-    return json.dumps(covered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _verify_policy_signature(policy):
-    secret = os.getenv("AI_POLICY_SIGNING_SECRET", "").strip()
-    if not secret:
-        raise RuntimeError("AI_POLICY_SIGNING_SECRET が未設定です。承認済みpolicyを検証できないため新規取引を停止します。")
-    if str(policy.get("source", "")) != "adversarial_strategy_validator":
-        raise RuntimeError("strategy_policy.json のsourceが検証パイプラインではありません。手動policyは無効です。")
-    if int(policy.get("approval_signature_version", 0)) != 1:
-        raise RuntimeError("strategy_policy.json の承認署名バージョンが不正です。")
-    supplied = str(policy.get("approval_signature", ""))
-    if not supplied:
-        raise RuntimeError("strategy_policy.json に承認署名がありません。手動承認は無効です。")
-    expected = hmac.new(secret.encode("utf-8"), _canonical_policy_payload(policy).encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(supplied, expected):
-        raise RuntimeError("strategy_policy.json の承認署名が一致しません。手動変更または検証証跡の破損を検知したため新規取引を停止します。")
-
+def _canonical(p):
+    keys=('status','updated_at','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals','validation_win_rate','validation_avg_return','validation_pf','validation_dd','oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd','oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd','strategy_name','source')
+    return json.dumps({k:p.get(k) for k in keys},ensure_ascii=False,sort_keys=True,separators=(',',':'))
 
 def load_policy():
-    if not os.path.exists(POLICY_FILE):
-        raise RuntimeError("strategy_policy.json がありません。先にProfit Optimizerを実行してください。")
-    with open(POLICY_FILE, encoding="utf-8") as f:
-        p = json.load(f)
-    required = ["status", "up_threshold", "min_score_for_buy", "nikkei_filter", "atr_tp_multiplier", "atr_sl_multiplier", "hold_days"]
-    missing = [k for k in required if k not in p]
-    if missing:
-        raise RuntimeError("strategy_policy.json の不足項目: " + ", ".join(missing))
-    status = str(p.get("status", "")).upper()
-    if status == "APPROVED":
-        _verify_policy_signature(p)
-    elif status == "PENDING" and os.getenv("PAPER_TRADE_MODE", "1") == "1":
-        print("⚠️ policy=PENDING → 実注文ではなくペーパートレード専用モードで継続します")
-    else:
-        raise RuntimeError(f"strategy_policy.json がAPPROVEDではありません: status={p.get('status')}。安全のため新規取引を停止します。")
-    p["up_threshold"] = float(p["up_threshold"])
-    p["min_score_for_buy"] = float(p["min_score_for_buy"])
-    p["nikkei_filter"] = str(p["nikkei_filter"]).lower() in ("true", "1", "yes", "on")
-    p["atr_tp_multiplier"] = float(p["atr_tp_multiplier"])
-    p["atr_sl_multiplier"] = float(p["atr_sl_multiplier"])
-    p["hold_days"] = int(p["hold_days"])
-    return p
+    with open(POLICY_FILE,encoding='utf-8') as f:p=json.load(f)
+    req=['status','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days']; miss=[k for k in req if k not in p]
+    if miss: raise RuntimeError('policy不足: '+','.join(miss))
+    status=str(p['status']).upper()
+    if status=='APPROVED':
+        secret=os.getenv('AI_POLICY_SIGNING_SECRET','').strip()
+        if not secret or p.get('source')!='adversarial_strategy_validator' or int(p.get('approval_signature_version',0))!=1: raise RuntimeError('承認済みpolicy検証失敗')
+        exp=hmac.new(secret.encode(),_canonical(p).encode(),hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(str(p.get('approval_signature','')),exp): raise RuntimeError('policy署名不一致')
+    elif not(status=='PENDING' and os.getenv('PAPER_TRADE_MODE','1')=='1'): raise RuntimeError(f'policy={status} 新規取引停止')
+    p['up_threshold']=float(p['up_threshold']); p['min_score_for_buy']=float(p['min_score_for_buy']); p['nikkei_filter']=str(p['nikkei_filter']).lower() in ('true','1','yes','on'); p['atr_tp_multiplier']=float(p['atr_tp_multiplier']); p['atr_sl_multiplier']=float(p['atr_sl_multiplier']); p['hold_days']=int(p['hold_days']); return p
 
-
-def default_state():
-    return {"capital": INITIAL_CAPITAL, "peak": INITIAL_CAPITAL, "max_dd": 0.0, "positions": [], "trade_count_date": None, "trades_today": 0, "trades_by_ticker_today": {}, "daily_start_capital": INITIAL_CAPITAL}
-
-
+def default_state(): return {'capital':INITIAL_CAPITAL,'peak':INITIAL_CAPITAL,'max_dd':0.0,'positions':[],'trade_count_date':None,'trades_today':0,'trades_by_ticker_today':{},'daily_start_capital':INITIAL_CAPITAL}
 def load_state():
-    base = default_state()
-    if not os.path.exists(STATE_FILE):
-        return base
-    try:
-        with open(STATE_FILE, encoding="utf-8") as f:
-            saved = json.load(f)
-        if isinstance(saved, dict):
-            base.update(saved)
-        base.setdefault("positions", [])
-        base.setdefault("trades_by_ticker_today", {})
-        return base
-    except Exception:
-        return base
-
-
-def save_state(state):
-    tmp = STATE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-        f.flush(); os.fsync(f.fileno())
-    os.replace(tmp, STATE_FILE)
-
-
-def reset_daily_counter(state, today):
-    if state.get("trade_count_date") != today:
-        state["trade_count_date"] = today
-        state["trades_today"] = 0
-        state["trades_by_ticker_today"] = {}
-        state["daily_start_capital"] = float(state.get("capital", INITIAL_CAPITAL))
-
-
-def download_5m(ticker):
-    try:
-        df = yf.download(ticker, period="5d", interval="5m", auto_adjust=False, progress=False, threads=False)
-        if df is None or df.empty:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        idx = pd.to_datetime(df.index)
-        if getattr(idx, "tz", None) is not None:
-            idx = idx.tz_convert(TZ).tz_localize(None)
-        else:
-            idx = idx.tz_localize("UTC").tz_convert(TZ).tz_localize(None)
-        df = df.copy(); df.index = idx
-        return df.sort_index()
-    except Exception as exc:
-        print(f"5分足取得失敗 {ticker}: {exc}")
-        return None
-
-
-def update_monthly():
-    if not os.path.exists(HISTORY_FILE):
-        return None
-    df = pd.read_csv(HISTORY_FILE)
-    if df.empty:
-        return None
-    df["exit_date"] = pd.to_datetime(df["exit_date"], errors="coerce")
-    df["pnl"] = pd.to_numeric(df["pnl"], errors="coerce")
-    df["return_pct"] = pd.to_numeric(df["return_pct"], errors="coerce")
-    df = df.dropna(subset=["exit_date", "pnl"])
-    if df.empty:
-        return None
-    m = df.assign(month=df["exit_date"].dt.to_period("M")).groupby("month").agg(
-        trades=("pnl", "size"), pnl=("pnl", "sum"), avg_return=("return_pct", "mean"),
-        wins=("pnl", lambda s: int((s > 0).sum()))).reset_index()
-    m["win_rate_pct"] = m["wins"] / m["trades"] * 100
-    m.to_csv(MONTHLY_FILE, index=False, encoding="utf-8-sig")
-    return m.iloc[-1].to_dict()
-
-
-def close_positions(state, policy, now):
-    remaining, messages = [], []
-    for p in state["positions"]:
-        df = download_5m(p["ticker"])
-        if df is None or df.empty:
-            remaining.append(p); continue
-        entry_date = str(p.get("entry_date", now.strftime("%Y-%m-%d")))
-        entry_time = str(p.get("entry_time", "09:00"))
-        direction = str(p.get("direction", "BUY")).upper()
-        entry_price, tp, sl = float(p["entry_price"]), float(p["tp"]), float(p["sl"])
-        shares = int(p.get("shares", 0))
-        invested_amount = float(p.get("invested_amount", shares * entry_price))
-        today = df[df.index.date == now.date()]
-        if today.empty:
-            remaining.append(p); continue
-        now_naive = now.replace(tzinfo=None)
-        bars = today[(today.index >= pd.Timestamp(f"{entry_date} {entry_time}")) & (today.index <= now_naive)] if entry_date == now.strftime("%Y-%m-%d") else today[today.index <= now_naive]
-        if bars.empty:
-            remaining.append(p); continue
-        exit_price = reason = exit_time = None
-        for ts, bar in bars.iterrows():
-            high, low = float(bar["High"]), float(bar["Low"])
-            if direction == "SHORT":
-                if high >= sl and low <= tp:
-                    exit_price, reason = sl, "SL_BOTH"
-                elif low <= tp:
-                    exit_price, reason = tp, "TP"
-                elif high >= sl:
-                    exit_price, reason = sl, "SL"
-            else:
-                if low <= sl and high >= tp:
-                    exit_price, reason = sl, "SL_BOTH"
-                elif high >= tp:
-                    exit_price, reason = tp, "TP"
-                elif low <= sl:
-                    exit_price, reason = sl, "SL"
-            if reason:
-                exit_time = ts; break
-            if ts.time() >= FORCED_EXIT:
-                exit_price, reason, exit_time = float(bar["Close"]), "EOD", ts; break
-        if exit_price is None and now.time() >= FORCED_EXIT:
-            exit_price, reason, exit_time = float(bars.iloc[-1]["Close"]), "EOD", bars.index[-1]
-        if exit_price is None:
-            remaining.append(p); continue
-        gross_ret = ((entry_price - exit_price) / entry_price * 100.0) if direction == "SHORT" else ((exit_price / entry_price - 1.0) * 100.0)
-        net_ret = gross_ret - FEE_RATE * 200.0
-        allocation = float(p.get("allocation", 1.0 / TOP_N))
-        capital_before = float(state["capital"])
-        if shares > 0:
-            gross_pnl = (entry_price - exit_price) * shares if direction == "SHORT" else (exit_price - entry_price) * shares
-            fees = (entry_price + exit_price) * shares * FEE_RATE
-            pnl = gross_pnl - fees
-        else:
-            pnl = capital_before * allocation * net_ret / 100.0
-        state["capital"] = capital_before + pnl
-        exit_value = exit_price * shares if shares > 0 else invested_amount * (exit_price / entry_price if entry_price else 1.0)
-        total_assets = float(state["capital"])
-        append_history({
-            "entry_date": p.get("entry_date", entry_date), "entry_time": p.get("entry_time", entry_time),
-            "exit_date": str(pd.Timestamp(exit_time).date()), "exit_time": pd.Timestamp(exit_time).strftime("%H:%M"),
-            "ticker": p["ticker"], "company": p["company"], "direction": direction,
-            "entry_price": entry_price, "exit_price": float(exit_price), "shares": shares,
-            "invested_amount": round(invested_amount, 2), "exit_value": round(exit_value, 2),
-            "tp": tp, "sl": sl, "score": p["score"], "up_probability": p["up_probability"],
-            "down_probability": p["down_probability"], "return_pct": round(net_ret, 3),
-            "pnl": round(pnl, 2), "result": reason, "hold_days": 1,
-            "allocation": allocation, "total_assets": round(total_assets, 2),
-            "policy_updated_at": p.get("policy_updated_at")})
-        messages.append(
-            f"{'🟢' if pnl >= 0 else '🔴'} 決済成立｜{p['company']}（{p['ticker']}）｜{direction}\n"
-            f"売値: {exit_price:,.1f}円｜数量: {shares:,}株｜投資額: {invested_amount:,.0f}円\n"
-            f"確定損益: {pnl:+,.0f}円（{net_ret:+.2f}%）｜決済額: {exit_value:,.0f}円\n"
-            f"💰 総資産: {total_assets:,.0f}円｜開始100万円から: {total_assets - INITIAL_CAPITAL:+,.0f}円")
-    state["positions"] = remaining
-    state["peak"] = max(float(state.get("peak", state["capital"])), float(state["capital"]))
-    if state["peak"]:
-        state["max_dd"] = max(float(state.get("max_dd", 0.0)), (state["peak"] - state["capital"]) / state["peak"] * 100.0)
-    return messages
-
-
-def scan_candidates(policy):
-    nikkei, model = make_nikkei(), load_model()
-    if nikkei is None or model is None:
-        raise RuntimeError("日経データまたはAIモデルを取得できませんでした")
-    candidates, fallback_candidates, scanned = [], [], 0
-    for ticker in TICKERS:
-        df = download(ticker)
-        if df is None or len(df) < 150:
-            continue
-        scanned += 1
-        feature_cols = list(getattr(model, "feature_names_in_", []))
-        x = features(df, nikkei).dropna(subset=feature_cols)
-        if x.empty:
-            continue
+    s=default_state()
+    if os.path.exists(STATE_FILE):
         try:
-            last = x.iloc[-1]
-            probs = model.predict_proba(x.iloc[-1:])[0]
-            classes = list(model.classes_)
-            if not all(c in classes for c in (0, 1, 2)):
-                continue
-            down, up, flat = float(probs[classes.index(0)]), float(probs[classes.index(2)]), float(probs[classes.index(1)])
-            long_s, short_s = directional_score(last, up, down)
-            daily_price = float(df["Close"].iloc[-1])
-            a = float(atr(df).iloc[-1])
-            if not np.isfinite(a) or a <= 0:
-                continue
-            if policy["nikkei_filter"]:
-                nlast = nikkei.reindex(x.index).ffill().iloc[-1]
-                if not (float(nlast["kairi25"]) > 0 and float(nlast["ret5"]) > 0):
-                    continue
-            intraday = download_5m(ticker)
-            price = daily_price
-            if intraday is not None and not intraday.empty:
-                latest = intraday[intraday.index <= datetime.now(TZ).replace(tzinfo=None)]
-                if not latest.empty:
-                    price = float(latest["Close"].iloc[-1])
-            long_item = {
-                "ticker": ticker, "company": NAMES.get(ticker, ticker), "direction": "BUY",
-                "score": float(long_s), "up_probability": up * 100, "down_probability": down * 100,
-                "flat_probability": flat * 100, "price": price,
-                "tp": price + a * policy["atr_tp_multiplier"],
-                "sl": max(0.01, price - a * policy["atr_sl_multiplier"]), "data_date": str(x.index[-1].date())}
-            short_item = {
-                "ticker": ticker, "company": NAMES.get(ticker, ticker), "direction": "SHORT",
-                "score": float(short_s), "up_probability": up * 100, "down_probability": down * 100,
-                "flat_probability": flat * 100, "price": price,
-                "tp": max(0.01, price - a * policy["atr_tp_multiplier"]),
-                "sl": price + a * policy["atr_sl_multiplier"], "data_date": str(x.index[-1].date())}
-            fallback_candidates.append(long_item)
-            if SHORT_ENABLED:
-                fallback_candidates.append(short_item)
-            if up * 100 >= policy["up_threshold"] and up > down and flat < 50 and float(long_s) >= policy["min_score_for_buy"]:
-                candidates.append(long_item)
-            if SHORT_ENABLED and down * 100 >= policy["up_threshold"] and down > up and flat < 50 and float(short_s) >= policy["min_score_for_buy"]:
-                candidates.append(short_item)
-        except Exception as e:
-            print(ticker, "predict", e)
-    candidates.sort(key=lambda z: (z["score"], max(z["up_probability"], z["down_probability"])), reverse=True)
-    fallback_candidates.sort(key=lambda z: (z["score"], max(z["up_probability"], z["down_probability"])), reverse=True)
-    if not candidates and fallback_candidates:
-        candidates = fallback_candidates[:TOP_N]
-        print(f"⚠️ 条件成立候補0 → PAPER専用フォールバックで方向混合TOP{len(candidates)}を採用")
-    return candidates, scanned
+            with open(STATE_FILE,encoding='utf-8') as f:s.update(json.load(f))
+        except Exception: pass
+    s.setdefault('positions',[]); s.setdefault('trades_by_ticker_today',{}); return s
+def save_state(s):
+    tmp=STATE_FILE+'.tmp'
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(s,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp,STATE_FILE)
+def reset_daily(s,today):
+    if s.get('trade_count_date')!=today:s.update({'trade_count_date':today,'trades_today':0,'trades_by_ticker_today':{},'daily_start_capital':float(s.get('capital',INITIAL_CAPITAL))})
+def download_5m(t):
+    try:
+        d=yf.download(t,period='5d',interval='5m',auto_adjust=False,progress=False,threads=False)
+        if d is None or d.empty:return None
+        if isinstance(d.columns,pd.MultiIndex):d.columns=d.columns.get_level_values(0)
+        idx=pd.to_datetime(d.index); idx=idx.tz_convert(TZ).tz_localize(None) if getattr(idx,'tz',None) is not None else idx.tz_localize('UTC').tz_convert(TZ).tz_localize(None); d.index=idx; return d.sort_index()
+    except Exception:return None
 
+def trade_reasons(last,up,down,nikkei):
+    p=float(last.get('Close',np.nan)); ma25=float(last.get('MA25',last.get('ma25',np.nan))); ma75=float(last.get('MA75',last.get('ma75',np.nan))); rsi=float(last.get('RSI',last.get('rsi',np.nan))); macd=float(last.get('MACD',last.get('macd',np.nan))); vr=float(last.get('vol_ratio',np.nan))
+    trend='上昇トレンド' if np.isfinite(p) and np.isfinite(ma25) and np.isfinite(ma75) and p>ma25>ma75 else ('下落トレンド' if np.isfinite(p) and np.isfinite(ma25) and np.isfinite(ma75) and p<ma25<ma75 else 'トレンド中立')
+    vals=[]
+    if np.isfinite(vr): vals.append(f'出来高{vr:.1f}倍')
+    vals += [trend, f'25日線{"上" if np.isfinite(ma25) and p>ma25 else "下"}', f'75日線{"上" if np.isfinite(ma75) and p>ma75 else "下"}', f'MACD{("買い" if macd>0 else "弱い") if np.isfinite(macd) else "判定不可"}', f'RSI{rsi:.1f}' if np.isfinite(rsi) else 'RSI判定不可', f'AI上昇{up:.1f}%/下落{down:.1f}%']
+    if nikkei is not None:
+        try: vals.append(f'日経{("上昇" if float(nikkei.get("ret5",0))>0 else "下落")}')
+        except Exception: pass
+    return '｜'.join(vals)
 
-def open_positions(state, policy, candidates, today):
-    active = {p["ticker"] for p in state["positions"]}
-    selected = []
-    for c in candidates:
-        ticker = c["ticker"]
-        direction = c["direction"]
-        if ticker in active:
-            continue
-        ticker_count = int(state.get("trades_by_ticker_today", {}).get(ticker, 0))
-        if ticker_count >= MAX_TRADES_PER_TICKER_PER_DAY:
-            continue
-        if int(state.get("trades_today", 0)) >= MAX_TOTAL_TRADES_PER_DAY:
-            break
-        if len(state["positions"]) >= TOP_N:
-            break
-        allocation = 1.0 / TOP_N
-        capital_now = float(state.get("capital", INITIAL_CAPITAL))
-        budget = capital_now * allocation
-        entry_price = float(c["price"])
-        shares = int(budget // entry_price) if entry_price > 0 else 0
-        if shares <= 0:
-            print(f"⚠️ {ticker} は1株も買えないためスキップ: 価格={entry_price:,.1f}円 / 枠={budget:,.0f}円")
-            continue
-        invested_amount = shares * entry_price
-        state["positions"].append({
-            "entry_date": today, "entry_time": datetime.now(TZ).strftime("%H:%M"),
-            "ticker": ticker, "company": c["company"], "direction": direction,
-            "entry_price": entry_price, "tp": c["tp"], "sl": c["sl"], "score": c["score"],
-            "up_probability": c["up_probability"], "down_probability": c["down_probability"],
-            "allocation": allocation, "shares": shares, "invested_amount": invested_amount,
-            "policy_updated_at": policy.get("updated_at")})
-        state["trades_today"] = int(state.get("trades_today", 0)) + 1
-        counts = state.setdefault("trades_by_ticker_today", {})
-        counts[ticker] = ticker_count + 1
-        active.add(ticker)
-        selected.append(c)
-    return selected
+def scan(policy):
+    nik,model=make_nikkei(),load_model(); cand=[]; fallback=[]; scanned=0
+    if model is None or nik is None: raise RuntimeError('日経またはAIモデル取得失敗')
+    cols=list(getattr(model,'feature_names_in_',[]))
+    for t in TICKERS:
+        d=download(t)
+        if d is None or len(d)<150: continue
+        scanned+=1; x=features(d,nik).dropna(subset=cols)
+        if x.empty: continue
+        try:
+            last=x.iloc[-1]; pr=model.predict_proba(x.iloc[-1:])[0]; cl=list(model.classes_)
+            if not all(c in cl for c in (0,1,2)): continue
+            down,up,flat=float(pr[cl.index(0)])*100,float(pr[cl.index(2)])*100,float(pr[cl.index(1)])*100
+            ls,ss=directional_score(last,up/100,down/100); a=float(atr(d).iloc[-1]);
+            if not np.isfinite(a) or a<=0:continue
+            intr=download_5m(t); price=float(d['Close'].iloc[-1])
+            if intr is not None and not intr.empty: price=float(intr['Close'].iloc[-1])
+            nlast=nik.reindex(x.index).ffill().iloc[-1]
+            reason=trade_reasons(last,up,down,nlast)
+            base={'ticker':t,'company':NAMES.get(t,t),'price':price,'up_probability':up,'down_probability':down,'flat_probability':flat,'data_date':str(x.index[-1].date())}
+            for direction,score in [('BUY',float(ls)),('SHORT',float(ss))]:
+                item=dict(base); item.update(direction=direction,score=score,tp=price+(a*policy['atr_tp_multiplier'] if direction=='BUY' else -a*policy['atr_tp_multiplier']),sl=max(.01,price-a*policy['atr_sl_multiplier']) if direction=='BUY' else price+a*policy['atr_sl_multiplier'],buy_reason=reason)
+                fallback.append(item)
+                ok=(up>=policy['up_threshold'] and up>down and flat<50 and score>=policy['min_score_for_buy']) if direction=='BUY' else (SHORT_ENABLED and down>=policy['up_threshold'] and down>up and flat<50 and score>=policy['min_score_for_buy'])
+                if ok:cand.append(item)
+        except Exception as e: print(t,e)
+    cand.sort(key=lambda z:(z['score'],max(z['up_probability'],z['down_probability'])),reverse=True); fallback.sort(key=lambda z:(z['score'],max(z['up_probability'],z['down_probability'])),reverse=True)
+    return (cand or fallback)[:TOP_N],scanned
 
+def open_positions(s,policy,cands,today):
+    active={p['ticker'] for p in s['positions']}; out=[]
+    for c in cands:
+        if c['ticker'] in active or s.get('trades_today',0)>=MAX_TOTAL_TRADES_PER_DAY or len(s['positions'])>=TOP_N:continue
+        cnt=int(s.get('trades_by_ticker_today',{}).get(c['ticker'],0));
+        if cnt>=MAX_TRADES_PER_TICKER_PER_DAY:continue
+        budget=float(s['capital'])/TOP_N; price=float(c['price']); shares=int(budget//price) if price>0 else 0
+        if shares<=0:continue
+        invested=shares*price
+        s['positions'].append({**c,'entry_date':today,'entry_time':datetime.now(TZ).strftime('%H:%M'),'entry_price':price,'shares':shares,'invested_amount':invested,'allocation':1/TOP_N,'policy_updated_at':policy.get('updated_at'),'current_price':price,'unrealized_pnl':0.0})
+        s['trades_today']=int(s.get('trades_today',0))+1; s.setdefault('trades_by_ticker_today',{})[c['ticker']]=cnt+1; active.add(c['ticker']); out.append(c)
+    return out
+
+def mark_and_close(s,now):
+    remaining=[]; msgs=[]
+    for p in s['positions']:
+        d=download_5m(p['ticker'])
+        if d is None or d.empty:remaining.append(p);continue
+        bars=d[d.index.date==now.date()]; last=float(bars['Close'].iloc[-1]) if not bars.empty else float(p['entry_price']); p['current_price']=last
+        ep=float(p['entry_price']); sh=int(p.get('shares',0)); direction=p.get('direction','BUY'); unreal=((last-ep)*sh if direction=='BUY' else (ep-last)*sh)-ep*sh*FEE_RATE-last*sh*FEE_RATE; p['unrealized_pnl']=unreal
+        exit_price=reason=None
+        for ts,b in bars.iterrows():
+            if ts.time()<dtime(9,0):continue
+            hi,lo=float(b['High']),float(b['Low'])
+            if direction=='BUY':
+                if lo<=p['sl']:exit_price,reason=float(p['sl']),'SL'
+                elif hi>=p['tp']:exit_price,reason=float(p['tp']),'TP'
+            else:
+                if hi>=p['sl']:exit_price,reason=float(p['sl']),'SL'
+                elif lo<=p['tp']:exit_price,reason=float(p['tp']),'TP'
+            if reason or ts.time()>=FORCED_EXIT:
+                if not reason:exit_price,reason=float(b['Close']),'EOD'
+                break
+        if exit_price is None:remaining.append(p);continue
+        gross=(exit_price-ep)*sh if direction=='BUY' else (ep-exit_price)*sh; pnl=gross-(ep+exit_price)*sh*FEE_RATE; s['capital']=float(s['capital'])+pnl; exit_value=exit_price*sh; total=s['capital']
+        append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':str(now.date()),'exit_time':now.strftime('%H:%M'),'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason','')})
+        msgs.append(f"{'🟢' if pnl>=0 else '🔴'} 決済｜{p['company']}（{p['ticker']}）｜{direction}\n決済価格 {exit_price:,.1f}円｜{sh:,}株｜投資額 {p['invested_amount']:,.0f}円\n確定損益 {pnl:+,.0f}円｜💰総資産 {total:,.0f}円｜開始100万円から {total-INITIAL_CAPITAL:+,.0f}円")
+    s['positions']=remaining; s['peak']=max(float(s.get('peak',s['capital'])),float(s['capital'])); return msgs
 
 def main():
-    now = datetime.now(TZ)
-    today = now.strftime("%Y-%m-%d")
-    policy = load_policy()
-    state = load_state()
-    reset_daily_counter(state, today)
-    save_state(state)
-
-    webhook = os.getenv("DISCORD_WEBHOOK", "").strip()
-    if not webhook:
-        print("⚠️ DISCORD_WEBHOOK 未設定。GitHub Actions Secrets に DISCORD_WEBHOOK を登録してください。")
-
-    market_open = now.weekday() < 5 and dtime(9, 0) <= now.time() <= dtime(15, 30)
-    if not market_open:
-        msg = f"🤖 PROFIT LOOP｜待機\n📅 {today} {now:%H:%M} JST\n市場時間外のため売買スキャンは実行していません。\n🔗 Policy: {policy['status']}｜更新 {policy.get('updated_at')}\n⚠️ 実注文なし"
-        discord_send(msg)
-        print(msg)
-        return
-
-    start_capital = float(state.get("daily_start_capital", state.get("capital", INITIAL_CAPITAL)))
-    closed = close_positions(state, policy, now)
-    daily_return = ((float(state.get("capital", 0.0)) / start_capital) - 1.0) * 100.0 if start_capital else 0.0
-    if daily_return <= -1.5:
-        save_state(state)
-        capital_now = float(state["capital"])
-        cumulative_return_pct = (capital_now / INITIAL_CAPITAL - 1.0) * 100.0
-        gained_yen = capital_now - INITIAL_CAPITAL
-        msg = (f"🛑 PROFIT LOOP｜日次損失上限\n📅 {today} {now:%H:%M} JST\n"
-               f"日次損益 {daily_return:+.2f}%（{capital_now - start_capital:+,.0f}円）｜新規停止\n"
-               f"💰 総資産 {capital_now:,.0f}円｜累積利益率 {cumulative_return_pct:+.2f}%｜開始100万円から {gained_yen:+,.0f}円\n⚠️ 実注文なし")
-        discord_send(msg); print(msg); return
-
-    candidates, scanned = scan_candidates(policy)
-    opened = open_positions(state, policy, candidates, today)
-    save_state(state)
-    monthly = update_monthly()
-
-    capital_now = float(state["capital"])
-    daily_pnl_yen = capital_now - start_capital
-    cumulative_return_pct = (capital_now / INITIAL_CAPITAL - 1.0) * 100.0
-    gained_yen = capital_now - INITIAL_CAPITAL
-    top_text = "\n".join(
-        f"{i}. {'買い' if p['direction'] == 'BUY' else '空売り'} {p['company']}（{p['ticker']}）｜{p.get('shares', 0):,}株｜投資額 {p.get('invested_amount', 0):,.0f}円｜買値/売値 {p['entry_price']:,.1f}円｜現在評価額 {p.get('shares', 0) * p['entry_price']:,.0f}円｜利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}"
-        for i, p in enumerate(state["positions"], 1)) or "条件成立銘柄なし"
-    counts = ", ".join(f"{k}:{v}回" for k, v in sorted(state.get("trades_by_ticker_today", {}).items())) or "なし"
-    if not monthly:
-        month_text = "確定取引なし"
-    else:
-        monthly_return_pct = float(monthly["pnl"]) / INITIAL_CAPITAL * 100.0
-        month_text = f"今月利益率 {monthly_return_pct:+.2f}%（損益 {monthly['pnl']:+,.0f}円）｜取引 {int(monthly['trades'])}件｜参考勝率 {monthly['win_rate_pct']:.1f}%"
-    profit_text = f"📈 本日損益 {daily_pnl_yen:+,.0f}円（{daily_return:+.2f}%）\n📊 累積利益率 {cumulative_return_pct:+.2f}%｜開始100万円から {gained_yen:+,.0f}円"
-    mode_text = "承認済み" if str(policy.get("status", "")).upper() == "APPROVED" else "審査中｜紙取引専用"
-    msg = (
-        "🤖 利益優先ループ｜TOP10 買い/空売り 5分足ペーパートレード\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"📅 {today} {now:%H:%M} JST\n⚠️ 実注文なし\n\n"
-        f"🔗 運用状態: {mode_text}｜更新 {policy.get('updated_at')}\n"
-        f"取引方向: {'買い + 空売り' if SHORT_ENABLED else '買いのみ'}｜判定条件: 上昇/下落確率≥{policy['up_threshold']:.0f}% / AIスコア≥{policy['min_score_for_buy']:.0f}% / 利確 {policy['atr_tp_multiplier']:.2f}ATR / 損切 {policy['atr_sl_multiplier']:.2f}ATR\n"
-        f"対象430銘柄｜データ取得成功 {scanned}｜候補 {len(candidates)}｜今回の新規取引 {len(opened)}件\n"
-        f"🔁 取引上限：同一銘柄 最大{MAX_TRADES_PER_TICKER_PER_DAY}回/日｜全体 最大{MAX_TOTAL_TRADES_PER_DAY}回/日\n"
-        f"📊 本日の銘柄別取引回数：{counts}\n\n🏆 保有中 TOP10\n{top_text}\n\n"
-        f"{profit_text}\n💰 総資産 {capital_now:,.0f}円｜最大DD {state['max_dd']:.2f}%\n"
-        f"📅 {month_text}\n\n"
-        "① AIスキャン → ② 買い/空売り方向判定 → ③ 利益優先ランキング → ④ TOP10ペーパートレード → ⑤ 決済/再エントリー → ⑥ 月間損益")
-    for m in closed:
-        print(m)
-    print(msg)
-    discord_send(msg, required=True)
-
-
-if __name__ == "__main__":
-    main()
+    now=datetime.now(TZ); today=now.strftime('%Y-%m-%d'); policy=load_policy(); s=load_state(); reset_daily(s,today)
+    if not(now.weekday()<5 and dtime(9,0)<=now.time()<=dtime(15,30)):
+        discord_send(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし'); return
+    closed=mark_and_close(s,now); cands,scanned=scan(policy); opened=open_positions(s,policy,cands,today); save_state(s)
+    equity=float(s['capital'])+sum(float(p.get('unrealized_pnl',0)) for p in s['positions']); daily=equity-float(s.get('daily_start_capital',INITIAL_CAPITAL)); cum=(equity/INITIAL_CAPITAL-1)*100
+    rows=[]
+    for i,p in enumerate(s['positions'],1):rows.append(f"{i}. {'買い' if p['direction']=='BUY' else '空売り'} {p['company']}（{p['ticker']}）\n   {p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円｜取得 {p['entry_price']:,.1f}円｜現在値 {p['current_price']:,.1f}円｜含み損益 {p['unrealized_pnl']:+,.0f}円\n   利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}\n   🧠 買った基準: {p.get('buy_reason','')}")
+    msg=('🤖 利益優先ループ｜TOP10 ペーパートレード\n━━━━━━━━━━━━━━━━━━\n'
+         f'📅 {today} {now:%H:%M} JST｜⚠️ 実注文なし\n対象430銘柄｜取得成功 {scanned}｜候補 {len(cands)}｜新規 {len(opened)}件\n'
+         f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}%｜TP {policy["atr_tp_multiplier"]:.2f}ATR｜SL {policy["atr_sl_multiplier"]:.2f}ATR\n\n🏆 保有中\n'+('\n'.join(rows) if rows else '保有なし')+
+         f'\n\n📈 本日損益 {daily:+,.0f}円\n💰 総資産 {equity:,.0f}円｜開始100万円から {equity-INITIAL_CAPITAL:+,.0f}円｜累積利益率 {cum:+.2f}%')
+    for m in closed:print(m)
+    print(msg); discord_send(msg,required=True)
+if __name__=='__main__':main()
