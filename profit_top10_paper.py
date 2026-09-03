@@ -381,7 +381,7 @@ def main():
     cumulative_return_pct = (capital_now / INITIAL_CAPITAL - 1.0) * 100.0
     gained_yen = capital_now - INITIAL_CAPITAL
     top_text = "\n".join(
-        f"{i}. {p['direction']} {p['ticker']}｜score {p['score']:.1f}｜UP {p['up_probability']:.1f}% DOWN {p['down_probability']:.1f}%｜entry {p['entry_price']:,.1f}｜TP {p['tp']:,.1f}｜SL {p['sl']:,.1f}"
+        f"{i}. {'買い' if p['direction'] == 'BUY' else '空売り'} {p['ticker']}｜AIスコア {p['score']:.1f}｜上昇確率 {p['up_probability']:.1f}%｜下落確率 {p['down_probability']:.1f}%｜買値/売値 {p['entry_price']:,.1f}｜利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}"
         for i, p in enumerate(state["positions"], 1)) or "条件成立銘柄なし"
     counts = ", ".join(f"{k}:{v}回" for k, v in sorted(state.get("trades_by_ticker_today", {}).items())) or "なし"
     if not monthly:
@@ -390,19 +390,19 @@ def main():
         monthly_return_pct = float(monthly["pnl"]) / INITIAL_CAPITAL * 100.0
         month_text = f"今月利益率 {monthly_return_pct:+.2f}%（損益 {monthly['pnl']:+,.0f}円）｜取引 {int(monthly['trades'])}件｜参考勝率 {monthly['win_rate_pct']:.1f}%"
     profit_text = f"📈 本日損益 {daily_pnl_yen:+,.0f}円（{daily_return:+.2f}%）\n📊 累積利益率 {cumulative_return_pct:+.2f}%｜開始100万円から {gained_yen:+,.0f}円"
-    mode_text = "APPROVED" if str(policy.get("status", "")).upper() == "APPROVED" else "PENDING｜PAPER専用"
+    mode_text = "承認済み" if str(policy.get("status", "")).upper() == "APPROVED" else "審査中｜紙取引専用"
     msg = (
-        "🤖 PROFIT LOOP｜TOP10 LONG/SHORT 5分足ペーパートレード\n"
+        "🤖 利益優先ループ｜TOP10 買い/空売り 5分足ペーパートレード\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"📅 {today} {now:%H:%M} JST\n⚠️ 実注文なし\n\n"
-        f"🔗 Policy: {mode_text}｜更新 {policy.get('updated_at')}\n"
-        f"方向: {'BUY + SHORT' if SHORT_ENABLED else 'BUY only'}｜条件: UP/DOWN≥{policy['up_threshold']:.0f}% / SCORE≥{policy['min_score_for_buy']:.0f}% / TP {policy['atr_tp_multiplier']:.2f}ATR / SL {policy['atr_sl_multiplier']:.2f}ATR\n"
-        f"430銘柄対象｜取得成功 {scanned}｜候補 {len(candidates)}｜今回新規 {len(opened)}\n"
-        f"🔁 同一銘柄 最大{MAX_TRADES_PER_TICKER_PER_DAY}回/日｜全体 最大{MAX_TOTAL_TRADES_PER_DAY}回/日\n"
-        f"📊 本日銘柄別取引回数: {counts}\n\n🏆 保有TOP10\n{top_text}\n\n"
+        f"🔗 運用状態: {mode_text}｜更新 {policy.get('updated_at')}\n"
+        f"取引方向: {'買い + 空売り' if SHORT_ENABLED else '買いのみ'}｜判定条件: 上昇/下落確率≥{policy['up_threshold']:.0f}% / AIスコア≥{policy['min_score_for_buy']:.0f}% / 利確 {policy['atr_tp_multiplier']:.2f}ATR / 損切 {policy['atr_sl_multiplier']:.2f}ATR\n"
+        f"対象430銘柄｜データ取得成功 {scanned}｜候補 {len(candidates)}｜今回の新規取引 {len(opened)}件\n"
+        f"🔁 取引上限：同一銘柄 最大{MAX_TRADES_PER_TICKER_PER_DAY}回/日｜全体 最大{MAX_TOTAL_TRADES_PER_DAY}回/日\n"
+        f"📊 本日の銘柄別取引回数：{counts}\n\n🏆 保有中 TOP10\n{top_text}\n\n"
         f"{profit_text}\n💰 仮想資産 {capital_now:,.0f}円｜最大DD {state['max_dd']:.2f}%\n"
         f"📅 {month_text}\n\n"
-        "① AIスキャン → ② LONG/SHORT方向判定 → ③ 利益優先ランキング → ④ TOP10ペーパー → ⑤ 決済/再エントリー → ⑥ 月間損益")
+        "① AIスキャン → ② 買い/空売り方向判定 → ③ 利益優先ランキング → ④ TOP10ペーパートレード → ⑤ 決済/再エントリー → ⑥ 月間損益")
     for m in closed:
         print(m)
     print(msg)
