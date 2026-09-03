@@ -2,12 +2,18 @@ import numpy as np
 
 import profit_top10_paper as app
 
-
 _original_scan_candidates = app.scan_candidates
 
 
 def scan_candidates_profit_first(policy):
-    candidates, scanned = _original_scan_candidates(policy)
+    result = _original_scan_candidates(policy)
+    # profit_top10_paper.main() expects (candidates, scanned), while the
+    # progressive runtime may return an optional third selection-level value.
+    # Normalize both shapes here so the wrapper cannot reintroduce the
+    # "too many values to unpack" failure.
+    if not isinstance(result, tuple) or len(result) < 2:
+        raise RuntimeError("scan_candidates returned an invalid result")
+    candidates, scanned = result[0], result[1]
     for z in candidates:
         up = float(z.get("up_probability", 0.0)) / 100.0
         down = float(z.get("down_probability", 0.0)) / 100.0
