@@ -2,10 +2,35 @@
   "capital": 1000000.0,
   "peak": 1000000.0,
   "max_dd": 0.0,
-  "positions": [],
+  "positions": [
+    {
+      "entry_date": "2026-09-03",
+      "entry_time": "14:31",
+      "ticker": "4812.T",
+      "company": "4812.T",
+      "direction": "BUY",
+      "entry_price": 2852.0,
+      "tp": 2987.957753983581,
+      "sl": 2784.0211230082095,
+      "score": 60.68054668383672,
+      "up_probability": 41.91354081705207,
+      "down_probability": 22.81542255408308,
+      "allocation": 1.0,
+      "policy_updated_at": "2026-08-29T00:00:00",
+      "selection_mode": "progressive_level",
+      "selection_level": 5,
+      "top10_rank": 1,
+      "market_regime": "bearish",
+      "regime_preferred": false,
+      "profit_ev_pct": 0.6135,
+      "profit_priority": 41.5897
+    }
+  ],
   "trade_count_date": "2026-09-03",
-  "trades_today": 0,
-  "trades_by_ticker_today": {},
+  "trades_today": 1,
+  "trades_by_ticker_today": {
+    "4812.T": 1
+  },
   "daily_start_capital": 1000000.0,
   "last_exit_by_ticker": {}
 }
