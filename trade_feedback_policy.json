@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_at": "2026-09-03",
+  "generated_at": "2026-09-04",
   "source": "directional_paper_history.csv",
   "leakage_guard": "excluded last 90 days",
   "lookback_days": 180,
