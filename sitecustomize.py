@@ -1,5 +1,8 @@
 """GitHub Actions 起動時に自動ロードされる軽量なDiscord表示補助。"""
 import re
+import os
+import subprocess
+import sys
 
 try:
     import requests
@@ -64,3 +67,10 @@ try:
 except Exception:
     # 表示補助が失敗してもAI本体を止めない。
     pass
+
+# The production paper workflow historically invokes paper_fast_entrypoint.py.
+# Route only the normal execution of that legacy command to the forced 1/3/5-day
+# TOP1 trader; keep --analysis-only untouched for the pre-09:30 analysis phase.
+if os.path.basename(sys.argv[0]) == "paper_fast_entrypoint.py" and "--analysis-only" not in sys.argv:
+    rc = subprocess.call([sys.executable, "multi_hold_paper.py", *sys.argv[1:]])
+    os._exit(rc)
