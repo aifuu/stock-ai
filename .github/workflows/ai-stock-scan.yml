@@ -9,8 +9,7 @@ on:
 permissions:
   contents: write
 
-# Paper trading state is valuable only if every run can see the previous run.
-# Do not cancel an active ledger-writing run; persistence has priority over freshness.
+# Paper trading state must survive between 5-minute runs.
 concurrency:
   group: stock-ai-paper-trading
   cancel-in-progress: false
@@ -18,7 +17,7 @@ concurrency:
 jobs:
   profit-loop-top10:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -91,8 +90,7 @@ jobs:
           if status not in ('APPROVED','PENDING'):
               raise SystemExit(f'❌ 不正なpolicy status: {status}')
           print(f'✅ paper policy mode = {status}')
-          if status == 'PENDING':
-              print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
+          if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
 
       - name: Pre-09:30 analysis/re-score (paper-only, NO TRADE)
@@ -113,11 +111,10 @@ jobs:
           from datetime import datetime
           from zoneinfo import ZoneInfo
           import subprocess
-          now = datetime.now(ZoneInfo('Asia/Tokyo'))
-          minutes = now.hour * 60 + now.minute
+          now=datetime.now(ZoneInfo('Asia/Tokyo')); minutes=now.hour*60+now.minute
           if minutes < 570:
               print(f'▶ 09:30前: 分析・TOP10再評価のみ実行 {now:%H:%M JST}')
-              subprocess.run(['python', 'paper_fast_entrypoint.py', '--analysis-only'], check=True)
+              subprocess.run(['python','paper_fast_entrypoint.py','--analysis-only'],check=True)
           else:
               print(f'⏭ 09:30以降: pre-09:30分析フェーズをスキップ {now:%H:%M JST}')
           PY
@@ -139,8 +136,7 @@ jobs:
           python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
-          now = datetime.now(ZoneInfo('Asia/Tokyo'))
-          minutes = now.hour * 60 + now.minute
+          now=datetime.now(ZoneInfo('Asia/Tokyo')); minutes=now.hour*60+now.minute
           if minutes < 570:
               print(f'⏸ 09:30前のためペーパートレード開始を待機: {now:%H:%M JST}')
               raise SystemExit(0)
@@ -151,16 +147,37 @@ jobs:
           PY
           python paper_fast_entrypoint.py
 
+      # IMPORTANT: paper_fast_entrypoint.py manages the TOP10 loop, but it does
+      # not create multi_hold_paper_state.json. Run the independent 1/3/5-day
+      # ledger explicitly so the state checked below actually exists.
+      - name: Run multi-hold 1/3/5-day paper ledger (paper-only)
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+          AI_INITIAL_CAPITAL: '1000000'
+          INTRADAY_FEE_RATE: '0.00055'
+          PAPER_TRADE_MODE: '1'
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now=datetime.now(ZoneInfo('Asia/Tokyo')); minutes=now.hour*60+now.minute
+          if minutes < 570 or minutes >= 930:
+              print(f'⏸ 取引時間外のためmulti-hold売買処理を実行しません: {now:%H:%M JST}')
+              raise SystemExit(0)
+          print(f'▶ multi-hold 1/3/5日ペーパートレードを実行 {now:%H:%M JST}')
+          PY
+          python multi_hold_paper.py
+
       - name: Verify TOP10 paper state
         if: github.event_name != 'schedule' || github.event.schedule != '30 23 * * 1-5'
         run: |
           python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
-          now = datetime.now(ZoneInfo('Asia/Tokyo'))
-          if now.hour * 60 + now.minute < 570:
-              print(f'⏸ 09:30前なのでstate検証をスキップ: {now:%H:%M JST}')
-              raise SystemExit(0)
+          now=datetime.now(ZoneInfo('Asia/Tokyo'))
+          if now.hour*60+now.minute < 570:
+              print(f'⏸ 09:30前なのでstate検証をスキップ: {now:%H:%M JST}'); raise SystemExit(0)
           import json
           from pathlib import Path
           p=Path('profit_top10_paper_state.json')
@@ -180,16 +197,14 @@ jobs:
           python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
-          now = datetime.now(ZoneInfo('Asia/Tokyo'))
-          if now.hour * 60 + now.minute < 570:
-              print(f'⏸ 09:30前なのでmulti-hold state検証をスキップ: {now:%H:%M JST}')
-              raise SystemExit(0)
+          now=datetime.now(ZoneInfo('Asia/Tokyo'))
+          if now.hour*60+now.minute < 570:
+              print(f'⏸ 09:30前なのでmulti-hold state検証をスキップ: {now:%H:%M JST}'); raise SystemExit(0)
           import json
           from pathlib import Path
           p=Path('multi_hold_paper_state.json')
           if not p.exists(): raise SystemExit('❌ 09:30以降なのにmulti-hold stateがありません')
-          s=json.loads(p.read_text(encoding='utf-8'))
-          positions=s.get('positions',[])
+          s=json.loads(p.read_text(encoding='utf-8')); positions=s.get('positions',[])
           if len(positions)>3: raise SystemExit(f'❌ 保有バケット超過: {len(positions)}')
           tickers={x.get('ticker') for x in positions}
           if len(tickers)>1: raise SystemExit(f'❌ 同一銘柄ルール違反: {tickers}')
@@ -234,7 +249,7 @@ jobs:
               exit 0
             fi
             git rebase --abort || true
-            sleep $((i * 3))
+            sleep $((i*3))
           done
           echo '❌ paper ledger push失敗'
           exit 1
