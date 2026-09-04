@@ -20,6 +20,7 @@ INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000'))
 HOLDS=(1,3,5)
 WEBHOOK_URL=os.getenv('DISCORD_WEBHOOK')
 MARKET_CLOSE_MINUTES=15*60+35
+MIN_AVG_VOLUME=300_000
 
 def now(): return datetime.now(TZ)
 def today(): return now().date().isoformat()
@@ -82,11 +83,36 @@ def close_due(s):
     append(closed)
     return closed
 
+def _passes_liquidity_and_trend(ticker, direction):
+    """Final hard gate: average volume and direction-specific daily trend."""
+    d=daily_bars(ticker)
+    if d is None or len(d)<75:return False, None
+    close=pd.to_numeric(d['Close'],errors='coerce').dropna()
+    volume=pd.to_numeric(d['Volume'],errors='coerce').dropna()
+    if len(close)<75 or len(volume)<20:return False, None
+    price=float(close.iloc[-1]); ma25=float(close.rolling(25).mean().iloc[-1]); ma75=float(close.rolling(75).mean().iloc[-1]); ma25_prev=float(close.rolling(25).mean().iloc[-6]); avg20=float(volume.tail(20).mean())
+    if avg20<MIN_AVG_VOLUME:return False, None
+    uptrend=price>ma25>ma75 and ma25>ma25_prev
+    downtrend=price<ma25<ma75 and ma25<ma25_prev
+    if direction=='BUY' and not uptrend:return False, None
+    if direction=='SHORT' and not downtrend:return False, None
+    return True, d
+
 def choose_top1():
     policy=paper.loop.app.load_policy()
     candidates,_=paper.scan_progressive_with_prefilter(policy)
     if not candidates: raise RuntimeError('TOP1候補が生成されませんでした')
-    return candidates[0]
+    # The scanner may return a candidate from an older/non-liquid pool.
+    # Re-check candidates in score order and never accept a low-volume or
+    # direction-mismatched trend. No volume-surge or turnover gate is used.
+    for c in candidates:
+        ticker=str(c.get('ticker') or c.get('symbol') or '')
+        direction=str(c.get('direction','BUY')).upper()
+        if direction not in ('BUY','SHORT'):continue
+        ok,_=_passes_liquidity_and_trend(ticker,direction)
+        if ok:
+            return c
+    raise RuntimeError('TOP1候補はあるが、平均出来高30万株以上かつ方向一致トレンドを満たす銘柄がありません')
 
 def open_daily(s):
     d=today()
@@ -101,6 +127,8 @@ def open_daily(s):
     if not ticker: raise RuntimeError('TOP1 ticker missing')
     direction=str(c.get('direction','BUY')).upper()
     if direction not in ('BUY','SHORT'): direction='BUY'
+    ok,df=daily_bars(ticker) and _passes_liquidity_and_trend(ticker,direction)
+    if not ok: raise RuntimeError(f'{ticker}: final liquidity/trend gate failed')
     df=daily_bars(ticker)
     if df is None or df.empty: raise RuntimeError(f'{ticker}: price download failed')
     entry=float(df.iloc[-1]['Close'])
