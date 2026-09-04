@@ -27,16 +27,14 @@
       "profit_priority": 41.5897,
       "shares": 350,
       "invested_amount": 998200.0,
-      "current_price": 2852.0,
-      "unrealized_pnl": 0.0,
+      "current_price": 2853.0,
+      "unrealized_pnl": -748.2125,
       "buy_reason": "前回選定時の買い理由を保持"
     }
   ],
-  "trade_count_date": "2026-09-03",
-  "trades_today": 1,
-  "trades_by_ticker_today": {
-    "4812.T": 1
-  },
+  "trade_count_date": "2026-09-04",
+  "trades_today": 0,
+  "trades_by_ticker_today": {},
   "daily_start_capital": 1000000.0,
   "last_exit_by_ticker": {}
 }
