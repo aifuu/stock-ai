@@ -102,9 +102,6 @@ def choose_top1():
     policy=paper.loop.app.load_policy()
     candidates,_=paper.scan_progressive_with_prefilter(policy)
     if not candidates: raise RuntimeError('TOP1候補が生成されませんでした')
-    # The scanner may return a candidate from an older/non-liquid pool.
-    # Re-check candidates in score order and never accept a low-volume or
-    # direction-mismatched trend. No volume-surge or turnover gate is used.
     for c in candidates:
         ticker=str(c.get('ticker') or c.get('symbol') or '')
         direction=str(c.get('direction','BUY')).upper()
@@ -127,10 +124,8 @@ def open_daily(s):
     if not ticker: raise RuntimeError('TOP1 ticker missing')
     direction=str(c.get('direction','BUY')).upper()
     if direction not in ('BUY','SHORT'): direction='BUY'
-    ok,df=daily_bars(ticker) and _passes_liquidity_and_trend(ticker,direction)
+    ok,df=_passes_liquidity_and_trend(ticker,direction)
     if not ok: raise RuntimeError(f'{ticker}: final liquidity/trend gate failed')
-    df=daily_bars(ticker)
-    if df is None or df.empty: raise RuntimeError(f'{ticker}: price download failed')
     entry=float(df.iloc[-1]['Close'])
     company=c.get('company') or c.get('name') or ticker
     for h in HOLDS:
