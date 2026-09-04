@@ -1,0 +1,43 @@
+name: Daily Movers Root Cause Analysis
+
+on:
+  # JST 16:00（UTC 07:00）: 日中取引終了後に、その日の値動きを分析
+  schedule:
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance pandas numpy requests
+
+      - name: Run daily movers root-cause analysis
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DAILY_MOVERS_TOP_N: '10'
+          DAILY_MOVERS_MIN_AVG_VOLUME: '300000'
+        run: python daily_movers_root_cause.py
+
+      - name: Syntax check
+        run: python -m py_compile daily_movers_root_cause.py
+
+      - name: Commit daily analysis history
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add daily_movers_root_cause.csv daily_movers_root_cause_history.csv
+          git diff --cached --quiet || git commit -m 'Update daily movers root-cause analysis'
+          git push
