@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Forced daily TOP1 paper trading with independent 1/3/5 business-day hold buckets.
 
-Every business day after 09:30 exactly one TOP1 is selected and all three buckets
-(1d, 3d, 5d) enter the SAME ticker/direction. No post-selection gate may cancel
-the entry. Each bucket is independent and exits at its target business-day close.
+Every business day after 09:30 exactly one TOP1 is selected. The daily TOP1 is
+used for any hold bucket that is currently empty. The 1d bucket therefore trades
+every business day; the 3d/5d buckets wait until their previous position is
+fully closed, then use that day's TOP1 (no separate re-selection). TP/SL exits
+are handled by the same entry conditions when supplied by the selected signal;
+the hold period is the maximum target close.
 """
 import json, os
 from datetime import datetime
@@ -119,6 +122,8 @@ def open_daily(s):
     if now().weekday()>=5:
         print('⏭ 土日なので取引しません')
         return
+
+    # 銘柄選定は毎日1回だけ。3日/5日枠のための別選定は行わない。
     c=choose_top1()
     ticker=str(c.get('ticker') or c.get('symbol') or '')
     if not ticker: raise RuntimeError('TOP1 ticker missing')
@@ -128,11 +133,30 @@ def open_daily(s):
     if not ok: raise RuntimeError(f'{ticker}: final liquidity/trend gate failed')
     entry=float(df.iloc[-1]['Close'])
     company=c.get('company') or c.get('name') or ticker
+
+    # その日のTOP1を、空いている保有枠にだけ入れる。
+    # 1日枠は毎営業日必ず空くため毎日売買。
+    # 3日/5日枠は前ポジションの決済後、その決済日のTOP1を使う。
+    active_holds={int(p.get('hold_days',0)) for p in s['positions']}
+    opened=[]
     for h in HOLDS:
-        s['positions'].append({'entry_date':d,'ticker':ticker,'company':company,'direction':direction,'entry_price':entry,'hold_days':h,'exit_date':target_date(d,h),'score':float(c.get('score',0) or 0),'up_probability':float(c.get('up_probability',0) or 0),'down_probability':float(c.get('down_probability',0) or 0),'forced_entry':True})
-    s['last_entry_date']=d; s['trades_today']=3
+        if h in active_holds:
+            continue
+        p={'entry_date':d,'ticker':ticker,'company':company,'direction':direction,'entry_price':entry,'hold_days':h,'exit_date':target_date(d,h),'score':float(c.get('score',0) or 0),'up_probability':float(c.get('up_probability',0) or 0),'down_probability':float(c.get('down_probability',0) or 0),'forced_entry':True}
+        s['positions'].append(p)
+        opened.append(h)
+
+    # 1日枠が毎日成立していることを状態上も保証。
+    if 1 not in opened:
+        raise RuntimeError('1日枠が空いていないため、本日の毎日売買を成立できません')
+
+    s['last_entry_date']=d
+    s['trades_today']=len(opened)
+    opened_text='・'.join(f'{h}日' for h in opened)
+    waiting=[h for h in HOLDS if h not in opened]
+    waiting_text=('｜保有中で待機: '+'・'.join(f'{h}日枠' for h in waiting)) if waiting else ''
     msg=(f'🔥 強制TOP1成立｜{company} ({ticker})｜{direction}\n'
-         f'同一銘柄を1日・3日・5日の3バケットへ必ず登録\n'
+         f'本日のTOP1を空いている枠へ登録: {opened_text}{waiting_text}\n'
          f'Entry {entry:.2f}｜Score {float(c.get("score",0) or 0):.1f}｜UP {float(c.get("up_probability",0) or 0):.1f}%｜DOWN {float(c.get("down_probability",0) or 0):.1f}%')
     print(msg); notify(msg)
 
