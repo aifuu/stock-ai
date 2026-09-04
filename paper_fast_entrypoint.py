@@ -11,10 +11,12 @@ import run_profit_loop as loop
 import daily_directional_top1 as directional
 
 DETAIL_UNIVERSE = 50
-# Keep the real/base scanner separately.  Do not overwrite run_profit_loop._original_scan
-# because scan_candidates_progressive() resolves that module-global name at runtime.
 _base_scan = loop._original_scan
 _cache = {"result": None}
+
+# Provenance for the current paper run. Persisted into each closed-trade ledger row.
+PAPER_MODEL_TYPE = "validated_model"
+PAPER_FEATURE_SOURCE = "futures"
 
 
 class PaperFallbackDirectionalModel:
@@ -53,18 +55,22 @@ _original_features = loop.app.features
 
 
 def _load_model_for_paper():
+    global PAPER_MODEL_TYPE
     try:
         model = _original_load_model()
         if model is not None:
-            print("✅ directional AI model loaded")
+            PAPER_MODEL_TYPE = "validated_model"
+            print("✅ directional AI model loaded | provenance=validated_model")
             return model
     except Exception as exc:
         print(f"⚠️ directional AIモデル取得失敗: {exc}")
-    print("🟠 PAPER FALLBACK: directional_model.pkl が未準備/不一致 → 紙取引専用モデルで継続")
+    PAPER_MODEL_TYPE = "fallback"
+    print("🟠 PAPER FALLBACK: directional_model.pkl が未準備/不一致 → 紙取引専用モデルで継続 | provenance=fallback")
     return PaperFallbackDirectionalModel()
 
 
 def _features_for_paper(df, nikkei, futures_df=None):
+    global PAPER_FEATURE_SOURCE
     x = _original_features(df, nikkei, futures_df)
     if x is None:
         return x
@@ -75,12 +81,61 @@ def _features_for_paper(df, nikkei, futures_df=None):
         x["future_ma5"] = 0.0
         x["future_rsi"] = n["rsi"].fillna(50.0)
         x["future_gap"] = n["ret5_raw"].fillna(0.0)
-        print("🟡 PAPER FUTURES FALLBACK: NIY=F欠損 → 日経現物由来の代替特徴量で継続")
+        PAPER_FEATURE_SOURCE = "cash_proxy"
+        print("🟡 PAPER FUTURES FALLBACK: NIY=F欠損 → 日経現物由来の代替特徴量で継続 | feature_source=cash_proxy")
+    else:
+        PAPER_FEATURE_SOURCE = "futures"
     return x
 
 
 loop.app.load_model = _load_model_for_paper
 loop.app.features = _features_for_paper
+
+
+def _append_history_with_provenance(row):
+    """Enrich the existing ledger row without changing the original writer."""
+    enriched = dict(row)
+    ticker = str(enriched.get("ticker", ""))
+    entry_date = str(enriched.get("entry_date", ""))
+    entry_time = str(enriched.get("entry_time", ""))
+    state = getattr(loop, "_ACTIVE_CLOSE_STATE", None)
+    match = None
+    if state is not None:
+        for p in state.get("positions", []):
+            if (str(p.get("ticker", "")) == ticker and
+                str(p.get("entry_date", "")) == entry_date and
+                str(p.get("entry_time", "")) == entry_time):
+                match = p
+                break
+    if match is not None:
+        enriched.update({
+            "selection_mode": match.get("selection_mode", "legacy_unknown"),
+            "selection_level": match.get("selection_level", ""),
+            "market_regime": match.get("market_regime", "unknown"),
+            "profit_ev_pct": match.get("profit_ev_pct", ""),
+            "top10_rank": match.get("top10_rank", ""),
+            "regime_preferred": match.get("regime_preferred", ""),
+        })
+    else:
+        enriched.setdefault("selection_mode", "legacy_unknown")
+        enriched.setdefault("selection_level", "")
+        enriched.setdefault("market_regime", "unknown")
+        enriched.setdefault("profit_ev_pct", "")
+        enriched.setdefault("top10_rank", "")
+        enriched.setdefault("regime_preferred", "")
+    enriched["model_type"] = PAPER_MODEL_TYPE
+    enriched["feature_source"] = PAPER_FEATURE_SOURCE
+    enriched["validation_eligible"] = bool(
+        enriched.get("selection_mode") in ("normal", "progressive_level")
+        and PAPER_MODEL_TYPE == "validated_model"
+        and PAPER_FEATURE_SOURCE == "futures"
+    )
+    return loop._ORIGINAL_APPEND_HISTORY(enriched)
+
+
+if not hasattr(loop, "_ORIGINAL_APPEND_HISTORY"):
+    loop._ORIGINAL_APPEND_HISTORY = loop.app.append_history
+loop.app.append_history = _append_history_with_provenance
 
 
 def _prefilter_universe(tickers):
@@ -126,7 +181,6 @@ def _prefilter_universe(tickers):
 
 
 def cached_scan(policy):
-    """Run the base scanner once on a fast TOP50 prefilter and cache its raw pool."""
     if _cache["result"] is None:
         base_policy = dict(policy)
         base_policy["up_threshold"] = 0.0
@@ -146,7 +200,6 @@ def cached_scan(policy):
 
 
 def scan_progressive_with_prefilter(policy):
-    """Use the cached TOP50 detail pool as the base of the existing progressive LEVEL1-6 logic."""
     previous = loop._original_scan
     loop._original_scan = cached_scan
     try:
@@ -156,7 +209,6 @@ def scan_progressive_with_prefilter(policy):
 
 
 def run_analysis_only():
-    """09:30前の分析・再評価だけを実行し、ポジションは絶対に開かない。"""
     policy = loop.app.load_policy()
     candidates, _ = scan_progressive_with_prefilter(policy)
     print("========================================")
@@ -166,14 +218,7 @@ def run_analysis_only():
         print("⚠️ 候補なし。取引は実行せず、次回スケジュールで再評価します。")
         return 0
     for i, c in enumerate(candidates[:10], 1):
-        print(
-            f"TOP{i}: {c.get('company', c.get('ticker',''))} "
-            f"({c.get('ticker','')}) | {str(c.get('direction','BUY')).upper()} | "
-            f"score={float(c.get('score',0) or 0):.1f} | "
-            f"UP={float(c.get('up_probability',0) or 0):.1f}% | "
-            f"DOWN={float(c.get('down_probability',0) or 0):.1f}% | "
-            f"EV={float(c.get('profit_ev_pct',0) or 0):+.2f}%"
-        )
+        print(f"TOP{i}: {c.get('company', c.get('ticker',''))} ({c.get('ticker','')}) | {str(c.get('direction','BUY')).upper()} | score={float(c.get('score',0) or 0):.1f} | UP={float(c.get('up_probability',0) or 0):.1f}% | DOWN={float(c.get('down_probability',0) or 0):.1f}% | EV={float(c.get('profit_ev_pct',0) or 0):+.2f}%")
     print("🛑 PRE-09:30: 売買執行なし。09:30以降に最終TOP1選定→ペーパートレードします。")
     return 0
 
