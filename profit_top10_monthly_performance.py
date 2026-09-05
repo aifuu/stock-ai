@@ -1,84 +1,125 @@
-import os
+#!/usr/bin/env python3
+"""Monthly performance aggregation for the TOP10 profit-loop paper trader.
+
+Reads profit_top10_paper_history.csv and writes profit_top10_monthly_performance.csv.
+
+Unlike multi_hold_paper (independent 1d/3d/5d capital buckets, each replayed from an
+equity of 1.0), profit_top10_paper shares ONE capital pool across up to TOP_N=10
+concurrent positions. Re-deriving equity by naively compounding each trade's own
+return_pct would double count overlapping exposure. Instead this script uses the
+`total_assets` column, which mark_and_close() already records as the real portfolio
+capital at the moment of each close - the correct ground truth for TOP10's shared pool.
+"""
+from pathlib import Path
 import pandas as pd
-import numpy as np
 
 HISTORY_FILE = "profit_top10_paper_history.csv"
 OUTPUT_FILE = "profit_top10_monthly_performance.csv"
 
+COLUMNS = [
+    "month", "trades", "wins", "win_rate_pct",
+    "profit_factor", "monthly_return_pct", "cumulative_return_pct",
+    "max_drawdown_pct",
+]
 
-def max_drawdown_pct(equity):
-    if equity.empty:
-        return 0.0
-    peak = equity.cummax()
-    dd = (equity / peak - 1.0) * 100.0
-    return float(-dd.min())
+
+def _profit_factor(pnls):
+    gains = sum(float(p) for p in pnls if float(p) > 0)
+    losses = -sum(float(p) for p in pnls if float(p) < 0)
+    if losses <= 0:
+        return float("inf") if gains > 0 else 0.0
+    return gains / losses
+
+
+def _load_closed_history():
+    path = Path(HISTORY_FILE)
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+
+    df = pd.read_csv(path)
+    required = {"exit_date", "pnl", "total_assets"}
+    if df.empty or not required.issubset(df.columns):
+        return pd.DataFrame()
+
+    df["exit_date"] = pd.to_datetime(df["exit_date"], errors="coerce")
+    if "exit_time" not in df.columns:
+        df["exit_time"] = ""
+    df["pnl"] = pd.to_numeric(df["pnl"], errors="coerce")
+    df["total_assets"] = pd.to_numeric(df["total_assets"], errors="coerce")
+    df = df.dropna(subset=["exit_date", "pnl", "total_assets"]).copy()
+
+    # 決済日時の実際の順序で並べ直す(CSVの追記順やCIリトライで前後することがあるため)。
+    df = df.sort_values(["exit_date", "exit_time"], kind="stable").reset_index(drop=True)
+
+    # append-onlyレジャーへのCIリトライによる重複行を防ぐ。
+    identity = [c for c in ("entry_date", "entry_time", "ticker", "exit_date", "exit_time") if c in df.columns]
+    if identity:
+        df = df.drop_duplicates(subset=identity, keep="last")
+        df = df.sort_values(["exit_date", "exit_time"], kind="stable").reset_index(drop=True)
+
+    return df
 
 
 def main():
-    if not os.path.exists(HISTORY_FILE):
-        pd.DataFrame(columns=[
-            "month", "trades", "wins", "win_rate_pct", "profit_factor",
-            "monthly_return_pct", "cumulative_return_pct", "max_drawdown_pct"
-        ]).to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
-        print("TOP10月次: 履歴なし")
-        return
+    df = _load_closed_history()
 
-    df = pd.read_csv(HISTORY_FILE)
-    if df.empty or "exit_date" not in df.columns or "total_assets" not in df.columns:
-        print("TOP10月次: 集計対象なし")
-        return
-
-    df["exit_date"] = pd.to_datetime(df["exit_date"], errors="coerce")
-    df["total_assets"] = pd.to_numeric(df["total_assets"], errors="coerce")
-    df["pnl"] = pd.to_numeric(df.get("pnl", 0), errors="coerce").fillna(0)
-    df = df.dropna(subset=["exit_date", "total_assets"]).sort_values("exit_date")
     if df.empty:
-        print("TOP10月次: 集計対象なし")
-        return
+        print(f"ℹ️ {HISTORY_FILE} に有効な決済レコードがありません → ヘッダのみ出力")
+        pd.DataFrame(columns=COLUMNS).to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
+        return 0
 
-    df["month"] = df["exit_date"].dt.to_period("M").astype(str)
+    df["month"] = df["exit_date"].dt.strftime("%Y-%m")
+
+    # 最初の決済直前の資産を起点(start_capital)とする。total_assetsは決済「後」の値なので
+    # 最初の行のpnlを差し引いて逆算する。
+    start_capital = float(df["total_assets"].iloc[0]) - float(df["pnl"].iloc[0])
+    if start_capital <= 0:
+        start_capital = float(df["total_assets"].iloc[0])
+
     rows = []
-    previous_assets = None
-    cumulative_base = float(df.iloc[0]["total_assets"] - df.iloc[0]["pnl"])
-    if cumulative_base <= 0:
-        cumulative_base = float(df.iloc[0]["total_assets"])
-
+    peak = start_capital
+    prev_month_end = start_capital
     for month, g in df.groupby("month", sort=True):
-        assets = g["total_assets"].astype(float)
-        pnl = g["pnl"].astype(float)
-        wins = int((pnl > 0).sum())
-        gross_profit = float(pnl[pnl > 0].sum())
-        gross_loss = float(-pnl[pnl < 0].sum())
-        pf = gross_profit / gross_loss if gross_loss > 0 else (np.inf if gross_profit > 0 else 0.0)
+        pnls = g["pnl"].tolist()
+        trades = len(pnls)
+        wins = sum(p > 0 for p in pnls)
+        win_rate = wins / trades * 100.0 if trades else 0.0
+        pf = _profit_factor(pnls)
+        month_end = float(g["total_assets"].iloc[-1])
+        monthly_return = (month_end / prev_month_end - 1.0) * 100.0 if prev_month_end > 0 else 0.0
+        cumulative_return = (month_end / start_capital - 1.0) * 100.0 if start_capital > 0 else 0.0
 
-        start_assets = previous_assets if previous_assets is not None else cumulative_base
-        end_assets = float(assets.iloc[-1])
-        monthly_return = (end_assets / start_assets - 1.0) * 100.0 if start_assets else 0.0
-        cumulative_return = (end_assets / cumulative_base - 1.0) * 100.0 if cumulative_base else 0.0
-
-        # 決済時点の total_assets は共有資産の実残高なので、return_pct の単純複利は使わない。
-        # 月内の決済後資産推移から最大DDを算出する。
-        equity = pd.Series([start_assets] + assets.tolist(), dtype=float)
-        dd = max_drawdown_pct(equity)
+        month_dd = 0.0
+        for v in g["total_assets"]:
+            peak = max(peak, float(v))
+            dd = (peak - float(v)) / peak * 100.0 if peak > 0 else 0.0
+            month_dd = max(month_dd, dd)
 
         rows.append({
             "month": month,
-            "trades": int(len(g)),
+            "trades": trades,
             "wins": wins,
-            "win_rate_pct": round(wins / len(g) * 100.0, 2) if len(g) else 0.0,
-            "profit_factor": round(pf, 3) if np.isfinite(pf) else "inf",
+            "win_rate_pct": round(win_rate, 2),
+            "profit_factor": round(pf, 3) if pf != float("inf") else "inf",
             "monthly_return_pct": round(monthly_return, 3),
             "cumulative_return_pct": round(cumulative_return, 3),
-            "max_drawdown_pct": round(dd, 3),
+            "max_drawdown_pct": round(month_dd, 3),
         })
-        previous_assets = end_assets
+        prev_month_end = month_end
 
-    out = pd.DataFrame(rows)
+    out = pd.DataFrame(rows, columns=COLUMNS)
     out.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
-    print("month    trades  wins  win_rate_pct  profit_factor  monthly_return_pct  cumulative_return_pct  max_drawdown_pct")
-    for _, r in out.iterrows():
-        print(f"{r['month']} {int(r['trades']):7d} {int(r['wins']):5d} {float(r['win_rate_pct']):13.2f} {r['profit_factor']:14} {float(r['monthly_return_pct']):19.3f} {float(r['cumulative_return_pct']):22.3f} {float(r['max_drawdown_pct']):18.3f}")
+
+    latest = out.iloc[-1]
+    sign = "プラス" if float(latest["monthly_return_pct"]) >= 0 else "マイナス"
+    print(
+        f"✅ {latest['month']} 月次(TOP10): {float(latest['monthly_return_pct']):+.2f}% ({sign}) "
+        f"| 勝率 {float(latest['win_rate_pct']):.1f}% | PF {latest['profit_factor']} "
+        f"| 最大DD {float(latest['max_drawdown_pct']):.2f}% | 取引数 {int(latest['trades'])}"
+    )
+    print(f"✅ {OUTPUT_FILE} を更新 ({len(out)}行) | 決済レコード {len(df)}件")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
