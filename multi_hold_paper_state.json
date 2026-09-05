@@ -6,5 +6,16 @@
   },
   "positions": [],
   "trades_today": 0,
-  "last_entry_date": null
+  "last_entry_date": null,
+  "peaks": {
+    "1": 1000000.0,
+    "3": 1000000.0,
+    "5": 1000000.0
+  },
+  "daily_start_capitals": {
+    "1": 1000000.0,
+    "3": 1000000.0,
+    "5": 1000000.0
+  },
+  "risk_date": "2026-09-06"
 }
