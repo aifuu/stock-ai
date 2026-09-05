@@ -10,16 +10,23 @@ as a single executable portfolio because the 1d/3d/5d buckets are independent
 capital buckets and can contain the same daily TOP1 at the same time.
 """
 from pathlib import Path
+import os
 import pandas as pd
 
 HISTORY_FILE = "multi_hold_paper_history.csv"
 OUTPUT_FILE = "multi_hold_monthly_performance.csv"
 HOLDS = (1, 3, 5)
 
+# 月間+5%目標(元本100万円なら+5万円/月)。勝率ではなく月次収益率で評価する。
+MONTHLY_TARGET_PCT = 5.0
+# 1d/3d/5dバケットはそれぞれequity=1.0から独立再生される正規化リターンのため、
+# 円換算はAI_INITIAL_CAPITAL(既定100万円)を想定元本として使う近似値。
+NOTIONAL_CAPITAL = float(os.getenv("AI_INITIAL_CAPITAL", "1000000"))
+
 COLUMNS = [
-    "month", "hold_days", "trades", "wins", "win_rate_pct",
-    "profit_factor", "monthly_return_pct", "cumulative_return_pct",
-    "max_drawdown_pct",
+    "month", "hold_days", "trades", "profit_factor", "monthly_return_pct",
+    "monthly_profit_jpy", "monthly_plus5_achieved",
+    "cumulative_return_pct", "max_drawdown_pct",
 ]
 
 
@@ -61,8 +68,6 @@ def _bucket_rows(df, label):
     for month, g in df.groupby("month", sort=True):
         returns = g["return_pct"].astype(float).tolist()
         trades = len(returns)
-        wins = sum(r > 0 for r in returns)
-        win_rate = wins / trades * 100.0 if trades else 0.0
         pf = _profit_factor(returns)
         monthly_curve, monthly_dd = _compound_curve(returns)
         monthly_return = (monthly_curve[-1] - 1.0) * 100.0 if monthly_curve else 0.0
@@ -72,10 +77,10 @@ def _bucket_rows(df, label):
             "month": month,
             "hold_days": label,
             "trades": trades,
-            "wins": wins,
-            "win_rate_pct": round(win_rate, 2),
             "profit_factor": round(pf, 3) if pf != float("inf") else "inf",
             "monthly_return_pct": round(monthly_return, 3),
+            "monthly_profit_jpy": round(monthly_return / 100.0 * NOTIONAL_CAPITAL, 0),
+            "monthly_plus5_achieved": monthly_return >= MONTHLY_TARGET_PCT,
             "cumulative_return_pct": round(cumulative_return, 3),
             "max_drawdown_pct": round(monthly_dd, 3),
         })
@@ -146,9 +151,10 @@ def main():
     if not latest.empty:
         r = latest.iloc[0]
         sign = "プラス" if float(r["monthly_return_pct"]) >= 0 else "マイナス"
+        plus5_text = "✅達成" if bool(r["monthly_plus5_achieved"]) else "未達成"
         print(
             f"✅ {latest_month} 月次(ALL): {float(r['monthly_return_pct']):+.2f}% ({sign}) "
-            f"| 勝率 {float(r['win_rate_pct']):.1f}% | PF {r['profit_factor']} "
+            f"| 利益額 ¥{float(r['monthly_profit_jpy']):+,.0f} | 月間+5%目標 {plus5_text} | PF {r['profit_factor']} "
             f"| 最大DD {float(r['max_drawdown_pct']):.2f}% | 取引数 {int(r['trades'])}"
         )
 
