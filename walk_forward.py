@@ -82,10 +82,11 @@ START_DATE = os.getenv(
     "2021-01-01"
 )
  
+# ★修正(2026-09): デフォルトを固定過去日にすると、WF_END_DATE未指定の
+# 手動実行が気づかず古いデータで走ってしまう。未指定時は当日を使う。
 END_DATE = os.getenv(
-    "WF_END_DATE",
-    "2026-08-22"
-)
+    "WF_END_DATE"
+) or pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
  
 HISTORY_YEARS = int(
     os.getenv(
