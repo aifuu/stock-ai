@@ -8,7 +8,9 @@ import yfinance as yf
 
 CANDIDATE_FILE = os.getenv("WF_CANDIDATE_FILE", "walk_forward_all_candidates.csv")
 START_DATE = pd.Timestamp(os.getenv("WF_START_DATE", "2021-01-01"))
-END_DATE = pd.Timestamp(os.getenv("WF_END_DATE", "2026-08-22"))
+# ★修正(2026-09): デフォルトを固定過去日にすると、WF_END_DATE未指定の
+# 手動実行が気づかず古いデータで走ってしまう。未指定時は当日を使う。
+END_DATE = pd.Timestamp(os.getenv("WF_END_DATE") or pd.Timestamp.today().normalize())
 OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "90"))
 TOP_N = int(os.getenv("WF_TOP_N", "10"))
 PURGE_DAYS = int(os.getenv("WF_PURGE_DAYS", "7"))
