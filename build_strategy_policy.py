@@ -25,9 +25,10 @@ DEFAULT_POLICY = {
     "up_threshold": 50, "min_score_for_buy": 60,
     "nikkei_filter": False, "atr_tp_multiplier": 3.0,
     "atr_sl_multiplier": 1.5, "hold_days": 5,
-    "validation_signals": 0, "validation_win_rate": 0.0,
+    "validation_signals": 0, "validation_avg_month_return": 0.0,
     "validation_avg_return": 0.0, "validation_pf": 0.0,
-    "validation_dd": 0.0, "oos_signals": 0, "oos_win_rate": 0.0,
+    "validation_dd": 0.0, "oos_signals": 0, "oos_avg_month_return": 0.0,
+    "oos_monthly_plus5_ratio": 0.0, "oos_compound_return": 0.0,
     "oos_avg_return": 0.0, "oos_pf": 0.0, "oos_dd": 0.0,
     "oos_validation_pf_ratio": 0.0, "mc_sizing": 0.005,
     "mc_10y_probability": 0.0, "mc_15y_probability": 0.0,
@@ -90,8 +91,9 @@ def canonical_policy_payload(policy):
     covered = {k: policy.get(k) for k in (
         "status", "updated_at", "up_threshold", "min_score_for_buy",
         "nikkei_filter", "atr_tp_multiplier", "atr_sl_multiplier", "hold_days",
-        "validation_signals", "validation_win_rate", "validation_avg_return",
-        "validation_pf", "validation_dd", "oos_signals", "oos_win_rate",
+        "validation_signals", "validation_avg_month_return", "validation_avg_return",
+        "validation_pf", "validation_dd", "oos_signals", "oos_avg_month_return",
+        "oos_monthly_plus5_ratio", "oos_compound_return",
         "oos_avg_return", "oos_pf", "oos_dd", "oos_validation_pf_ratio",
         "mc_sizing", "mc_10y_probability", "mc_15y_probability",
         "mc_20y_probability", "mc_bankruptcy_probability", "mc_p90_max_dd",
@@ -138,8 +140,9 @@ if "oos_validation_pf_ratio" not in df.columns and "oos_val_pf_ratio" in df.colu
 required_columns = [
     "final_status", "up_threshold", "score_threshold", "nikkei_filter",
     "tp_multiplier", "sl_multiplier", "hold_days", "validation_signals",
-    "validation_win_rate", "validation_avg_return", "validation_pf",
-    "validation_dd", "oos_signals", "oos_win_rate", "oos_avg_return",
+    "validation_avg_month_return", "validation_avg_return", "validation_pf",
+    "validation_dd", "oos_signals", "oos_avg_month_return",
+    "oos_monthly_plus5_ratio", "oos_compound_return", "oos_avg_return",
     "oos_pf", "oos_dd", "oos_validation_pf_ratio",
 ]
 
@@ -152,9 +155,10 @@ if missing:
 
 numeric_columns = [
     "up_threshold", "score_threshold", "tp_multiplier", "sl_multiplier",
-    "hold_days", "validation_signals", "validation_win_rate",
+    "hold_days", "validation_signals", "validation_avg_month_return",
     "validation_avg_return", "validation_pf", "validation_dd",
-    "oos_signals", "oos_win_rate", "oos_avg_return", "oos_pf", "oos_dd",
+    "oos_signals", "oos_avg_month_return", "oos_monthly_plus5_ratio",
+    "oos_compound_return", "oos_avg_return", "oos_pf", "oos_dd",
     "oos_validation_pf_ratio",
 ]
 for col in numeric_columns:
@@ -194,11 +198,13 @@ if approved.empty:
 
 # =========================================================
 # 最終選定基準を adversarial_strategy_validator.py と完全一致させる。
-# 月間プラス率40% + OOS複利30% + PF15% + 平均リターン10% + 期待利益5%。
+# 優先順位: ①月間収益率30% ②月間+5%達成率20% ③OOS累積収益率25%
+# ④平均利益率/期待利益率15% ⑤PF7% ⑥最大DD(ペナルティ)3%
 # 勝率は順位付けに使用しない。
 # =========================================================
 required_objective_columns = [
-    "oos_monthly_positive_ratio", "oos_compound_return", "oos_pf", "oos_avg_return"
+    "oos_avg_month_return", "oos_monthly_plus5_ratio", "oos_compound_return",
+    "oos_pf", "oos_avg_return", "oos_dd",
 ]
 missing_objective = [c for c in required_objective_columns if c not in approved.columns]
 if missing_objective:
@@ -207,21 +213,18 @@ if missing_objective:
     )
 
 approved["profit_objective"] = (
-    approved["oos_monthly_positive_ratio"] * 0.40
-    + approved["oos_compound_return"].clip(-100, 1000) * 0.30
-    + approved["oos_pf"].clip(0, 8) * 5.0 * 0.15
-    + approved["oos_avg_return"].clip(-5, 5) * 10.0 * 0.10
-    + (
-        approved["oos_expected_value"].clip(-5, 5) * 10.0 * 0.05
-        if "oos_expected_value" in approved.columns
-        else 0.0
-    )
+    approved["oos_avg_month_return"].clip(-20, 20) * 0.30
+    + approved["oos_monthly_plus5_ratio"] * 0.20
+    + approved["oos_compound_return"].clip(-100, 1000) * 0.25
+    + approved["oos_avg_return"].clip(-5, 5) * 10.0 * 0.15
+    + approved["oos_pf"].clip(0, 8) * 5.0 * 0.07
+    - (-approved["oos_dd"]).clip(0, 100) * 0.03
 )
 
 approved = approved.sort_values(
     [
         "profit_objective",
-        "oos_monthly_positive_ratio",
+        "oos_avg_month_return",
         "oos_compound_return",
         "oos_pf",
         "oos_avg_return",
@@ -240,12 +243,14 @@ new_policy = {
     "atr_sl_multiplier": safe_float(best["sl_multiplier"]),
     "hold_days": safe_int(best["hold_days"]),
     "validation_signals": safe_int(best["validation_signals"]),
-    "validation_win_rate": safe_float(best["validation_win_rate"]),
+    "validation_avg_month_return": safe_float(best["validation_avg_month_return"]),
     "validation_avg_return": safe_float(best["validation_avg_return"]),
     "validation_pf": safe_float(best["validation_pf"]),
     "validation_dd": safe_float(best["validation_dd"]),
     "oos_signals": safe_int(best["oos_signals"]),
-    "oos_win_rate": safe_float(best["oos_win_rate"]),
+    "oos_avg_month_return": safe_float(best["oos_avg_month_return"]),
+    "oos_monthly_plus5_ratio": safe_float(best["oos_monthly_plus5_ratio"]),
+    "oos_compound_return": safe_float(best["oos_compound_return"]),
     "oos_avg_return": safe_float(best["oos_avg_return"]),
     "oos_pf": safe_float(best["oos_pf"]),
     "oos_dd": safe_float(best["oos_dd"]),
@@ -282,6 +287,7 @@ print("ATR SL:", new_policy["atr_sl_multiplier"])
 print("Validation PF:", new_policy["validation_pf"])
 print("OOS PF:", new_policy["oos_pf"])
 print("OOS/Validation PF:", new_policy["oos_validation_pf_ratio"])
-print("月間プラス率:", safe_float(best["oos_monthly_positive_ratio"]))
+print("月間収益率:", safe_float(best["oos_avg_month_return"]))
+print("月間+5%達成率:", safe_float(best["oos_monthly_plus5_ratio"]))
 print("OOS複利リターン:", safe_float(best["oos_compound_return"]))
 print("期待利益:", safe_float(best.get("oos_expected_value", 0.0)))
