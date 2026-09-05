@@ -16,10 +16,13 @@ import pandas as pd
 HISTORY_FILE = "profit_top10_paper_history.csv"
 OUTPUT_FILE = "profit_top10_monthly_performance.csv"
 
+# 月間+5%目標(元本100万円なら+5万円/月)。勝率ではなく月次収益率で評価する。
+MONTHLY_TARGET_PCT = 5.0
+
 COLUMNS = [
-    "month", "trades", "wins", "win_rate_pct",
-    "profit_factor", "monthly_return_pct", "cumulative_return_pct",
-    "max_drawdown_pct",
+    "month", "trades", "profit_factor", "monthly_return_pct",
+    "monthly_profit_jpy", "monthly_plus5_achieved",
+    "cumulative_return_pct", "max_drawdown_pct",
 ]
 
 
@@ -82,11 +85,10 @@ def main():
     for month, g in df.groupby("month", sort=True):
         pnls = g["pnl"].tolist()
         trades = len(pnls)
-        wins = sum(p > 0 for p in pnls)
-        win_rate = wins / trades * 100.0 if trades else 0.0
         pf = _profit_factor(pnls)
         month_end = float(g["total_assets"].iloc[-1])
         monthly_return = (month_end / prev_month_end - 1.0) * 100.0 if prev_month_end > 0 else 0.0
+        monthly_profit_jpy = month_end - prev_month_end
         cumulative_return = (month_end / start_capital - 1.0) * 100.0 if start_capital > 0 else 0.0
 
         month_dd = 0.0
@@ -98,10 +100,10 @@ def main():
         rows.append({
             "month": month,
             "trades": trades,
-            "wins": wins,
-            "win_rate_pct": round(win_rate, 2),
             "profit_factor": round(pf, 3) if pf != float("inf") else "inf",
             "monthly_return_pct": round(monthly_return, 3),
+            "monthly_profit_jpy": round(monthly_profit_jpy, 0),
+            "monthly_plus5_achieved": monthly_return >= MONTHLY_TARGET_PCT,
             "cumulative_return_pct": round(cumulative_return, 3),
             "max_drawdown_pct": round(month_dd, 3),
         })
@@ -112,9 +114,10 @@ def main():
 
     latest = out.iloc[-1]
     sign = "プラス" if float(latest["monthly_return_pct"]) >= 0 else "マイナス"
+    plus5_text = "✅達成" if bool(latest["monthly_plus5_achieved"]) else "未達成"
     print(
         f"✅ {latest['month']} 月次(TOP10): {float(latest['monthly_return_pct']):+.2f}% ({sign}) "
-        f"| 勝率 {float(latest['win_rate_pct']):.1f}% | PF {latest['profit_factor']} "
+        f"| 利益額 ¥{float(latest['monthly_profit_jpy']):+,.0f} | 月間+5%目標 {plus5_text} | PF {latest['profit_factor']} "
         f"| 最大DD {float(latest['max_drawdown_pct']):.2f}% | 取引数 {int(latest['trades'])}"
     )
     print(f"✅ {OUTPUT_FILE} を更新 ({len(out)}行) | 決済レコード {len(df)}件")
