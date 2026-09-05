@@ -1,7 +1,8 @@
 name: Apply requested hardening
 
-# ★修正(2026-08): 意図した変更は既に反映済みのため、push契機で
-# 待ち構えておく必要が無い。手動実行のみに変更する。
+# ★修正(2026-09): ハードニング本体が既に反映済みでも
+# 「old block not found」で失敗しないよう、適用済みなら検証のみ行う。
+# push契機では実行せず、必要時だけ手動実行する。
 on:
   workflow_dispatch: {}
 
@@ -18,69 +19,83 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Apply requested changes
+      - name: Apply requested changes (idempotent)
         run: |
           python - <<'PY'
           from pathlib import Path
 
+          def apply_or_verify(path, old, new, marker):
+              p = Path(path)
+              s = p.read_text(encoding="utf-8")
+
+              # 既に修正済みなら何もしない。
+              if marker in s:
+                  print(f"✅ {path}: requested hardening already applied")
+                  return False
+
+              # 旧実装が残っている場合だけ置換する。
+              if old not in s:
+                  raise SystemExit(f"{path}: old block not found and hardened marker is absent")
+
+              p.write_text(s.replace(old, new, 1), encoding="utf-8")
+              print(f"🔧 {path}: hardening applied")
+              return True
+
+          changed = False
+
           # ------------------------------------------------------------
           # 1) adversarial_strategy_validator.py
-          #    Keep the existing safety fixes, but make the requested
-          #    purge/embargo logic explicit at BOTH phase boundaries.
+          #    DEV→Validation、Validation→OOSの両境界に
+          #    PURGE/EMBARGOを明示適用する。
           # ------------------------------------------------------------
-          p = Path('adversarial_strategy_validator.py')
-          s = p.read_text(encoding='utf-8')
-
           old = '''oos_dates = all_dates[-OOS_DAYS:]\npre_oos = all_dates[:-OOS_DAYS]\nsplit = int(len(pre_oos) * 0.60)\nraw_dev_dates = pre_oos[:split]\nraw_validation_dates = pre_oos[split:]\npurge_n = max(0, min(PURGE_DAYS, len(raw_dev_dates) - 1))\nembargo_n = max(0, min(EMBARGO_DAYS, len(raw_validation_dates) - 1))\ndev_dates = raw_dev_dates[:-purge_n] if purge_n else raw_dev_dates\nvalidation_dates = raw_validation_dates[embargo_n:]\nif not dev_dates or not validation_dates:\n    raise RuntimeError("Purge/Embargo後にDEVまたはValidation期間が空です")\nphase_map = {d: "DEV" for d in dev_dates}\nphase_map.update({d: "VALIDATION" for d in validation_dates})\nphase_map.update({d: "OOS" for d in oos_dates})\ncandidates["phase"] = candidates["date"].map(phase_map)'''
-
-          new = '''oos_dates = all_dates[-OOS_DAYS:]\npre_oos = all_dates[:-OOS_DAYS]\nsplit = int(len(pre_oos) * 0.60)\ndev_dates_raw = pre_oos[:split]\nvalidation_dates_raw = pre_oos[split:]\n\n# ★修正(2026-08): PURGE_DAYS/EMBARGO_DAYSを各フェーズ境界に\n# 明示適用する。境界付近のシグナルが次フェーズの価格を参照して\n# 評価確定する境界リークを除去する。\ndef _purge_embargo(dates_before, dates_after, purge_days, embargo_days):\n    purged_before = (\n        dates_before[:-purge_days]\n        if purge_days > 0 and len(dates_before) > purge_days\n        else dates_before\n    )\n    embargoed_after = (\n        dates_after[embargo_days:]\n        if embargo_days > 0 and len(dates_after) > embargo_days\n        else dates_after\n    )\n    return purged_before, embargoed_after\n\ndev_dates, validation_dates_raw = _purge_embargo(\n    dev_dates_raw, validation_dates_raw, PURGE_DAYS, EMBARGO_DAYS\n)\nvalidation_dates, oos_dates = _purge_embargo(\n    validation_dates_raw, oos_dates, PURGE_DAYS, EMBARGO_DAYS\n)\n\nif not dev_dates or not validation_dates or not oos_dates:\n    raise RuntimeError("Purge/Embargo後にDEV/Validation/OOS期間が空です")\n\nphase_map = {d: "DEV" for d in dev_dates}\nphase_map.update({d: "VALIDATION" for d in validation_dates})\nphase_map.update({d: "OOS" for d in oos_dates})\ncandidates["phase"] = candidates["date"].map(phase_map)'''
-
-          if old not in s:
-              raise SystemExit('validator phase block not found')
-          s = s.replace(old, new, 1)
-          p.write_text(s, encoding='utf-8')
+          new = '''oos_dates = all_dates[-OOS_DAYS:]\npre_oos = all_dates[:-OOS_DAYS]\nsplit = int(len(pre_oos) * 0.60)\ndev_dates_raw = pre_oos[:split]\nvalidation_dates_raw = pre_oos[split:]\n\ndef purge_embargo(dates_before, dates_after, purge_days, embargo_days):\n    before = dates_before[:-purge_days] if purge_days > 0 and len(dates_before) > purge_days else dates_before\n    after = dates_after[embargo_days:] if embargo_days > 0 and len(dates_after) > embargo_days else dates_after\n    return before, after\n\ndev_dates, validation_dates_raw = purge_embargo(dev_dates_raw, validation_dates_raw, PURGE_DAYS, EMBARGO_DAYS)\nvalidation_dates, oos_dates = purge_embargo(validation_dates_raw, oos_dates, PURGE_DAYS, EMBARGO_DAYS)\nif not dev_dates or not validation_dates or not oos_dates:\n    raise RuntimeError("Purge/Embargo後にDEV/Validation/OOS期間が空です")\nphase_map = {d: "DEV" for d in dev_dates}\nphase_map.update({d: "VALIDATION" for d in validation_dates})\nphase_map.update({d: "OOS" for d in oos_dates})\ncandidates["phase"] = candidates.date.map(phase_map)'''
+          changed |= apply_or_verify(
+              "adversarial_strategy_validator.py", old, new,
+              "dev_dates_raw, validation_dates_raw = pre_oos[:split], pre_oos[split:]"
+          )
 
           # ------------------------------------------------------------
           # 2) build_strategy_policy.py
-          #    Fail-closed MC gate is already active; make the requested
-          #    explanatory comments explicit without changing behavior.
+          #    Monte Carlo列が無ければfail-closed。
           # ------------------------------------------------------------
-          p = Path('build_strategy_policy.py')
-          s = p.read_text(encoding='utf-8')
           old = '''mc_columns_exist = all(col in df.columns for col in mc_columns)\nif not mc_columns_exist:\n    keep_existing_policy("Monte Carlo列がありません。破産確率/P90 DD/到達確率を検証できないため自動採用を停止")'''
-          new = '''mc_columns_exist = all(col in df.columns for col in mc_columns)\nif not mc_columns_exist:\n    # ★修正(2026-08): Monte Carlo未実施時は警告だけで続行せず、\n    # 既存policyを維持して自動採用を停止する（フェイルクローズ）。\n    keep_existing_policy(f"{INPUT_FILE} にMonte Carlo列がありません。Monte Carlo未検証のため自動採用しません")'''
-          if old not in s:
-              raise SystemExit('policy MC block not found')
-          s = s.replace(old, new, 1)
-          p.write_text(s, encoding='utf-8')
+          new = '''mc_columns_exist = all(col in df.columns for col in mc_columns)\nif not mc_columns_exist:\n    keep_existing_policy(f"{INPUT_FILE} にMonte Carlo列がありません。Monte Carlo未検証のため自動採用しません")'''
+          changed |= apply_or_verify(
+              "build_strategy_policy.py", old, new,
+              "Monte Carlo未検証のため自動採用しません"
+          )
 
           # ------------------------------------------------------------
           # 3) daily_model_retrain.py
-          #    a) Training cutoff includes a wider calendar-day embargo
-          #       before OOS because labels use shift(-HOLD_DAYS).
-          #    b) Insufficient OOS trades must NOT deploy a new model.
+          #    a) OOS境界前にHOLD_DAYS*2カレンダー日のembargo。
+          #    b) OOS取引数不足時は新modelをdeployしない。
           # ------------------------------------------------------------
-          p = Path('daily_model_retrain.py')
-          s = p.read_text(encoding='utf-8')
-
           old = '''    fit_rows = flatten_training_rows(ticker_frames, before_date=oos_cutoff)\n    print(f"学習データ行数(OOS区間を除く): {len(fit_rows):,}")'''
-          new = '''    # ★修正(2026-08): target は shift(-HOLD_DAYS) で作っているため、\n    # OOS境界直前の学習行はラベル計算時にOOS価格を参照し得る。\n    # embargo として学習カットオフをHOLD_DAYS*2カレンダー日ぶん前倒しする。\n    train_cutoff = oos_cutoff - pd.Timedelta(days=HOLD_DAYS * 2)\n    fit_rows = flatten_training_rows(ticker_frames, before_date=train_cutoff)\n    print(f"学習データ行数(OOS区間+embargo{HOLD_DAYS}営業日相当分を除く): {len(fit_rows):,}")'''
-          if old not in s:
-              raise SystemExit('daily retrain fit_rows block not found')
-          s = s.replace(old, new, 1)
+          new = '''    # ★修正(2026-08): targetはshift(-HOLD_DAYS)で作るため、\n    # OOS境界直前の学習行がOOS価格をラベルに参照し得る。\n    train_cutoff = oos_cutoff - pd.Timedelta(days=HOLD_DAYS * 2)\n    fit_rows = flatten_training_rows(ticker_frames, before_date=train_cutoff)\n    print(f"学習データ行数(OOS区間+embargo{HOLD_DAYS}営業日相当分を除く): {len(fit_rows):,}")'''
+          changed |= apply_or_verify(
+              "daily_model_retrain.py", old, new,
+              "train_cutoff = oos_cutoff - pd.Timedelta(days=HOLD_DAYS * 2)"
+          )
 
           old = '''    if metrics["trades"] < MIN_OOS_TRADES:\n        deploy = True\n        reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・参考採用"'''
-          new = '''    if metrics["trades"] < MIN_OOS_TRADES:\n        # ★修正(2026-08): 判定保留時はmodel.pklを差し替えず、\n        # 前回モデルをそのまま継続使用する（フェイルクローズ）。\n        deploy = False\n        reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・前回モデルを継続使用"'''
-          if old not in s:
-              raise SystemExit('daily retrain deploy gate block not found')
-          s = s.replace(old, new, 1)
+          new = '''    if metrics["trades"] < MIN_OOS_TRADES:\n        # ★修正(2026-08): 判定不能時は新modelを差し替えず、\n        # 前回modelを継続使用する（fail-closed）。\n        deploy = False\n        reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・前回モデルを継続使用"'''
+          changed |= apply_or_verify(
+              "daily_model_retrain.py", old, new,
+              "OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・前回モデルを継続使用"
+          )
 
-          p.write_text(s, encoding='utf-8')
+          print("変更あり" if changed else "変更なし: 全ハードニング適用済み")
           PY
 
       - name: Syntax check
         run: |
-          python -m py_compile adversarial_strategy_validator.py build_strategy_policy.py daily_model_retrain.py risk_manager.py adversarial_pretty_runner.py
+          python -m py_compile \
+            adversarial_strategy_validator.py \
+            build_strategy_policy.py \
+            daily_model_retrain.py \
+            risk_manager.py \
+            adversarial_pretty_runner.py
 
       - name: Commit
         run: |
