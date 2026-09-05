@@ -16,7 +16,6 @@ concurrency:
 
 env:
   WF_START_DATE: '2021-01-01'
-  WF_END_DATE: '2026-08-22'
   WF_MULTI_OOS_DAYS: '239'
   WF_TOP_N: '10'
 
@@ -40,6 +39,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy
+
+      # ★修正(2026-09): refresh-walk-forward-candidates.ymlと同じ理由で、
+      # WF_END_DATEの固定リテラルをやめ実行日を毎回使う。
+      - name: Compute current WF_END_DATE
+        run: |
+          echo "WF_END_DATE=$(date -u +%F)" >> "$GITHUB_ENV"
 
       - name: Syntax check
         run: python -m py_compile fold4_oos_filter_trace.py
