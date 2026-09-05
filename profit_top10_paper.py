@@ -54,10 +54,6 @@ def reset_daily(s,today):
     if s.get('trade_count_date')!=today:s.update({'trade_count_date':today,'trades_today':0,'trades_by_ticker_today':{},'daily_start_capital':float(s.get('capital',INITIAL_CAPITAL))})
 
 def append_history(row):
-    # 重要: このHISTORY_FILE(profit_top10_paper_history.csv)専用。
-    # daily_directional_top1.append_historyをimportして使うと、TOP10戦略の決済が
-    # directional_paper_history.csv(daily_directional_top1/trade_feedback_engine用の
-    # フィードバック学習データ)に誤って混入するため、絶対にimportしないこと。
     df=pd.DataFrame([row])
     if os.path.exists(HISTORY_FILE):
         try: df=pd.concat([pd.read_csv(HISTORY_FILE),df],ignore_index=True)
@@ -96,7 +92,7 @@ def scan(policy):
             last=x.iloc[-1]; pr=model.predict_proba(x.iloc[-1:])[0]; cl=list(model.classes_)
             if not all(c in cl for c in (0,1,2)): continue
             down,up,flat=float(pr[cl.index(0)])*100,float(pr[cl.index(2)])*100,float(pr[cl.index(1)])*100
-            ls,ss=directional_score(last,up/100,down/100); a=float(atr(d).iloc[-1]);
+            ls,ss=directional_score(last,up/100,down/100); a=float(atr(d).iloc[-1])
             if not np.isfinite(a) or a<=0:continue
             intr=download_5m(t); price=float(d['Close'].iloc[-1])
             if intr is not None and not intr.empty: price=float(intr['Close'].iloc[-1])
@@ -105,11 +101,16 @@ def scan(policy):
             base={'ticker':t,'company':NAMES.get(t,t),'price':price,'up_probability':up,'down_probability':down,'flat_probability':flat,'data_date':str(x.index[-1].date())}
             for direction,score in [('BUY',float(ls)),('SHORT',float(ss))]:
                 item=dict(base); item.update(direction=direction,score=score,tp=price+(a*policy['atr_tp_multiplier'] if direction=='BUY' else -a*policy['atr_tp_multiplier']),sl=max(.01,price-a*policy['atr_sl_multiplier']) if direction=='BUY' else price+a*policy['atr_sl_multiplier'],buy_reason=reason)
+                if direction=='BUY':
+                    reward_pct=(item['tp']-price)/price*100 if price>0 else 0.0; risk_pct=(price-item['sl'])/price*100 if price>0 else 0.0; win_prob=up/100; loss_prob=down/100
+                else:
+                    reward_pct=(price-item['tp'])/price*100 if price>0 else 0.0; risk_pct=(item['sl']-price)/price*100 if price>0 else 0.0; win_prob=down/100; loss_prob=up/100
+                item['expected_value_pct']=win_prob*reward_pct-loss_prob*max(risk_pct,0.0)
                 fallback.append(item)
                 ok=(up>=policy['up_threshold'] and up>down and flat<50 and score>=policy['min_score_for_buy']) if direction=='BUY' else (SHORT_ENABLED and down>=policy['up_threshold'] and down>up and flat<50 and score>=policy['min_score_for_buy'])
                 if ok:cand.append(item)
         except Exception as e: print(t,e)
-    cand.sort(key=lambda z:(z['score'],max(z['up_probability'],z['down_probability'])),reverse=True); fallback.sort(key=lambda z:(z['score'],max(z['up_probability'],z['down_probability'])),reverse=True)
+    cand.sort(key=lambda z:(z['expected_value_pct'],z['score']),reverse=True); fallback.sort(key=lambda z:(z['expected_value_pct'],z['score']),reverse=True)
     return (cand or fallback)[:TOP_N],scanned
 
 def open_positions(s,policy,cands,today):
@@ -122,6 +123,7 @@ def open_positions(s,policy,cands,today):
                 print(f'⛔ リスクポリシーにより新規エントリー全停止: {reason}'); break
             continue
         cnt=int(s.get('trades_by_ticker_today',{}).get(c['ticker'],0))
+        if cnt>=MAX_TRADES_PER_TICKER_PER_DAY or int(s.get('trades_today',0))>=MAX_TOTAL_TRADES_PER_DAY: continue
         budget=float(s['capital'])/TOP_N; price=float(c['price']); shares=int(budget//price) if price>0 else 0
         if shares<=0:continue
         invested=shares*price
@@ -151,7 +153,7 @@ def mark_and_close(s,now):
                 break
         if exit_price is None:remaining.append(p);continue
         gross=(exit_price-ep)*sh if direction=='BUY' else (ep-exit_price)*sh; pnl=gross-(ep+exit_price)*sh*FEE_RATE; s['capital']=float(s['capital'])+pnl; exit_value=exit_price*sh; total=s['capital']
-        append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':str(now.date()),'exit_time':now.strftime('%H:%M'),'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason','')})
+        append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':str(now.date()),'exit_time':now.strftime('%H:%M'),'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'expected_value_pct':p.get('expected_value_pct',0),'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason','')})
         msgs.append(f"{'🟢' if pnl>=0 else '🔴'} 決済｜{p['company']}（{p['ticker']}）｜{direction}\n決済価格 {exit_price:,.1f}円｜{sh:,}株｜投資額 {p['invested_amount']:,.0f}円\n確定損益 {pnl:+,.0f}円｜💰総資産 {total:,.0f}円｜開始100万円から {total-INITIAL_CAPITAL:+,.0f}円")
     s['positions']=remaining; s['peak']=max(float(s.get('peak',s['capital'])),float(s['capital'])); return msgs
 
@@ -162,7 +164,7 @@ def main():
     closed=mark_and_close(s,now); cands,scanned=scan(policy); opened=open_positions(s,policy,cands,today); save_state(s)
     equity=float(s['capital'])+sum(float(p.get('unrealized_pnl',0)) for p in s['positions']); daily=equity-float(s.get('daily_start_capital',INITIAL_CAPITAL)); cum=(equity/INITIAL_CAPITAL-1)*100
     rows=[]
-    for i,p in enumerate(s['positions'],1):rows.append(f"{i}. {'買い' if p['direction']=='BUY' else '空売り'} {p['company']}（{p['ticker']}）\n   {p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円｜取得 {p['entry_price']:,.1f}円｜現在値 {p['current_price']:,.1f}円｜含み損益 {p['unrealized_pnl']:+,.0f}円\n   利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}\n   🧠 買った基準: {p.get('buy_reason','')}")
+    for i,p in enumerate(s['positions'],1):rows.append(f"{i}. {'買い' if p['direction']=='BUY' else '空売り'} {p['company']}（{p['ticker']}）\n   {p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円｜取得 {p['entry_price']:,.1f}円｜現在値 {p['current_price']:,.1f}円｜含み損益 {p['unrealized_pnl']:+,.0f}円\n   利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}｜期待値 {p.get('expected_value_pct',0):+.2f}%\n   🧠 買った基準: {p.get('buy_reason','')}")
     msg=('🤖 利益優先ループ｜TOP10 ペーパートレード\n━━━━━━━━━━━━━━━━━━\n'
          f'📅 {today} {now:%H:%M} JST｜⚠️ 実注文なし\n対象430銘柄｜取得成功 {scanned}｜候補 {len(cands)}｜新規 {len(opened)}件\n'
          f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}｜TP×{policy["atr_tp_multiplier"]:.1f}｜SL×{policy["atr_sl_multiplier"]:.1f}\n'
