@@ -22,7 +22,7 @@ def discord_send(message,required=False):
         return False
 
 def _canonical(p):
-    keys=('status','updated_at','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals','validation_win_rate','validation_avg_return','validation_pf','validation_dd','oos_signals','oos_win_rate','oos_avg_return','oos_pf','oos_dd','oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd','strategy_name','source')
+    keys=('status','updated_at','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals','validation_avg_month_return','validation_avg_return','validation_pf','validation_dd','oos_signals','oos_avg_month_return','oos_monthly_plus5_ratio','oos_compound_return','oos_avg_return','oos_pf','oos_dd','oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd','strategy_name','source')
     return json.dumps({k:p.get(k) for k in keys},ensure_ascii=False,sort_keys=True,separators=(',',':'))
 
 def load_policy():
