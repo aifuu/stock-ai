@@ -17,7 +17,6 @@ concurrency:
 
 env:
   WF_START_DATE: '2021-01-01'
-  WF_END_DATE: '2026-08-22'
   WF_TOP_N: '10'
 
 jobs:
@@ -47,6 +46,17 @@ jobs:
           python -m py_compile walk_forward.py
           python -m py_compile walk_forward_fast_runner.py
 
+      # ★修正(2026-09): WF_END_DATEが'2026-08-22'に固定されていたため、
+      # 毎週このワークフローが走っても候補CSVの終端が一切進まず、
+      # Fold-4（最新OOS窓）が実質2週間以上前のデータで固定化されていた
+      # （実測: walk_forward_all_candidates.csvの最終日が2026-08-20のまま
+      # 2026-08-30・2026-09-04の2回のrefresh後も不変だった）。
+      # 固定リテラルをやめ、実行のたびに当日日付を終端として使う。
+      - name: Compute current WF_END_DATE
+        run: |
+          echo "WF_END_DATE=$(date -u +%F)" >> "$GITHUB_ENV"
+          echo "🗓 WF_END_DATE=$(date -u +%F)（実行日を終端として毎回最新化）"
+
       - name: Rebuild walk-forward candidates from scratch
         run: |
           rm -f walk_forward_all_candidates.csv
@@ -63,6 +73,7 @@ jobs:
       - name: Verify candidate coverage and diagnose date gaps
         run: |
           python - <<'PY'
+          import os
           import pandas as pd
           from pathlib import Path
 
@@ -74,7 +85,9 @@ jobs:
           c['date'] = pd.to_datetime(c['date'], errors='coerce').dt.normalize()
           c = c.dropna(subset=['date'])
           dates = c['date'].drop_duplicates().sort_values()
-          end = pd.Timestamp('2026-08-22')
+          # ★修正(2026-09): 固定リテラルではなく、直前のステップで
+          # 当日日付として計算されたWF_END_DATEを使う。
+          end = pd.Timestamp(os.environ['WF_END_DATE'])
 
           print('candidate rows:', len(c))
           print('tickers:', c['ticker'].nunique())
@@ -107,10 +120,13 @@ jobs:
           if missing:
               print('⚠️ zero-candidate dates:', ', '.join(missing))
 
-          # 8/21が欠落している場合は明示する。
-          target = pd.Timestamp('2026-08-21')
-          print('2026-08-21 candidate rows:', int((c['date'] == target).sum()))
-          print('2026-08-20 candidate rows:', int((c['date'] == pd.Timestamp('2026-08-20')).sum()))
+          # 実行日(WF_END_DATE)から見た候補データの遅延日数を明示する。
+          # 固定日付の決め打ちチェックはWF_END_DATEが毎回進むと意味を失うため、
+          # 相対的な鮮度チェックに置き換える。
+          staleness_days = (end - dates.iloc[-1]).days
+          print(f'staleness (WF_END_DATE - last candidate date): {staleness_days} days')
+          if staleness_days > 10:
+              print(f'⚠️ 候補データがWF_END_DATEから{staleness_days}日遅れています（休場日を考慮しても要確認）')
 
           if c['ticker'].nunique() < 50:
               raise SystemExit('❌ candidate universe unexpectedly small (<50 tickers)')
