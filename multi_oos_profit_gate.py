@@ -229,6 +229,7 @@ def aggregate(fold_frames):
         "oos_avg_return",
         "oos_pf",
         "oos_monthly_positive_ratio",
+        "oos_monthly_plus5_ratio",
         "oos_compound_return",
     ]
     for fold_no, df in enumerate(usable, 1):
@@ -263,18 +264,15 @@ def aggregate(fold_frames):
         out["final_status"] = "PASS"
 
         out["validation_signals"] = int(sum(float(p.get("validation_signals", 0)) for p in parts))
-        out["validation_win_rate"] = weighted_average(
-            pd.DataFrame([p.to_dict() for p in parts]), "validation_win_rate", "validation_signals"
-        )
+        out["validation_avg_month_return"] = float(min(
+            float(p.get("validation_avg_month_return", 0)) for p in parts
+        ))
         out["validation_avg_return"] = float(min(float(p.get("validation_avg_return", 0)) for p in parts))
         out["validation_pf"] = float(min(float(p.get("validation_pf", 0)) for p in parts))
         out["validation_dd"] = float(min(float(p.get("validation_dd", 0)) for p in parts))
 
         oos_signals = [float(p.get("oos_signals", 0)) for p in parts]
         out["oos_signals"] = int(sum(oos_signals))
-        out["oos_win_rate"] = weighted_average(
-            pd.DataFrame([p.to_dict() for p in parts]), "oos_win_rate", "oos_signals"
-        )
         out["oos_avg_return"] = float(min(float(p.get("oos_avg_return", 0)) for p in parts))
         out["oos_pf"] = float(min(float(p.get("oos_pf", 0)) for p in parts))
         out["oos_dd"] = float(min(float(p.get("oos_dd", 0)) for p in parts))
@@ -284,7 +282,13 @@ def aggregate(fold_frames):
         out["oos_monthly_positive_ratio"] = float(min(
             float(p.get("oos_monthly_positive_ratio", 0)) for p in parts
         ))
+        out["oos_monthly_plus5_ratio"] = float(min(
+            float(p.get("oos_monthly_plus5_ratio", 0)) for p in parts
+        ))
         out["oos_avg_month_return"] = float(min(float(p.get("oos_avg_month_return", 0)) for p in parts))
+        out["oos_avg_month_profit_jpy"] = float(min(
+            float(p.get("oos_avg_month_profit_jpy", 0)) for p in parts
+        ))
         out["oos_worst_month_return"] = float(min(float(p.get("oos_worst_month_return", 0)) for p in parts))
         out["oos_expected_value"] = float(min(float(p["oos_expected_value"]) for p in parts))
 
@@ -302,11 +306,12 @@ def aggregate(fold_frames):
         out["p90_max_dd"] = float(max(float(p.get("p90_max_dd", 100)) for p in parts))
 
         out["profit_objective"] = (
-            out["oos_monthly_positive_ratio"] * 0.40
-            + np.clip(out["oos_compound_return"], -100, 1000) * 0.30
-            + np.clip(out["oos_pf"], 0, 8) * 5.0 * 0.15
-            + np.clip(out["oos_avg_return"], -5, 5) * 10.0 * 0.10
-            + np.clip(out["oos_expected_value"], -5, 5) * 10.0 * 0.05
+            np.clip(out["oos_avg_month_return"], -20, 20) * 0.30
+            + out["oos_monthly_plus5_ratio"] * 0.20
+            + np.clip(out["oos_compound_return"], -100, 1000) * 0.25
+            + np.clip(out["oos_avg_return"], -5, 5) * 10.0 * 0.15
+            + np.clip(out["oos_pf"], 0, 8) * 5.0 * 0.07
+            - np.clip(-out["oos_dd"], 0, 100) * 0.03
         )
         out["up_threshold"] = out.get("up_threshold", out.get("up"))
         out["score_threshold"] = out.get("score_threshold", out.get("score"))
