@@ -53,7 +53,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile expanded_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py intraday_directional_top1_cycle.py multi_hold_paper.py multi_hold_monthly_performance.py
+          python -m py_compile expanded_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py multi_hold_paper.py multi_hold_monthly_performance.py
 
       - name: Verify expanded tickers
         run: |
@@ -216,6 +216,10 @@ jobs:
           print(f"✅ 5日資産: {float(capitals.get('5',0)):,.0f}円")
           print(f'✅ 保有バケット: {len(positions)}/3')
           PY
+
+      - name: Update TOP10 monthly performance
+        if: always()
+        run: python profit_top10_monthly_performance.py
 
       - name: Update multi-hold monthly performance
         if: always()
