@@ -169,15 +169,19 @@ def run_strategy(phase_df, up, score, nikkei, tp, sl, hold):
     return pd.DataFrame(rows)
 
 
+# 月間+5%目標(元本100万円なら+5万円/月)の達成率を判定する閾値。勝率ではなく月次収益率で戦略を評価する。
+MONTHLY_TARGET_PCT = float(os.getenv("WF_MONTHLY_TARGET_PCT", "5.0"))
+
+
 def stats(x):
-    empty = {"signals": 0, "wins": 0, "losses": 0, "holds": 0, "win_rate": 0.0, "avg_return": 0.0, "pf": 0.0, "dd": 0.0, "annual_signals": 0.0, "positive_months": 0, "months": 0, "monthly_positive_ratio": 0.0, "avg_month_return": 0.0, "worst_month_return": 0.0, "oos_cumulative_return": 0.0, "compound_return": 0.0, "compound_final_capital": INITIAL_CAPITAL, "expected_value": 0.0, "avg_win": 0.0, "avg_loss": 0.0}
+    # 注意: 「勝率(win_rate)」「勝ちトレード数(wins)」は選定・ランキング・合否判定に一切使わないため、
+    # ここでは計算・保持しない(方針: 利益・収益率基準への統一)。
+    empty = {"signals": 0, "losses": 0, "holds": 0, "avg_return": 0.0, "pf": 0.0, "dd": 0.0, "annual_signals": 0.0, "positive_months": 0, "months": 0, "monthly_positive_ratio": 0.0, "monthly_plus5_ratio": 0.0, "avg_month_return": 0.0, "avg_month_profit_jpy": 0.0, "worst_month_return": 0.0, "oos_cumulative_return": 0.0, "compound_return": 0.0, "compound_final_capital": INITIAL_CAPITAL, "expected_value": 0.0, "avg_win": 0.0, "avg_loss": 0.0}
     if x.empty:
         return empty
     x = x.copy().sort_values("date")
-    wins = int((x.result == "WIN").sum())
     losses = int(x.result.isin(["LOSS", "TIMEOUT_LOSS"]).sum())
     holds = int((x.result == "HOLD").sum())
-    decided = wins + losses
     r = pd.to_numeric(x["return"], errors="coerce").dropna()
     gains, loss = float(r[r > 0].sum()), float(-r[r < 0].sum())
     pf = gains / loss if loss > 0 else (np.inf if gains > 0 else 0.0)
@@ -188,7 +192,8 @@ def stats(x):
     monthly = daily.groupby(daily.index.to_period("M")).apply(lambda s: float(((1 + s / 100).prod() - 1) * 100))
     months = len(monthly)
     years = max((x.date.max() - x.date.min()).days / 365.25, 0.5)
-    return {"signals": len(x), "wins": wins, "losses": losses, "holds": holds, "win_rate": wins / decided * 100 if decided else 0.0, "avg_return": float(r.mean()), "pf": float(pf), "dd": dd, "annual_signals": len(x) / years, "positive_months": int((monthly > 0).sum()), "months": months, "monthly_positive_ratio": float((monthly > 0).mean() * 100) if months else 0.0, "avg_month_return": float(monthly.mean()) if months else 0.0, "worst_month_return": float(monthly.min()) if months else 0.0, "oos_cumulative_return": compound, "compound_return": compound, "compound_final_capital": INITIAL_CAPITAL * (1 + compound / 100), "expected_value": float(r.mean()), "avg_win": float(r[r > 0].mean()) if (r > 0).any() else 0.0, "avg_loss": float(r[r < 0].mean()) if (r < 0).any() else 0.0}
+    avg_month_return = float(monthly.mean()) if months else 0.0
+    return {"signals": len(x), "losses": losses, "holds": holds, "avg_return": float(r.mean()), "pf": float(pf), "dd": dd, "annual_signals": len(x) / years, "positive_months": int((monthly > 0).sum()), "months": months, "monthly_positive_ratio": float((monthly > 0).mean() * 100) if months else 0.0, "monthly_plus5_ratio": float((monthly >= MONTHLY_TARGET_PCT).mean() * 100) if months else 0.0, "avg_month_return": avg_month_return, "avg_month_profit_jpy": INITIAL_CAPITAL * avg_month_return / 100.0, "worst_month_return": float(monthly.min()) if months else 0.0, "oos_cumulative_return": compound, "compound_return": compound, "compound_final_capital": INITIAL_CAPITAL * (1 + compound / 100), "expected_value": float(r.mean()), "avg_win": float(r[r > 0].mean()) if (r > 0).any() else 0.0, "avg_loss": float(r[r < 0].mean()) if (r < 0).any() else 0.0}
 
 
 def block_bootstrap_lower(values, block_len=10, n_iter=BOOTSTRAP_ITERATIONS, alpha=0.05):
@@ -261,7 +266,16 @@ for i, (up, score, nikkei, tp, sl, hold) in enumerate(param_space, 1):
 dev_summary = pd.DataFrame(all_dev_rows)
 dev_summary.to_csv("adversarial_dev_all_results.csv", index=False, encoding="utf-8-sig")
 dev_candidates = dev_summary[(dev_summary.dev_signals >= MIN_TRADES_HARD) & (dev_summary.dev_annual_signals >= MIN_ANNUAL_SIGNALS) & (dev_summary.dev_avg_return > MIN_RETURN_LOWER) & (dev_summary.dev_pf >= MIN_PF_LOWER)].copy()
-dev_candidates["dev_objective"] = dev_candidates.dev_monthly_positive_ratio * 0.35 + np.clip(dev_candidates.dev_compound_return, -100, 500) * 0.25 + np.clip(dev_candidates.dev_pf, 0, 5) * 10 * 0.20 + np.clip(dev_candidates.dev_avg_return, -5, 5) * 10 * 0.20
+# 優先順位: ①月間収益率(=月間利益額と線形同値) ②月間+5%達成率 ③OOS系累積収益率(=複利最終資産と線形同値)
+# ④平均利益率/期待利益率 ⑤Profit Factor ⑥最大DD(ペナルティ)。勝率(win_rate)は一切使わない。
+dev_candidates["dev_objective"] = (
+    np.clip(dev_candidates.dev_avg_month_return, -20, 20) * 0.30
+    + dev_candidates.dev_monthly_plus5_ratio * 0.20
+    + np.clip(dev_candidates.dev_compound_return, -100, 500) * 0.25
+    + np.clip(dev_candidates.dev_avg_return, -5, 5) * 10 * 0.15
+    + np.clip(dev_candidates.dev_pf, 0, 5) * 10 * 0.07
+    - np.clip(-dev_candidates.dev_dd, 0, 100) * 0.03
+)
 dev_candidates = dev_candidates.sort_values("dev_objective", ascending=False).head(50).copy()
 dev_candidates.to_csv("adversarial_dev_selected_candidates.csv", index=False, encoding="utf-8-sig")
 
@@ -300,8 +314,16 @@ oos_summary.to_csv("adversarial_oos_results.csv", index=False, encoding="utf-8-s
 # Final ranking + mandatory MC risk gate
 final_pass = oos_summary[oos_summary.oos_pass].copy() if not oos_summary.empty else pd.DataFrame()
 if not final_pass.empty:
-    final_pass["profit_objective"] = final_pass.oos_monthly_positive_ratio * 0.40 + np.clip(final_pass.oos_compound_return, -100, 1000) * 0.30 + np.clip(final_pass.oos_pf, 0, 8) * 5 * 0.15 + np.clip(final_pass.oos_avg_return, -5, 5) * 10 * 0.10 + np.clip(final_pass.oos_expected_value, -5, 5) * 10 * 0.05
-    final_pass = final_pass.sort_values(["profit_objective", "oos_monthly_positive_ratio", "oos_compound_return", "oos_pf", "oos_avg_return"], ascending=False).reset_index(drop=True)
+    # 優先順位: ①月間収益率 ②月間+5%達成率 ③OOS累積収益率(=複利最終資産と線形同値) ④平均利益率/期待利益率 ⑤PF ⑥最大DD(ペナルティ)
+    final_pass["profit_objective"] = (
+        np.clip(final_pass.oos_avg_month_return, -20, 20) * 0.30
+        + final_pass.oos_monthly_plus5_ratio * 0.20
+        + np.clip(final_pass.oos_compound_return, -100, 1000) * 0.25
+        + np.clip(final_pass.oos_avg_return, -5, 5) * 10 * 0.15
+        + np.clip(final_pass.oos_pf, 0, 8) * 5 * 0.07
+        - np.clip(-final_pass.oos_dd, 0, 100) * 0.03
+    )
+    final_pass = final_pass.sort_values(["profit_objective", "oos_avg_month_return", "oos_compound_return", "oos_pf", "oos_avg_return"], ascending=False).reset_index(drop=True)
     mc_limit = int(os.getenv("WF_MC_CANDIDATES", "20"))
     mc_records = []
     for _, row in final_pass.head(mc_limit).iterrows():
@@ -343,7 +365,7 @@ msg = (f"🛡️ AI PROFIT OPTIMIZER\n期間: {START_DATE.date()} ～ {END_DATE.
 if not final_pass.empty:
     msg += "\n\n🏆 BEST STRATEGIES\n"
     for _, r in final_pass.head(10).iterrows():
-        msg += (f"{r.strategy}\n  月間プラス率={r.oos_monthly_positive_ratio:.1f}% OOS複利={r.oos_compound_return:+.2f}% 最終資産=¥{r.oos_compound_final_capital:,.0f}\n  PF={r.oos_pf:.2f} 期待利益={r.oos_expected_value:+.3f}% 最大DD={r.oos_dd:.2f}% 勝率={r.oos_win_rate:.1f}%\n")
+        msg += (f"{r.strategy}\n  月間収益率={r.oos_avg_month_return:+.2f}% 月間利益額=¥{r.oos_avg_month_profit_jpy:+,.0f} 月間+5%達成率={r.oos_monthly_plus5_ratio:.1f}%\n  OOS複利={r.oos_compound_return:+.2f}% 最終資産=¥{r.oos_compound_final_capital:,.0f}\n  PF={r.oos_pf:.2f} 期待利益={r.oos_expected_value:+.3f}% 最大DD={r.oos_dd:.2f}%\n")
 else:
     msg += "\n\n該当するFinal PASS戦略なし。既存policyは自動変更しません。"
     if not oos_summary.empty:
