@@ -23,6 +23,12 @@ DIAG_UP = 45
 DIAG_SCORE = 50
 DIAG_FILE = Path(os.getenv("WF_MULTI_DIAG_FILE", "multi_oos_fold_funnel.csv"))
 
+# adversarial_strategy_validator.py / build_strategy_policy.pyと同じ外れ値免除ロジック。
+# 各Foldは既にこの免除込みでoos_pass=Trueと判定済みだが、aggregate()側で
+# oos_validation_pf_ratio(=4Fold中のmin)だけを生の0.60閾値で再チェックすると、
+# 免除で正しく通ったFoldの分まで巻き込んで機械的に落としてしまうため揃える。
+MAX_VALIDATION_PF_FOR_RATIO = float(os.getenv("WF_MAX_VALIDATION_PF_FOR_RATIO", "10.0"))
+
 
 def _purge_embargo(dates_before, dates_after, purge_days, embargo_days):
     purged = dates_before[:-purge_days] if purge_days > 0 and len(dates_before) > purge_days else dates_before
@@ -322,11 +328,15 @@ def aggregate(fold_frames):
         rows.append(out)
 
     result = pd.DataFrame(rows)
+    ratio_ok = (
+        (result["oos_validation_pf_ratio"] >= 0.60)
+        | (result["validation_pf"] > MAX_VALIDATION_PF_FOR_RATIO)
+    )
     result = result[
         (result["oos_signals"] >= 20)
         & (result["oos_pf"] >= 1.0)
         & (result["oos_avg_return"] > 0)
-        & (result["oos_validation_pf_ratio"] >= 0.60)
+        & ratio_ok
         & (result["oos_monthly_positive_ratio"] >= 55.0)
         & (result["oos_dd"] >= -35.0)
         & (result["oos_compound_return"] > 0)
