@@ -11,7 +11,9 @@ FOLD_FILE = "adversarial_multi_oos_folds.csv"
 OOS_FILE = "adversarial_oos_results.csv"
 DEV_ALL_FILE = "adversarial_dev_all_combos.csv"
 START_DATE = pd.Timestamp(os.getenv("WF_START_DATE", "2021-01-01"))
-END_DATE = pd.Timestamp(os.getenv("WF_END_DATE", "2026-08-22"))
+# ★修正(2026-09): デフォルトを固定過去日にすると、WF_END_DATE未指定の
+# 手動実行が気づかず古いデータで走ってしまう。未指定時は当日を使う。
+END_DATE = pd.Timestamp(os.getenv("WF_END_DATE") or pd.Timestamp.today().normalize())
 TOTAL_OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "252"))
 FOLDS = int(os.getenv("WF_OOS_FOLDS", "4"))
 FOLD_OOS_DAYS = max(40, TOTAL_OOS_DAYS // FOLDS)
