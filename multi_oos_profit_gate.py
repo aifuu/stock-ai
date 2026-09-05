@@ -12,7 +12,11 @@ OOS_DAYS = int(os.getenv("WF_MULTI_OOS_DAYS", "252"))
 FOLDS = int(os.getenv("WF_MULTI_OOS_FOLDS", "4"))
 TOP_N = int(os.getenv("WF_TOP_N", "10"))
 START_DATE = os.getenv("WF_START_DATE", "2021-01-01")
-END_DATE = os.getenv("WF_END_DATE", "2026-08-22")
+# 注: このEND_DATE自体はmain()内では使われず、実際のFold終端日は
+# walk_forward_all_candidates.csvの実データ最終日から動的に決まる
+# （run_fold呼び出し側で個別end_dateをWF_END_DATEとして渡す）。
+# それでも固定過去日をデフォルトにしておくと紛らわしいため当日にする。
+END_DATE = os.getenv("WF_END_DATE") or pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
 INITIAL_CAPITAL = float(os.getenv("WF_INITIAL_CAPITAL", "1000000"))
 OUT_DIR = Path(os.getenv("WF_MULTI_OUT_DIR", "multi_oos_results"))
 PURGE_DAYS = int(os.getenv("WF_PURGE_DAYS", "7"))
