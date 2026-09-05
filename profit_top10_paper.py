@@ -4,7 +4,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_model, features, atr, directional_score, append_history
+from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_model, features, atr, directional_score
+import paper_risk_policy
 
 TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
 INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000')); TOP_N=10; MAX_TRADES_PER_TICKER_PER_DAY=10; MAX_TOTAL_TRADES_PER_DAY=30; FEE_RATE=float(os.getenv('INTRADAY_FEE_RATE','0.00055')); FORCED_EXIT=dtime(15,25); SHORT_ENABLED=os.getenv('ENABLE_SHORT_PAPER','1').lower() in ('1','true','yes','on')
@@ -51,6 +52,18 @@ def save_state(s):
     os.replace(tmp,STATE_FILE)
 def reset_daily(s,today):
     if s.get('trade_count_date')!=today:s.update({'trade_count_date':today,'trades_today':0,'trades_by_ticker_today':{},'daily_start_capital':float(s.get('capital',INITIAL_CAPITAL))})
+
+def append_history(row):
+    # 重要: このHISTORY_FILE(profit_top10_paper_history.csv)専用。
+    # daily_directional_top1.append_historyをimportして使うと、TOP10戦略の決済が
+    # directional_paper_history.csv(daily_directional_top1/trade_feedback_engine用の
+    # フィードバック学習データ)に誤って混入するため、絶対にimportしないこと。
+    df=pd.DataFrame([row])
+    if os.path.exists(HISTORY_FILE):
+        try: df=pd.concat([pd.read_csv(HISTORY_FILE),df],ignore_index=True)
+        except Exception: pass
+    df.to_csv(HISTORY_FILE,index=False,encoding='utf-8-sig')
+
 def download_5m(t):
     try:
         d=yf.download(t,period='5d',interval='5m',auto_adjust=False,progress=False,threads=False)
@@ -102,9 +115,13 @@ def scan(policy):
 def open_positions(s,policy,cands,today):
     active={p['ticker'] for p in s['positions']}; out=[]
     for c in cands:
-        if c['ticker'] in active or s.get('trades_today',0)>=MAX_TOTAL_TRADES_PER_DAY or len(s['positions'])>=TOP_N:continue
-        cnt=int(s.get('trades_by_ticker_today',{}).get(c['ticker'],0));
-        if cnt>=MAX_TRADES_PER_TICKER_PER_DAY:continue
+        if c['ticker'] in active:continue
+        allowed,reason=paper_risk_policy.position_allowed(s,c['ticker'])
+        if not allowed:
+            if reason.startswith('日次損失上限') or reason.startswith('最大DD'):
+                print(f'⛔ リスクポリシーにより新規エントリー全停止: {reason}'); break
+            continue
+        cnt=int(s.get('trades_by_ticker_today',{}).get(c['ticker'],0))
         budget=float(s['capital'])/TOP_N; price=float(c['price']); shares=int(budget//price) if price>0 else 0
         if shares<=0:continue
         invested=shares*price
@@ -148,8 +165,10 @@ def main():
     for i,p in enumerate(s['positions'],1):rows.append(f"{i}. {'買い' if p['direction']=='BUY' else '空売り'} {p['company']}（{p['ticker']}）\n   {p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円｜取得 {p['entry_price']:,.1f}円｜現在値 {p['current_price']:,.1f}円｜含み損益 {p['unrealized_pnl']:+,.0f}円\n   利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}\n   🧠 買った基準: {p.get('buy_reason','')}")
     msg=('🤖 利益優先ループ｜TOP10 ペーパートレード\n━━━━━━━━━━━━━━━━━━\n'
          f'📅 {today} {now:%H:%M} JST｜⚠️ 実注文なし\n対象430銘柄｜取得成功 {scanned}｜候補 {len(cands)}｜新規 {len(opened)}件\n'
-         f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}%｜TP {policy["atr_tp_multiplier"]:.2f}ATR｜SL {policy["atr_sl_multiplier"]:.2f}ATR\n\n🏆 保有中\n'+('\n'.join(rows) if rows else '保有なし')+
-         f'\n\n📈 本日損益 {daily:+,.0f}円\n💰 総資産 {equity:,.0f}円｜開始100万円から {equity-INITIAL_CAPITAL:+,.0f}円｜累積利益率 {cum:+.2f}%')
-    for m in closed:print(m)
-    print(msg); discord_send(msg,required=True)
-if __name__=='__main__':main()
+         f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}｜TP×{policy["atr_tp_multiplier"]:.1f}｜SL×{policy["atr_sl_multiplier"]:.1f}\n'
+         f'💰総資産 {equity:,.0f}円｜本日 {daily:+,.0f}円｜累計 {cum:+.2f}%\n'
+         f'📦 保有 {len(s["positions"])}件\n' + ('\n'.join(rows) if rows else 'なし'))
+    for m in closed: discord_send(m)
+    discord_send(msg)
+
+if __name__=='__main__': main()
