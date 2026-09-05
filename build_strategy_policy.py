@@ -13,6 +13,11 @@ MIN_OOS_TRADES = 20
 MIN_OOS_PF = 1.00
 MIN_OOS_AVG_RETURN = 0.00
 MIN_OOS_TO_VALIDATION_PF = 0.60
+# adversarial_strategy_validator.pyと同じ外れ値免除ロジック。
+# あちらでoos_pass=Trueとして通した候補(validation_pfが外れ値のためratio条件を免除)を、
+# ここで生のoos_validation_pf_ratio>=0.60だけで再度弾いてしまうと、
+# 向こうの修正が実質無効化されてしまうため揃える。
+MAX_VALIDATION_PF_FOR_RATIO = 10.0
 MAX_VALIDATION_DD = 30.0
 MIN_VALIDATION_TRADES = 50
 MIN_VALIDATION_PF = 1.00
@@ -181,11 +186,15 @@ approved = approved[
     & (approved["validation_dd"].abs() <= MAX_VALIDATION_DD)
 ]
 
+ratio_ok = (
+    (approved["oos_validation_pf_ratio"] >= MIN_OOS_TO_VALIDATION_PF)
+    | (approved["validation_pf"] > MAX_VALIDATION_PF_FOR_RATIO)
+)
 approved = approved[
     (approved["oos_signals"] >= MIN_OOS_TRADES)
     & (approved["oos_pf"] >= MIN_OOS_PF)
     & (approved["oos_avg_return"] > MIN_OOS_AVG_RETURN)
-    & (approved["oos_validation_pf_ratio"] >= MIN_OOS_TO_VALIDATION_PF)
+    & ratio_ok
 ]
 
 approved = approved[
