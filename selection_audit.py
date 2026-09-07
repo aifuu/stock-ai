@@ -67,7 +67,7 @@ def run():
     rows = []
     scanned = 0
 
-    # 430銘柄を同じ runtime universe から取得し、まず出来高・トレンド等の一次候補を作る。
+    # 日経225(225銘柄)を同じ runtime universe から取得し、まず出来高・トレンド等の一次候補を作る。
     for ticker in TICKERS:
         d = pt.download(ticker)
         if d is None or len(d) < 150:

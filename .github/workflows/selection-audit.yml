@@ -33,7 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
-      - name: Apply expanded stock universe
+      - name: Apply Nikkei 225 stock universe
         run: |
           python apply_expanded_universe.py
           python - <<'PY'
@@ -46,7 +46,7 @@ jobs:
                   for target in node.targets:
                       if isinstance(target,ast.Name) and target.id=='TICKERS': vals=ast.literal_eval(node.value)
           print(f'✅ Audit runtime universe = {len(vals)}銘柄')
-          if len(vals) < 250: raise SystemExit('❌ 拡張ユニバースが250未満')
+          if len(vals) != 225: raise SystemExit('❌ 日経225ユニバースが225銘柄ではありません')
           PY
 
       - name: Syntax check

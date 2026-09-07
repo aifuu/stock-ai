@@ -11,13 +11,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_BASE_FILE = SCRIPT_DIR / "stock_scan.py"
 DEFAULT_WF_FILE = SCRIPT_DIR / "walk_forward.py"
 
-# 既存96銘柄に未登録の4銘柄を追加し、100銘柄にする。
-DEFAULT_EXTRA_TICKERS = [
-    "6762.T",  # TDK
-    "7735.T",  # SCREENホールディングス
-    "6981.T",  # 村田製作所
-    "4543.T",  # テルモ
-]
+# 日経225(nikkei225_universe.py)へ移行済み。stock_scan.py側は既に225銘柄
+# 完結しているため、追加で補うべき銘柄はない。
+DEFAULT_EXTRA_TICKERS = []
 
 # 285A.T のような英字入りコードも許可。
 TICKER_PATTERN = re.compile(r"^[0-9A-Z]{4}\.T$")
@@ -96,7 +92,7 @@ def replace_tickers(path: Path, tickers: list[str], *, backup: bool = True) -> N
     tmp_path.replace(path)
 
 
-def sync(base_file: Path, wf_file: Path, target_count: int = 100, *, backup: bool = True) -> None:
+def sync(base_file: Path, wf_file: Path, target_count: int = 225, *, backup: bool = True) -> None:
     stock_tickers = list(dict.fromkeys(extract_tickers(base_file)))
     before_count = len(stock_tickers)
 
@@ -123,7 +119,7 @@ def sync(base_file: Path, wf_file: Path, target_count: int = 100, *, backup: boo
     validate_tickers(final_wf)
 
     if len(final_stock) != target_count or len(final_wf) != target_count:
-        raise RuntimeError("同期後の銘柄数が100ではありません")
+        raise RuntimeError(f"同期後の銘柄数が{target_count}ではありません")
 
     if final_stock != final_wf:
         raise RuntimeError("stock_scan.py と walk_forward.py のTICKERSが一致していません")
@@ -131,14 +127,14 @@ def sync(base_file: Path, wf_file: Path, target_count: int = 100, *, backup: boo
     print(f"✅ 銘柄ユニバース同期完了: {before_count} → {len(final_stock)}銘柄")
     print(f"  stock_scan.py   = {len(final_stock)}")
     print(f"  walk_forward.py = {len(final_wf)}")
-    print("✅ 100銘柄・重複なし・2ファイル完全一致")
+    print(f"✅ {target_count}銘柄・重複なし・2ファイル完全一致")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="銘柄ユニバース同期スクリプト")
     parser.add_argument("--base-file", type=Path, default=DEFAULT_BASE_FILE)
     parser.add_argument("--wf-file", type=Path, default=DEFAULT_WF_FILE)
-    parser.add_argument("--target-count", type=int, default=100)
+    parser.add_argument("--target-count", type=int, default=225)
     parser.add_argument("--no-backup", action="store_true")
     return parser.parse_args()
 

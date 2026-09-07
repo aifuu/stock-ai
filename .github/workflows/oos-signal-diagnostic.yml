@@ -29,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
-      - name: Verify 100 tickers
+      - name: Verify 225 tickers (Nikkei 225)
         run: |
           python - <<'PY'
           import ast
@@ -41,9 +41,9 @@ jobs:
                   for target in node.targets:
                       if isinstance(target, ast.Name) and target.id == 'TICKERS':
                           tickers = ast.literal_eval(node.value)
-          if tickers is None or len(tickers) != 100 or len(set(tickers)) != 100:
-              raise SystemExit(f'❌ 100銘柄ユニバース不正: {0 if tickers is None else len(tickers)}')
-          print('✅ 100銘柄・重複なし')
+          if tickers is None or len(tickers) != 225 or len(set(tickers)) != 225:
+              raise SystemExit(f'❌ 225銘柄ユニバース不正: {0 if tickers is None else len(tickers)}')
+          print('✅ 225銘柄・重複なし')
           PY
 
       - name: Run stage-by-stage OOS diagnostic

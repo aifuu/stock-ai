@@ -1,4 +1,4 @@
-name: Sync 100-stock universe
+name: Sync Nikkei 225 universe
 
 on:
   push:
@@ -63,7 +63,7 @@ jobs:
             echo "変更なし"
             exit 0
           fi
-          git commit -m "Sync stock universe to 100 tickers [skip ci]"
+          git commit -m "Sync stock universe to 225 tickers (Nikkei 225) [skip ci]"
 
           success=0
           for i in 1 2 3 4 5; do
