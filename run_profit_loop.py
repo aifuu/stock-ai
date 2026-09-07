@@ -60,16 +60,20 @@ def profit_priority(candidates):
         sl = float(c.get("sl", 0) or 0)
         up = float(c.get("up_probability", 0) or 0) / 100.0
         down = float(c.get("down_probability", 0) or 0) / 100.0
+        flat = float(c.get("flat_probability", 0) or 0) / 100.0
+        # 横ばい(TP/SLどちらにも届かず時間切れ決済)は損切り全額ではなく、
+        # 往復手数料分の小さなマイナスとして扱う。
+        flat_cost = -(app.FEE_RATE * 2 * 100.0)
         if price <= 0:
             ev = -999.0
         elif direction == "SHORT":
             reward = max(0.0, (1.0 - tp / price) * 100.0)
             risk = max(0.0, (sl / price - 1.0) * 100.0)
-            ev = down * reward - (1.0 - down) * risk
+            ev = down * reward - up * risk + flat * flat_cost
         else:
             reward = max(0.0, (tp / price - 1.0) * 100.0)
             risk = max(0.0, (1.0 - sl / price) * 100.0)
-            ev = up * reward - (1.0 - up) * risk
+            ev = up * reward - down * risk + flat * flat_cost
         preferred = (regime == "bullish" and direction == "BUY") or (regime == "bearish" and direction == "SHORT")
         regime_bonus = 10.0 if preferred else 0.0
         rank = 0.65 * float(c.get("score", 0)) + 0.35 * max(-10.0, min(10.0, ev)) * 10.0 + regime_bonus
