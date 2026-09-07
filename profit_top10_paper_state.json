@@ -30,11 +30,45 @@
       "current_price": 2853.0,
       "unrealized_pnl": -748.2125,
       "buy_reason": "前回選定時の買い理由を保持"
+    },
+    {
+      "ticker": "6098.T",
+      "company": "6098.T",
+      "price": 16155.0,
+      "up_probability": 34.869475182756474,
+      "down_probability": 26.26599454810051,
+      "flat_probability": 38.864530269142996,
+      "data_date": "2026-09-07",
+      "direction": "BUY",
+      "score": 38.09563191612021,
+      "tp": 18042.762183589588,
+      "sl": 15211.118908205206,
+      "buy_reason": "出来高0.2倍｜上昇トレンド｜25日線上｜75日線上｜MACD買い｜RSI54.6｜AI上昇34.9%/下落26.3%｜日経上昇",
+      "expected_value_pct": 2.5399753017942492,
+      "market_regime": "bullish",
+      "regime_preferred": true,
+      "regime_bonus": 10.0,
+      "profit_ev_pct": 0.2693,
+      "profit_priority": 35.7046,
+      "selection_level": 7,
+      "selection_mode": "forced_min_trade",
+      "top10_rank": 1,
+      "entry_date": "2026-09-07",
+      "entry_time": "10:24",
+      "entry_price": 16155.0,
+      "shares": 61,
+      "invested_amount": 985455.0,
+      "allocation": 1.0,
+      "policy_updated_at": "2026-08-29T00:00:00",
+      "current_price": 16155.0,
+      "unrealized_pnl": 0.0
     }
   ],
-  "trade_count_date": "2026-09-04",
-  "trades_today": 0,
-  "trades_by_ticker_today": {},
+  "trade_count_date": "2026-09-07",
+  "trades_today": 1,
+  "trades_by_ticker_today": {
+    "6098.T": 1
+  },
   "daily_start_capital": 1000000.0,
   "last_exit_by_ticker": {}
 }
