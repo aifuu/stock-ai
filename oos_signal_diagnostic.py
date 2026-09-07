@@ -91,7 +91,7 @@ def main():
 
         try:
             last = x.iloc[-1]
-            probs = model.predict_proba(x.iloc[-1:])[0]
+            probs = model.predict_proba(x[feature_cols].iloc[-1:])[0]
             classes = list(model.classes_)
             if not all(c in classes for c in (0, 1, 2)):
                 reasons["classes"].append(ticker)

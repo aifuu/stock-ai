@@ -89,7 +89,7 @@ def scan(policy):
         scanned+=1; x=features(d,nik).dropna(subset=cols)
         if x.empty: continue
         try:
-            last=x.iloc[-1]; pr=model.predict_proba(x.iloc[-1:])[0]; cl=list(model.classes_)
+            last=x.iloc[-1]; pr=model.predict_proba(x[cols].iloc[-1:])[0]; cl=list(model.classes_)
             if not all(c in cl for c in (0,1,2)): continue
             down,up,flat=float(pr[cl.index(0)])*100,float(pr[cl.index(2)])*100,float(pr[cl.index(1)])*100
             ls,ss=directional_score(last,up/100,down/100); a=float(atr(d).iloc[-1])
