@@ -27,8 +27,8 @@
       "profit_priority": 41.5897,
       "shares": 350,
       "invested_amount": 998200.0,
-      "current_price": 2853.0,
-      "unrealized_pnl": -748.2125,
+      "current_price": 2851.0,
+      "unrealized_pnl": -1447.8274999999999,
       "buy_reason": "前回選定時の買い理由を保持"
     },
     {
@@ -60,14 +60,47 @@
       "invested_amount": 985455.0,
       "allocation": 1.0,
       "policy_updated_at": "2026-08-29T00:00:00",
-      "current_price": 16155.0,
+      "current_price": 16105.0,
+      "unrealized_pnl": -4132.323
+    },
+    {
+      "ticker": "4062.T",
+      "company": "4062.T",
+      "price": 22080.0,
+      "up_probability": 34.86515002168515,
+      "down_probability": 32.5810109785142,
+      "flat_probability": 32.55383899980067,
+      "data_date": "2026-09-07",
+      "direction": "BUY",
+      "score": 39.34465875487916,
+      "tp": 26582.760047711607,
+      "sl": 19828.619976144197,
+      "buy_reason": "出来高0.6倍｜トレンド中立｜25日線上｜75日線上｜MACD買い｜RSI60.9｜AI上昇34.9%/下落32.6%｜日経上昇",
+      "expected_value_pct": 3.7879151857364977,
+      "market_regime": "bullish",
+      "regime_preferred": true,
+      "regime_bonus": 10.0,
+      "profit_ev_pct": 0.4686,
+      "profit_priority": 37.214,
+      "selection_level": 7,
+      "selection_mode": "forced_min_trade",
+      "top10_rank": 1,
+      "entry_date": "2026-09-07",
+      "entry_time": "11:22",
+      "entry_price": 22080.0,
+      "shares": 45,
+      "invested_amount": 993600.0,
+      "allocation": 1.0,
+      "policy_updated_at": "2026-08-29T00:00:00",
+      "current_price": 22080.0,
       "unrealized_pnl": 0.0
     }
   ],
   "trade_count_date": "2026-09-07",
-  "trades_today": 1,
+  "trades_today": 2,
   "trades_by_ticker_today": {
-    "6098.T": 1
+    "6098.T": 1,
+    "4062.T": 1
   },
   "daily_start_capital": 1000000.0,
   "last_exit_by_ticker": {}
