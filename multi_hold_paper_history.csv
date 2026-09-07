@@ -1,0 +1,2 @@
+﻿entry_date,ticker,company,direction,entry_price,hold_days,exit_date,score,up_probability,down_probability,forced_entry,exit_price,return_pct,status,exit_reason
+2026-09-07,6098.T,6098.T,BUY,16150.0,1,2026-09-07,38.09563191612021,34.869475182756474,26.26599454810051,True,16140.0,-0.17191950464395914,CLOSED,TARGET_CLOSE

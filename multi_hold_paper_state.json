@@ -1,23 +1,10 @@
 {
   "capitals": {
-    "1": 1000000.0,
+    "1": 998280.8049535605,
     "3": 1000000.0,
     "5": 1000000.0
   },
   "positions": [
-    {
-      "entry_date": "2026-09-07",
-      "ticker": "6098.T",
-      "company": "6098.T",
-      "direction": "BUY",
-      "entry_price": 16150.0,
-      "hold_days": 1,
-      "exit_date": "2026-09-07",
-      "score": 38.09563191612021,
-      "up_probability": 34.869475182756474,
-      "down_probability": 26.26599454810051,
-      "forced_entry": true
-    },
     {
       "entry_date": "2026-09-07",
       "ticker": "6098.T",
