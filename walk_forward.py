@@ -1713,9 +1713,9 @@ def calculate_signal(
     )
  
     # stock_scan.py と同じ配分
-    BASE_TECH_WEIGHT = 0.525
-    AI_WEIGHT = 0.225
-    TESTA_WEIGHT = 0.25
+    BASE_TECH_WEIGHT = 0.50
+    AI_WEIGHT = 0.05
+    TESTA_WEIGHT = 0.45
  
     ai_score = (
         technical_score_normalized

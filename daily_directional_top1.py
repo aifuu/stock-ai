@@ -146,7 +146,7 @@ def load_model():
 def directional_score(row,up,down):
     r,macd,sig,ma25,ma75,vol=float(row["rsi"]),float(row["macd"]),float(row["signal"]),float(row["ma25"]),float(row["ma75"]),float(row["vol_ratio"]); low,hi=float(row["from_low"]),float(row["from_high"])
     short_tech=(25 if r>65 else 0)+(25 if macd<sig else 0)+(20 if ma25<ma75 else 0)+(20 if vol>1.5 else 0)+(15 if low<10 else (8 if low<20 else 0)); tech_long=(25 if r<35 else 0)+(25 if macd>sig else 0)+(20 if ma25>ma75 else 0)+(20 if vol>1.5 else 0)+(15 if hi>-10 else (8 if hi>-20 else 0))
-    return tech_long/105*100*0.525+up*100*0.225+float(row["momentum_score"])*0.25, short_tech/105*100*0.525+down*100*0.225+(100-float(row["momentum_score"]))*0.25
+    return tech_long/105*100*0.50+up*100*0.05+float(row["momentum_score"])*0.45, short_tech/105*100*0.50+down*100*0.05+(100-float(row["momentum_score"]))*0.45
 
 
 def load_state():

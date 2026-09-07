@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 import profit_top10_paper as pt
-from daily_directional_top1 import TICKERS, NAMES, make_nikkei, load_model, features, atr, directional_score
+from daily_directional_top1 import TICKERS, NAMES, make_nikkei, load_model, features, atr, directional_score, FEATURES
 
 TZ = ZoneInfo('Asia/Tokyo')
 AUDIT_FILE = 'selection_audit.csv'
@@ -38,9 +38,9 @@ def component_scores(row, up, down):
     vol_pts = 20 if vol > 1.5 else 0
     range_pts = 15 if high > -10 else (8 if high > -20 else 0)
     tech_raw = rsi_pts + macd_pts + ma_pts + vol_pts + range_pts
-    tech_component = tech_raw / 105 * 100 * 0.525
-    prob_component = up * 0.225
-    momentum_component = momentum * 0.25
+    tech_component = tech_raw / 105 * 100 * 0.50
+    prob_component = up * 0.05
+    momentum_component = momentum * 0.45
     total = tech_component + prob_component + momentum_component
     return {
         'rsi_points': rsi_pts,
@@ -78,7 +78,7 @@ def run():
             continue
         try:
             last = x.iloc[-1]
-            pr = model.predict_proba(x.iloc[-1:])[0]
+            pr = model.predict_proba(x[FEATURES].iloc[-1:])[0]
             classes = list(model.classes_)
             if not all(c in classes for c in (0, 1, 2)):
                 continue
