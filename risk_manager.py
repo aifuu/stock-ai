@@ -43,10 +43,8 @@ DEFAULT_POLICY = {
     "hold_days": 5,
 }
 
-
 def now_jst():
     return datetime.now(ZoneInfo("Asia/Tokyo"))
-
 
 def load_policy():
     if not os.path.exists(POLICY_FILE):
@@ -62,7 +60,6 @@ def load_policy():
     except Exception as e:
         print(f"⚠ policy読み込み失敗: {e}")
         return DEFAULT_POLICY.copy()
-
 
 def default_risk_state():
     current = now_jst()
@@ -86,19 +83,12 @@ def default_risk_state():
         "last_update": current.isoformat(),
     }
 
-
 def save_risk_state(state):
     state["last_update"] = now_jst().isoformat()
     with open(RISK_STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-
 def _completed_negative_month_streak():
-    """確定済みの買い推奨取引だけから連続マイナス月を計算する。
-
-    当月は途中経過なので自動停止判定には含めない。
-    result が確定している行だけを対象にし、監視シグナルは対象外。
-    """
     if not os.path.exists(PREDICTION_HISTORY_FILE):
         return 0
     try:
@@ -130,7 +120,6 @@ def _completed_negative_month_streak():
         print(f"⚠ 月間連続マイナス判定失敗: {e}")
         return 0
 
-
 def _sync_state(state):
     today = now_jst().strftime("%Y-%m-%d")
     month = now_jst().strftime("%Y-%m")
@@ -153,7 +142,6 @@ def _sync_state(state):
     state["monthly_stop"] = bool(state.get("monthly_stop", False))
     return state
 
-
 def load_risk_state():
     if not os.path.exists(RISK_STATE_FILE):
         state = default_risk_state()
@@ -171,12 +159,10 @@ def load_risk_state():
         print(f"⚠ risk state読み込み失敗: {e}")
         return default_risk_state()
 
-
 def get_available_cash(state=None):
     state = _sync_state(state or load_risk_state())
     invested = sum(float(p.get("value", 0.0)) for p in state["positions"].values())
     return max(0.0, float(state.get("capital", INITIAL_CAPITAL)) - invested)
-
 
 def current_risk_per_trade(state=None):
     state = state or load_risk_state()
@@ -184,10 +170,8 @@ def current_risk_per_trade(state=None):
         return RISK_PER_TRADE * LOCKED_RISK_MULTIPLIER
     return RISK_PER_TRADE
 
-
 def max_loss_amount(capital, state=None):
     return float(capital) * current_risk_per_trade(state)
-
 
 def current_drawdown(capital=None):
     state = _sync_state(load_risk_state())
@@ -195,21 +179,27 @@ def current_drawdown(capital=None):
     peak = float(state.get("peak_capital", capital))
     return 0.0 if peak <= 0 else capital / peak - 1.0
 
-
 def calculate_position_size(capital, entry_price, stop_loss, open_value=0.0, state=None):
     capital = float(capital)
     entry_price = float(entry_price)
     stop_loss = float(stop_loss)
     if capital <= 0 or entry_price <= 0 or stop_loss >= entry_price:
         return 0
+
     per_share_risk = entry_price - stop_loss
     risk_budget = max_loss_amount(capital, state)
     shares_by_risk = int(risk_budget / per_share_risk)
+
     available_cash = max(0.0, capital - float(open_value))
     cost_per_share = entry_price * (1.0 + TRADING_FEE_RATE + SLIPPAGE_RATE)
     shares_by_cash = int(available_cash / cost_per_share) if cost_per_share > 0 else 0
-    return max(0, min(shares_by_risk, shares_by_cash))
 
+    raw_shares = min(shares_by_risk, shares_by_cash)
+
+    # 日本株の現物ペーパートレードは100株単位のみ。
+    # 100株未満になった場合は取引自体を行わない。
+    lots = raw_shares // 100
+    return max(0, lots * 100)
 
 def build_position_plan(capital, ticker, entry_price, take_profit, stop_loss):
     state = _sync_state(load_risk_state())
@@ -223,10 +213,12 @@ def build_position_plan(capital, ticker, entry_price, take_profit, stop_loss):
             "position_value": 0.0,
             "max_loss": 0.0,
         }
+
     open_value = sum(float(p.get("value", 0.0)) for p in state["positions"].values())
     shares = calculate_position_size(capital, entry_price, stop_loss, open_value, state)
     position_value = shares * float(entry_price)
     max_loss = shares * max(0.0, float(entry_price) - float(stop_loss))
+
     return {
         "ticker": ticker,
         "shares": shares,
@@ -237,24 +229,11 @@ def build_position_plan(capital, ticker, entry_price, take_profit, stop_loss):
         "max_loss": max_loss,
     }
 
-
 def risk_check():
-    """トレード可否を毎回フラットに再評価する。
-
-    ★修正点(2026-08):
-    以前は enabled の初期値を前回保存された trading_enabled から
-    引き継いでいたため、register_position_open() が「同時保有数上限」で
-    一度 trading_enabled=False を保存すると、ポジションが減っても
-    同日中はずっと停止したままになるバグがあった。
-    monthly_stop・daily_stop・DD・連敗・同時保有数はすべて現在の
-    state から都度再計算できる条件なので、enabled は毎回 True から
-    再評価すれば十分で、継続性が必要な monthly_stop は別フィールドで
-    管理されている。
-    """
     state = _sync_state(load_risk_state())
     capital = float(state.get("capital", INITIAL_CAPITAL))
     reason = ""
-    enabled = True  # ← 前回値を引き継がず、毎回フラットに再評価する
+    enabled = True
     daily_start = float(state.get("day_start_capital", capital))
     daily_pnl = capital - daily_start
     state["daily_pnl"] = daily_pnl
@@ -279,6 +258,7 @@ def risk_check():
     if len(state.get("positions", {})) >= MAX_POSITIONS:
         enabled = False
         reason = "同時保有数上限"
+
     month_start = float(state.get("month_start_capital", capital))
     if LOCK_RISK_AFTER_TARGET and month_start > 0 and capital / month_start - 1.0 >= MONTHLY_TARGET:
         state["risk_locked"] = True
@@ -302,14 +282,9 @@ def risk_check():
         "max_positions": MAX_POSITIONS,
     }
 
-
 def register_position_open(ticker, shares, entry_price):
     state = _sync_state(load_risk_state())
 
-    # ★追加(2026-08): monthly_stop はここでも直接確認する。
-    # risk_check() を呼び忘れた将来のコード変更があっても、
-    # 月間連続マイナス停止中は新規ポジションを登録させない
-    # 最後の安全装置として機能させる。
     if state.get("monthly_stop", False):
         print(f"🛑 月間連続マイナス停止中のため新規ポジション登録不可: {ticker}")
         return state
@@ -324,25 +299,26 @@ def register_position_open(ticker, shares, entry_price):
         return state
 
     if len(positions) >= MAX_POSITIONS:
-        # ★修正(2026-08): ここで trading_enabled=False を保存しない。
-        # 同時保有数上限は risk_check() が毎回 state から
-        # 再評価する条件なので、この一件を見送るだけでよい。
-        # 以前はここで trading_enabled=False を永続化していたため、
-        # 決済でポジションが減っても同日中は新規エントリーが
-        # 復活しないバグになっていた。
         print(f"⚠ 同時保有数上限のため見送り: {ticker}")
         return state
 
+    # 日本株現物の売買単位は100株。100株未満や100株単位でない値は登録しない。
     shares = int(shares)
-    entry_price = float(entry_price)
-    if shares <= 0 or entry_price <= 0:
+    if shares < 100 or shares % 100 != 0:
+        print(f"⚠ 日本株現物は100株単位のため登録不可: {ticker} shares={shares}")
         return state
+
+    entry_price = float(entry_price)
+    if entry_price <= 0:
+        return state
+
     value = shares * entry_price
     available = get_available_cash(state)
     required = value * (1.0 + TRADING_FEE_RATE + SLIPPAGE_RATE)
     if required > available:
         print(f"🛑 資金不足: {ticker}")
         return state
+
     positions[ticker] = {
         "shares": shares,
         "entry_price": entry_price,
@@ -355,13 +331,13 @@ def register_position_open(ticker, shares, entry_price):
     save_risk_state(state)
     return state
 
-
 def register_position_close(ticker, exit_price, new_capital=None):
     state = _sync_state(load_risk_state())
     position = state["positions"].pop(ticker, None)
     if position is None:
         save_risk_state(state)
         return state
+
     shares = int(position.get("shares", 0))
     entry = float(position.get("entry_price", 0.0))
     exit_price = float(exit_price)
@@ -369,6 +345,7 @@ def register_position_close(ticker, exit_price, new_capital=None):
     total_cost = shares * (entry + exit_price) * TRADING_FEE_RATE
     total_cost += shares * (entry + exit_price) * SLIPPAGE_RATE
     pnl = gross_pnl - total_cost
+
     state["realized_pnl"] = float(state.get("realized_pnl", 0.0)) + pnl
     state["capital"] = float(new_capital) if new_capital is not None else float(state.get("capital", INITIAL_CAPITAL)) + pnl
     state["peak_capital"] = max(float(state.get("peak_capital", state["capital"])), state["capital"])
@@ -377,7 +354,6 @@ def register_position_close(ticker, exit_price, new_capital=None):
     state["open_positions"] = len(state["positions"])
     save_risk_state(state)
     return state
-
 
 def risk_status_text():
     check = risk_check()
