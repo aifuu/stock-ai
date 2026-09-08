@@ -593,9 +593,20 @@ def load_model():
     m=RandomForestClassifier(n_estimators=300,max_depth=7,random_state=42,class_weight="balanced",n_jobs=-1); m.fit(df[expected],df["target"].astype(int)); joblib.dump(m,MODEL_FILE); return m
 
 
+def _ma_cross_points(gap_pct,slope,near1,near2):
+    # gap_pct>0: 既にゴールデンクロス済み(25日線が75日線より上)。
+    # gap_pct<=0: 未クロス。near1%以内かつ25日線上昇中なら「接近中(強)」、
+    # near2%以内かつ上昇中なら「接近中(弱)」として部分点を与える。
+    if gap_pct>0:return 20
+    if gap_pct>-near1 and slope>0:return 15
+    if gap_pct>-near2 and slope>0:return 8
+    return 0
+
 def directional_score(row,up,down):
     r,macd,sig,ma25,ma75,vol=float(row["rsi"]),float(row["macd"]),float(row["signal"]),float(row["ma25"]),float(row["ma75"]),float(row["vol_ratio"]); low,hi=float(row["from_low"]),float(row["from_high"])
-    short_tech=(25 if r>65 else 0)+(25 if macd<sig else 0)+(20 if ma25<ma75 else 0)+(20 if vol>1.5 else 0)+(15 if low<10 else (8 if low<20 else 0)); tech_long=(25 if r<35 else 0)+(25 if macd>sig else 0)+(20 if ma25>ma75 else 0)+(20 if vol>1.5 else 0)+(15 if hi>-10 else (8 if hi>-20 else 0))
+    gap_pct=(ma25-ma75)/ma75*100 if ma75>0 else -999; slope=float(row.get("ma25_slope5",0) or 0)
+    ma_pts_long=_ma_cross_points(gap_pct,slope,1.5,3.0); ma_pts_short=_ma_cross_points(-gap_pct,-slope,1.5,3.0)
+    short_tech=(25 if r>65 else 0)+(25 if macd<sig else 0)+(ma_pts_short)+(20 if vol>1.5 else 0)+(15 if low<10 else (8 if low<20 else 0)); tech_long=(25 if r<35 else 0)+(25 if macd>sig else 0)+(ma_pts_long)+(20 if vol>1.5 else 0)+(15 if hi>-10 else (8 if hi>-20 else 0))
     return tech_long/105*100*0.50+up*100*0.05+float(row["momentum_score"])*0.45, short_tech/105*100*0.50+down*100*0.05+(100-float(row["momentum_score"]))*0.45
 
 
