@@ -547,7 +547,7 @@ def _get_futures_features():
 
 def features(df, nikkei, futures_df=None):
     x=df.copy(); c,v=x["Close"].squeeze(),x["Volume"].squeeze()
-    x["ret1"]=c.pct_change(); x["ma25"]=c.rolling(25).mean(); x["ma75"]=c.rolling(75).mean(); x["vol_ratio"]=v/v.rolling(20).mean(); x["rsi"]=rsi(c); x["adx"]=adx(x)
+    x["ret1"]=c.pct_change(); x["ma25"]=c.rolling(25).mean(); x["ma75"]=c.rolling(75).mean(); x["ma5"]=c.rolling(5).mean(); x["ma5_slope3"]=(x["ma5"]/x["ma5"].shift(3)-1)*100; x["vol_ratio"]=v/v.rolling(20).mean(); x["rsi"]=rsi(c); x["adx"]=adx(x)
     e12,e26=c.ewm(span=12,adjust=False).mean(),c.ewm(span=26,adjust=False).mean(); x["macd"]=e12-e26; x["signal"]=x["macd"].ewm(span=9,adjust=False).mean()
     hi,lo=c.rolling(252).max(),c.rolling(252).min(); x["from_high"]=(c/hi-1)*100; x["from_low"]=(c/lo-1)*100; x["_stock_ret5"]=c.pct_change(5)
     x["ret5"]=c.pct_change(5)*100; x["ret20"]=c.pct_change(20)*100; x["ma25_slope5"]=(x["ma25"]/x["ma25"].shift(5)-1)*100; x["volume_surge"]=v/v.rolling(5).mean(); rh=c.shift(1).rolling(20).max(); x["breakout20"]=(c/rh-1)*100
@@ -602,12 +602,25 @@ def _ma_cross_points(gap_pct,slope,near1,near2):
     if gap_pct>-near2 and slope>0:return 8
     return 0
 
+def _ma5_lead_points(gap_pct,slope,near1,near2):
+    # 5日線は25日線より反応が速いため、25日線/75日線の接近ボーナスより
+    # さらに早い段階の先行シグナルとして使う(例: 5日線<25日線<75日線の
+    # 下降トレンドでも、5日線が25日線に接近・上抜けし始めていれば加点)。
+    # gap_pct = (5日線-25日線)/25日線。ma_cross_pointsと同じ考え方だが、
+    # 5日線は値動きが速い分、近接判定のしきい値を狭くし満点も抑えている。
+    if gap_pct>0:return 10
+    if gap_pct>-near1 and slope>0:return 6
+    if gap_pct>-near2 and slope>0:return 3
+    return 0
+
 def directional_score(row,up,down):
     r,macd,sig,ma25,ma75,vol=float(row["rsi"]),float(row["macd"]),float(row["signal"]),float(row["ma25"]),float(row["ma75"]),float(row["vol_ratio"]); low,hi=float(row["from_low"]),float(row["from_high"])
     gap_pct=(ma25-ma75)/ma75*100 if ma75>0 else -999; slope=float(row.get("ma25_slope5",0) or 0)
     ma_pts_long=_ma_cross_points(gap_pct,slope,1.5,3.0); ma_pts_short=_ma_cross_points(-gap_pct,-slope,1.5,3.0)
-    short_tech=(25 if r>65 else 0)+(25 if macd<sig else 0)+(ma_pts_short)+(20 if vol>1.5 else 0)+(15 if low<10 else (8 if low<20 else 0)); tech_long=(25 if r<35 else 0)+(25 if macd>sig else 0)+(ma_pts_long)+(20 if vol>1.5 else 0)+(15 if hi>-10 else (8 if hi>-20 else 0))
-    return tech_long/105*100*0.50+up*100*0.05+float(row["momentum_score"])*0.45, short_tech/105*100*0.50+down*100*0.05+(100-float(row["momentum_score"]))*0.45
+    ma5=float(row.get("ma5",0) or 0); gap5_pct=(ma5-ma25)/ma25*100 if ma25>0 else -999; slope5=float(row.get("ma5_slope3",0) or 0)
+    lead_pts_long=_ma5_lead_points(gap5_pct,slope5,1.0,2.0); lead_pts_short=_ma5_lead_points(-gap5_pct,-slope5,1.0,2.0)
+    short_tech=(25 if r>65 else 0)+(25 if macd<sig else 0)+(ma_pts_short)+(20 if vol>1.5 else 0)+(15 if low<10 else (8 if low<20 else 0))+lead_pts_short; tech_long=(25 if r<35 else 0)+(25 if macd>sig else 0)+(ma_pts_long)+(20 if vol>1.5 else 0)+(15 if hi>-10 else (8 if hi>-20 else 0))+lead_pts_long
+    return tech_long/115*100*0.50+up*100*0.05+float(row["momentum_score"])*0.45, short_tech/115*100*0.50+down*100*0.05+(100-float(row["momentum_score"]))*0.45
 
 
 def load_state():
