@@ -2,7 +2,7 @@ name: AI Stock Scan - Profit Loop TOP10 Paper Trade
 
 on:
   schedule:
-    - cron: '30 23 * * 1-5'
+    - cron: '30-55/5 23 * * 1-5'
     - cron: '*/5 0-6 * * 1-5'
   workflow_dispatch: {}
 
