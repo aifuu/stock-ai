@@ -11,7 +11,7 @@ CANDIDATE_FILE = os.getenv("WF_CANDIDATE_FILE", "walk_forward_all_candidates.csv
 OOS_DAYS = int(os.getenv("WF_MULTI_OOS_DAYS", "252"))
 FOLDS = int(os.getenv("WF_MULTI_OOS_FOLDS", "4"))
 TOP_N = int(os.getenv("WF_TOP_N", "10"))
-START_DATE = os.getenv("WF_START_DATE", "2021-01-01")
+START_DATE = os.getenv("WF_START_DATE", "2018-01-01")
 # 注: このEND_DATE自体はmain()内では使われず、実際のFold終端日は
 # walk_forward_all_candidates.csvの実データ最終日から動的に決まる
 # （run_fold呼び出し側で個別end_dateをWF_END_DATEとして渡す）。

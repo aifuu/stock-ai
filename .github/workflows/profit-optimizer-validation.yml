@@ -13,6 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  WF_START_DATE: '2018-01-01'
   WF_TOP_N: '10'
   WF_MULTI_OOS_FOLDS: '4'
   WF_MULTI_OOS_DAYS: '239'
