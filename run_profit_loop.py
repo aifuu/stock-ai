@@ -197,11 +197,14 @@ def open_top1_only(state,policy,candidates,today):
             cooldowns.pop(ticker,None)
         eligible.append(candidate)
     if not eligible:print("⏸ 候補内に新規エントリー可能なTOP1なし");return []
-    top1=eligible[0];old_top_n=app.TOP_N;old_max_total=app.MAX_TOTAL_TRADES_PER_DAY;old_max_ticker=app.MAX_TRADES_PER_TICKER_PER_DAY
+    top1=eligible[0];old_max_total=app.MAX_TOTAL_TRADES_PER_DAY;old_max_ticker=app.MAX_TRADES_PER_TICKER_PER_DAY
+    # 注意: app.TOP_N は上書きしない。budget=capital/TOP_N の計算がTOP_N=1だと
+    # 毎回「資金全額」を予算にしてしまい、複数ポジション同時保有時に資金オーバーする
+    # バグがあったため、常にapp.TOP_N(=同時保有上限と一致した分割数)を使う。
     try:
-        app.TOP_N=1;app.MAX_TOTAL_TRADES_PER_DAY=MAX_DAILY_TRADES;app.MAX_TRADES_PER_TICKER_PER_DAY=MAX_TICKER_TRADES;opened=_original_open(state,policy,[top1],today)
+        app.MAX_TOTAL_TRADES_PER_DAY=MAX_DAILY_TRADES;app.MAX_TRADES_PER_TICKER_PER_DAY=MAX_TICKER_TRADES;opened=_original_open(state,policy,[top1],today)
     finally:
-        app.TOP_N=old_top_n;app.MAX_TOTAL_TRADES_PER_DAY=old_max_total;app.MAX_TRADES_PER_TICKER_PER_DAY=old_max_ticker
+        app.MAX_TOTAL_TRADES_PER_DAY=old_max_total;app.MAX_TRADES_PER_TICKER_PER_DAY=old_max_ticker
     if opened:
         p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}%")
     return opened
