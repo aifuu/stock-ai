@@ -8,7 +8,7 @@ from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_m
 import paper_risk_policy
 
 TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
-INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000')); TOP_N=10; MAX_TRADES_PER_TICKER_PER_DAY=10; MAX_TOTAL_TRADES_PER_DAY=30; FEE_RATE=float(os.getenv('INTRADAY_FEE_RATE','0.00055')); FORCED_EXIT=dtime(15,25); SHORT_ENABLED=os.getenv('ENABLE_SHORT_PAPER','1').lower() in ('1','true','yes','on')
+INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000')); TOP_N=10; MAX_TRADES_PER_TICKER_PER_DAY=10; MAX_TOTAL_TRADES_PER_DAY=30; FEE_RATE=float(os.getenv('INTRADAY_FEE_RATE','0.00055')); FORCED_EXIT=dtime(15,25); SHORT_ENABLED=os.getenv('ENABLE_SHORT_PAPER','1').lower() in ('1','true','yes','on'); LOT_SIZE=100
 
 def discord_send(message,required=False):
     webhook=os.getenv('DISCORD_WEBHOOK','').strip()
@@ -115,6 +115,8 @@ def scan(policy):
 
 def open_positions(s,policy,cands,today):
     active={p['ticker'] for p in s['positions']}; out=[]
+    capital=float(s['capital'])
+    remaining=capital-sum(float(p.get('invested_amount',0)) for p in s['positions'])
     for c in cands:
         if c['ticker'] in active:continue
         allowed,reason=paper_risk_policy.position_allowed(s,c['ticker'])
@@ -124,10 +126,20 @@ def open_positions(s,policy,cands,today):
             continue
         cnt=int(s.get('trades_by_ticker_today',{}).get(c['ticker'],0))
         if cnt>=MAX_TRADES_PER_TICKER_PER_DAY or int(s.get('trades_today',0))>=MAX_TOTAL_TRADES_PER_DAY: continue
-        budget=float(s['capital'])/TOP_N; price=float(c['price']); shares=int(budget//price) if price>0 else 0
+        price=float(c['price'])
+        if price<=0:continue
+        # 1銘柄あたりの目安予算(資産/TOP_N)を100株単位に丸める。目安予算では
+        # 1単元(100株)すら買えない銘柄は、残り資金があれば1単元だけ買う
+        # (10分割の目安を超えて残り予算を取り崩す)。
+        slot_budget=capital/TOP_N
+        shares=(int(slot_budget//price)//LOT_SIZE)*LOT_SIZE
+        if shares<LOT_SIZE:
+            shares=LOT_SIZE if remaining>=price*LOT_SIZE else 0
         if shares<=0:continue
         invested=shares*price
-        s['positions'].append({**c,'entry_date':today,'entry_time':datetime.now(TZ).strftime('%H:%M'),'entry_price':price,'shares':shares,'invested_amount':invested,'allocation':1/TOP_N,'policy_updated_at':policy.get('updated_at'),'current_price':price,'unrealized_pnl':0.0})
+        if invested>remaining:continue
+        remaining-=invested
+        s['positions'].append({**c,'entry_date':today,'entry_time':datetime.now(TZ).strftime('%H:%M'),'entry_price':price,'shares':shares,'invested_amount':invested,'allocation':(invested/capital) if capital else 0,'policy_updated_at':policy.get('updated_at'),'current_price':price,'unrealized_pnl':0.0})
         s['trades_today']=int(s.get('trades_today',0))+1; s.setdefault('trades_by_ticker_today',{})[c['ticker']]=cnt+1; active.add(c['ticker']); out.append(c)
     return out
 
