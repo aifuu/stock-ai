@@ -61,8 +61,6 @@ def profit_priority(candidates):
         up = float(c.get("up_probability", 0) or 0) / 100.0
         down = float(c.get("down_probability", 0) or 0) / 100.0
         flat = float(c.get("flat_probability", 0) or 0) / 100.0
-        # 横ばい(TP/SLどちらにも届かず時間切れ決済)は損切り全額ではなく、
-        # 往復手数料分の小さなマイナスとして扱う。
         flat_cost = -(app.FEE_RATE * 2 * 100.0)
         if price <= 0:
             ev = -999.0
@@ -86,7 +84,6 @@ def profit_priority(candidates):
         ranked.append(item)
     return sorted(ranked, key=lambda x: (x["profit_priority"], x.get("score", 0), max(x.get("up_probability", 0), x.get("down_probability", 0))), reverse=True)
 
-# profit_top10_paper.py was refactored: use scan() and mark_and_close().
 _original_scan = app.scan
 _original_close = app.mark_and_close
 _original_open = app.open_positions
@@ -209,7 +206,6 @@ def open_top1_only(state,policy,candidates,today):
         p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}%")
     return opened
 
-# New API patch points.
 app.scan=scan_candidates_progressive
 app.mark_and_close=close_positions_with_cooldown
 app.open_positions=open_top1_only
