@@ -1,0 +1,30 @@
+name: Ad-hoc Discord Notify
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Discordに送るメッセージ'
+        required: true
+        type: string
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          MESSAGE: ${{ github.event.inputs.message }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK secret not set"; exit 1
+          fi
+          payload=$(jq -n --arg content "$MESSAGE" '{content: $content}')
+          http_code=$(curl -s -o /tmp/resp.txt -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK")
+          echo "HTTP status: $http_code"
+          cat /tmp/resp.txt
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            exit 1
+          fi
