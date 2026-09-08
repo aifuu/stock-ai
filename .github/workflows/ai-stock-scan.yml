@@ -2,22 +2,23 @@ name: AI Stock Scan - Profit Loop TOP10 Paper Trade
 
 on:
   schedule:
-    - cron: '30-55/5 23 * * 1-5'
-    - cron: '*/5 0-6 * * 1-5'
+    - cron: '20 0 * * 1-5'
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
-# Paper trading state must survive between 5-minute runs.
+# ペーパートレードのstateはAM/PMセッション間・pushの間で維持する必要がある。
 concurrency:
   group: stock-ai-paper-trading
   cancel-in-progress: false
 
 jobs:
-  profit-loop-top10:
+  session_am:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 210
+    env:
+      SESSION: AM
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -73,11 +74,7 @@ jobs:
           if len(set(counts))!=1: raise SystemExit(f'❌ 3ファイルの銘柄数不一致: {counts}')
           PY
 
-      - name: Record current scheduler phase
-        run: python intraday_scheduler.py --phase auto
-
       - name: Morning premarket phase marker
-        if: github.event_name == 'schedule' && github.event.schedule == '30 23 * * 1-5'
         run: python intraday_scheduler.py --phase premarket
 
       - name: Verify paper policy mode
@@ -93,7 +90,7 @@ jobs:
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
 
-      - name: Pre-09:30 analysis/re-score (paper-only, NO TRADE)
+      - name: AM session loop (09:20-12:35 JST, 5分おきtick)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
@@ -107,7 +104,43 @@ jobs:
           SAME_TICKER_COOLDOWN_MINUTES: '30'
           PAPER_TRADE_MODE: '1'
         run: |
-          python - <<'PY'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          case "$SESSION" in
+            AM) SESSION_END_MIN=755 ;;
+            PM) SESSION_END_MIN=935 ;;
+            *) echo "❌ SESSION未設定"; exit 1 ;;
+          esac
+
+          START_EPOCH=$(date +%s)
+          HARD_WALL_EPOCH=$((START_EPOCH + 320*60))
+          FAIL_STREAK=0
+          ITER=0
+
+          while true; do
+            ITER=$((ITER+1))
+            NOW_EPOCH=$(date +%s)
+            CUR_MIN=$(TZ=Asia/Tokyo date +%H:%M | awk -F: '{print $1*60+$2}')
+
+            if [ "$CUR_MIN" -ge "$SESSION_END_MIN" ]; then
+              echo "🏁 セッション終了時刻に到達 (JST分=$CUR_MIN >= $SESSION_END_MIN)"
+              break
+            fi
+            if [ "$NOW_EPOCH" -ge "$HARD_WALL_EPOCH" ]; then
+              echo "🏁 320分の上限に到達、セッションを終了します"
+              break
+            fi
+
+            echo "▶ tick $(date -u +%H:%M:%S)Z JST分=$CUR_MIN iteration=$ITER SESSION=$SESSION"
+
+            (
+            set -e
+            rm -f scan_candidates_cache.json
+
+            python intraday_scheduler.py --phase auto
+
+            python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
           import subprocess
@@ -119,7 +152,218 @@ jobs:
               print(f'⏭ 09:30以降: pre-09:30分析フェーズをスキップ {now:%H:%M JST}')
           PY
 
-      - name: Run unified Profit Loop TOP10 (paper-only, 09:30 onward)
+            python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now=datetime.now(ZoneInfo('Asia/Tokyo')); minutes=now.hour*60+now.minute
+          if minutes < 570:
+              print(f'⏸ 09:30前のためペーパートレード開始を待機: {now:%H:%M JST}')
+              raise SystemExit(0)
+          if minutes >= 930:
+              print(f'⏸ 市場終了後のためペーパートレードを実行しません: {now:%H:%M JST}')
+              raise SystemExit(0)
+          print(f'▶ 09:30以降: FAST Profit Loop TOP10を実行 {now:%H:%M JST}')
+          PY
+            python paper_fast_entrypoint.py
+
+            python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now=datetime.now(ZoneInfo('Asia/Tokyo')); minutes=now.hour*60+now.minute
+          if minutes < 570 or minutes >= 930:
+              print(f'⏸ 取引時間外のためmulti-hold売買処理を実行しません: {now:%H:%M JST}')
+              raise SystemExit(0)
+          print(f'▶ multi-hold 1/3/5日ペーパートレードを実行 {now:%H:%M JST}')
+          PY
+            python multi_hold_paper.py
+
+            python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now=datetime.now(ZoneInfo('Asia/Tokyo'))
+          if now.hour*60+now.minute < 570:
+              print(f'⏸ 09:30前なのでstate検証をスキップ: {now:%H:%M JST}')
+          else:
+              import json
+              from pathlib import Path
+              p=Path('profit_top10_paper_state.json')
+              if not p.exists(): raise SystemExit('❌ 09:30以降なのにpaper stateがありません')
+              s=json.loads(p.read_text(encoding='utf-8')); positions=s.get('positions',[])
+              if len(positions)>10: raise SystemExit(f'❌ TOP10超過: {len(positions)}')
+              if int(s.get('trades_today',0))>30: raise SystemExit(f'❌ 1日30回超過: {s.get("trades_today")}')
+              print(f'✅ 仮想資産: {float(s.get("capital",0)):,.0f}円')
+              print(f'✅ 最大DD: {float(s.get("max_dd",0)):.2f}%')
+              print(f'✅ 保有ポジション: {len(positions)}/10')
+              print(f'✅ 本日新規: {int(s.get("trades_today",0))}/30')
+          PY
+
+            python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now=datetime.now(ZoneInfo('Asia/Tokyo'))
+          if now.hour*60+now.minute < 570:
+              print(f'⏸ 09:30前なのでmulti-hold state検証をスキップ: {now:%H:%M JST}')
+          else:
+              import json
+              from pathlib import Path
+              p=Path('multi_hold_paper_state.json')
+              if not p.exists(): raise SystemExit('❌ 09:30以降なのにmulti-hold stateがありません')
+              s=json.loads(p.read_text(encoding='utf-8')); positions=s.get('positions',[])
+              if len(positions)>3: raise SystemExit(f'❌ 保有バケット超過: {len(positions)}')
+              tickers={x.get('ticker') for x in positions}
+              if len(tickers)>1: raise SystemExit(f'❌ 同一銘柄ルール違反: {tickers}')
+              holds={x.get('hold_days') for x in positions}
+              if not holds.issubset({1,3,5}): raise SystemExit(f'❌ 保有日数不正: {holds}')
+              capitals=s.get('capitals',{})
+              print(f"✅ 1日資産: {float(capitals.get('1',0)):,.0f}円")
+              print(f"✅ 3日資産: {float(capitals.get('3',0)):,.0f}円")
+              print(f"✅ 5日資産: {float(capitals.get('5',0)):,.0f}円")
+              print(f'✅ 保有バケット: {len(positions)}/3')
+          PY
+
+            python profit_top10_monthly_performance.py
+            python multi_hold_monthly_performance.py
+
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json multi_hold_paper_state.json multi_hold_paper_history.csv multi_hold_monthly_performance.csv; do
+              if [ -f "$f" ]; then git add "$f"; fi
+            done
+
+            if ! git diff --cached --quiet; then
+              git commit -m 'chore: persist intraday paper trading state [skip ci]'
+              PUSH_OK=0
+              for i in 1 2 3 4 5; do
+                git fetch origin main
+                if git rebase --autostash origin/main && git push origin HEAD:main; then
+                  echo '✅ paper ledger push成功'
+                  PUSH_OK=1
+                  break
+                fi
+                git rebase --abort || true
+                sleep $((i*3))
+              done
+              if [ "$PUSH_OK" -ne 1 ]; then
+                echo '❌ paper ledger push失敗'
+                exit 1
+              fi
+            else
+              echo 'ℹ️ 変更なし、pushスキップ'
+            fi
+            )
+            ITER_EXIT=$?
+
+            if [ "$ITER_EXIT" -eq 0 ]; then
+              FAIL_STREAK=0
+            else
+              FAIL_STREAK=$((FAIL_STREAK+1))
+              echo "⚠️ イテレーション失敗 (exit=$ITER_EXIT), 連続失敗=$FAIL_STREAK"
+              if [ "$FAIL_STREAK" -ge 6 ]; then
+                echo "❌ 連続6回(30分)失敗のためセッションを中断します"
+                exit 1
+              fi
+            fi
+
+            NOW_SEC=$(date +%s)
+            REMAINDER=$((NOW_SEC % 300))
+            SLEEP_SEC=$((300 - REMAINDER))
+            if [ "$SLEEP_SEC" -ge 300 ]; then SLEEP_SEC=300; fi
+            echo "💤 次のtickまで${SLEEP_SEC}秒sleep"
+            sleep "$SLEEP_SEC"
+          done
+
+      - name: Upload paper artifacts (AM)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profit-loop-top10-am-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            strategy_policy.json
+            profit_top10_paper_state.json
+            profit_top10_paper_history.csv
+            profit_top10_monthly_performance.csv
+            intraday_scheduler_state.json
+            multi_hold_paper_state.json
+            multi_hold_paper_history.csv
+            multi_hold_monthly_performance.csv
+            daily_retrain_report.csv
+            trade_feedback_report.csv
+
+  session_pm:
+    needs: [session_am]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    env:
+      SESSION: PM
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Apply Nikkei 225 stock universe
+        run: |
+          python apply_expanded_universe.py
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          tree=ast.parse(Path('daily_directional_top1.py').read_text(encoding='utf-8'))
+          vals=[]
+          for node in tree.body:
+              if isinstance(node,ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target,ast.Name) and target.id=='TICKERS': vals=ast.literal_eval(node.value)
+          print(f'✅ Runtime universe = {len(vals)}銘柄')
+          if len(vals) != 225: raise SystemExit('❌ 日経225ユニバースが225銘柄ではありません')
+          PY
+
+      - name: Syntax check
+        run: |
+          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py multi_hold_paper.py multi_hold_monthly_performance.py
+
+      - name: Verify Nikkei 225 tickers
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          files=['daily_directional_top1.py','walk_forward.py','stock_scan.py']
+          counts=[]
+          for f in files:
+              tree=ast.parse(Path(f).read_text(encoding='utf-8')); vals=[]
+              for node in tree.body:
+                  if isinstance(node,ast.Assign):
+                      for target in node.targets:
+                          if isinstance(target,ast.Name) and target.id=='TICKERS': vals=ast.literal_eval(node.value)
+              if len(vals)!=225 or len(vals)!=len(set(vals)): raise SystemExit(f'❌ {f}: {len(vals)}銘柄/重複あり')
+              counts.append(len(vals)); print(f'✅ {f}: {len(vals)}銘柄・重複なし')
+          if len(set(counts))!=1: raise SystemExit(f'❌ 3ファイルの銘柄数不一致: {counts}')
+          PY
+
+      - name: Verify paper policy mode
+        run: |
+          test -s strategy_policy.json
+          python - <<'PY'
+          import json
+          p=json.load(open('strategy_policy.json',encoding='utf-8'))
+          status=str(p.get('status','')).upper()
+          if status not in ('APPROVED','PENDING'):
+              raise SystemExit(f'❌ 不正なpolicy status: {status}')
+          print(f'✅ paper policy mode = {status}')
+          if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
+          PY
+
+      - name: PM session loop (12:25-15:35 JST, 5分おきtick、15:25強制決済を含む)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
@@ -133,7 +377,55 @@ jobs:
           SAME_TICKER_COOLDOWN_MINUTES: '30'
           PAPER_TRADE_MODE: '1'
         run: |
-          python - <<'PY'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          case "$SESSION" in
+            AM) SESSION_END_MIN=755 ;;
+            PM) SESSION_END_MIN=935 ;;
+            *) echo "❌ SESSION未設定"; exit 1 ;;
+          esac
+
+          START_EPOCH=$(date +%s)
+          HARD_WALL_EPOCH=$((START_EPOCH + 320*60))
+          FAIL_STREAK=0
+          ITER=0
+
+          while true; do
+            ITER=$((ITER+1))
+            NOW_EPOCH=$(date +%s)
+            CUR_MIN=$(TZ=Asia/Tokyo date +%H:%M | awk -F: '{print $1*60+$2}')
+
+            if [ "$CUR_MIN" -ge "$SESSION_END_MIN" ]; then
+              echo "🏁 セッション終了時刻に到達 (JST分=$CUR_MIN >= $SESSION_END_MIN)"
+              break
+            fi
+            if [ "$NOW_EPOCH" -ge "$HARD_WALL_EPOCH" ]; then
+              echo "🏁 320分の上限に到達、セッションを終了します"
+              break
+            fi
+
+            echo "▶ tick $(date -u +%H:%M:%S)Z JST分=$CUR_MIN iteration=$ITER SESSION=$SESSION"
+
+            (
+            set -e
+            rm -f scan_candidates_cache.json
+
+            python intraday_scheduler.py --phase auto
+
+            python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import subprocess
+          now=datetime.now(ZoneInfo('Asia/Tokyo')); minutes=now.hour*60+now.minute
+          if minutes < 570:
+              print(f'▶ 09:30前: 分析・TOP10再評価のみ実行 {now:%H:%M JST}')
+              subprocess.run(['python','paper_fast_entrypoint.py','--analysis-only'],check=True)
+          else:
+              print(f'⏭ 09:30以降: pre-09:30分析フェーズをスキップ {now:%H:%M JST}')
+          PY
+
+            python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
           now=datetime.now(ZoneInfo('Asia/Tokyo')); minutes=now.hour*60+now.minute
@@ -145,20 +437,9 @@ jobs:
               raise SystemExit(0)
           print(f'▶ 09:30以降: FAST Profit Loop TOP10を実行 {now:%H:%M JST}')
           PY
-          python paper_fast_entrypoint.py
+            python paper_fast_entrypoint.py
 
-      # IMPORTANT: paper_fast_entrypoint.py manages the TOP10 loop, but it does
-      # not create multi_hold_paper_state.json. Run the independent 1/3/5-day
-      # ledger explicitly so the state checked below actually exists.
-      - name: Run multi-hold 1/3/5-day paper ledger (paper-only)
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
-          AI_INITIAL_CAPITAL: '1000000'
-          INTRADAY_FEE_RATE: '0.00055'
-          PAPER_TRADE_MODE: '1'
-        run: |
-          python - <<'PY'
+            python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
           now=datetime.now(ZoneInfo('Asia/Tokyo')); minutes=now.hour*60+now.minute
@@ -167,102 +448,106 @@ jobs:
               raise SystemExit(0)
           print(f'▶ multi-hold 1/3/5日ペーパートレードを実行 {now:%H:%M JST}')
           PY
-          python multi_hold_paper.py
+            python multi_hold_paper.py
 
-      - name: Verify TOP10 paper state
-        if: github.event_name != 'schedule' || github.event.schedule != '30 23 * * 1-5'
-        run: |
-          python - <<'PY'
+            python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
           now=datetime.now(ZoneInfo('Asia/Tokyo'))
           if now.hour*60+now.minute < 570:
-              print(f'⏸ 09:30前なのでstate検証をスキップ: {now:%H:%M JST}'); raise SystemExit(0)
-          import json
-          from pathlib import Path
-          p=Path('profit_top10_paper_state.json')
-          if not p.exists(): raise SystemExit('❌ 09:30以降なのにpaper stateがありません')
-          s=json.loads(p.read_text(encoding='utf-8')); positions=s.get('positions',[])
-          if len(positions)>10: raise SystemExit(f'❌ TOP10超過: {len(positions)}')
-          if int(s.get('trades_today',0))>30: raise SystemExit(f'❌ 1日30回超過: {s.get("trades_today")}')
-          print(f'✅ 仮想資産: {float(s.get("capital",0)):,.0f}円')
-          print(f'✅ 最大DD: {float(s.get("max_dd",0)):.2f}%')
-          print(f'✅ 保有ポジション: {len(positions)}/10')
-          print(f'✅ 本日新規: {int(s.get("trades_today",0))}/30')
+              print(f'⏸ 09:30前なのでstate検証をスキップ: {now:%H:%M JST}')
+          else:
+              import json
+              from pathlib import Path
+              p=Path('profit_top10_paper_state.json')
+              if not p.exists(): raise SystemExit('❌ 09:30以降なのにpaper stateがありません')
+              s=json.loads(p.read_text(encoding='utf-8')); positions=s.get('positions',[])
+              if len(positions)>10: raise SystemExit(f'❌ TOP10超過: {len(positions)}')
+              if int(s.get('trades_today',0))>30: raise SystemExit(f'❌ 1日30回超過: {s.get("trades_today")}')
+              print(f'✅ 仮想資産: {float(s.get("capital",0)):,.0f}円')
+              print(f'✅ 最大DD: {float(s.get("max_dd",0)):.2f}%')
+              print(f'✅ 保有ポジション: {len(positions)}/10')
+              print(f'✅ 本日新規: {int(s.get("trades_today",0))}/30')
           PY
 
-      - name: Verify multi-hold paper state
-        if: github.event_name != 'schedule' || github.event.schedule != '30 23 * * 1-5'
-        run: |
-          python - <<'PY'
+            python - <<'PY'
           from datetime import datetime
           from zoneinfo import ZoneInfo
           now=datetime.now(ZoneInfo('Asia/Tokyo'))
           if now.hour*60+now.minute < 570:
-              print(f'⏸ 09:30前なのでmulti-hold state検証をスキップ: {now:%H:%M JST}'); raise SystemExit(0)
-          import json
-          from pathlib import Path
-          p=Path('multi_hold_paper_state.json')
-          if not p.exists(): raise SystemExit('❌ 09:30以降なのにmulti-hold stateがありません')
-          s=json.loads(p.read_text(encoding='utf-8')); positions=s.get('positions',[])
-          if len(positions)>3: raise SystemExit(f'❌ 保有バケット超過: {len(positions)}')
-          tickers={x.get('ticker') for x in positions}
-          if len(tickers)>1: raise SystemExit(f'❌ 同一銘柄ルール違反: {tickers}')
-          holds={x.get('hold_days') for x in positions}
-          if not holds.issubset({1,3,5}): raise SystemExit(f'❌ 保有日数不正: {holds}')
-          capitals=s.get('capitals',{})
-          print(f"✅ 1日資産: {float(capitals.get('1',0)):,.0f}円")
-          print(f"✅ 3日資産: {float(capitals.get('3',0)):,.0f}円")
-          print(f"✅ 5日資産: {float(capitals.get('5',0)):,.0f}円")
-          print(f'✅ 保有バケット: {len(positions)}/3')
+              print(f'⏸ 09:30前なのでmulti-hold state検証をスキップ: {now:%H:%M JST}')
+          else:
+              import json
+              from pathlib import Path
+              p=Path('multi_hold_paper_state.json')
+              if not p.exists(): raise SystemExit('❌ 09:30以降なのにmulti-hold stateがありません')
+              s=json.loads(p.read_text(encoding='utf-8')); positions=s.get('positions',[])
+              if len(positions)>3: raise SystemExit(f'❌ 保有バケット超過: {len(positions)}')
+              tickers={x.get('ticker') for x in positions}
+              if len(tickers)>1: raise SystemExit(f'❌ 同一銘柄ルール違反: {tickers}')
+              holds={x.get('hold_days') for x in positions}
+              if not holds.issubset({1,3,5}): raise SystemExit(f'❌ 保有日数不正: {holds}')
+              capitals=s.get('capitals',{})
+              print(f"✅ 1日資産: {float(capitals.get('1',0)):,.0f}円")
+              print(f"✅ 3日資産: {float(capitals.get('3',0)):,.0f}円")
+              print(f"✅ 5日資産: {float(capitals.get('5',0)):,.0f}円")
+              print(f'✅ 保有バケット: {len(positions)}/3')
           PY
 
-      - name: Update TOP10 monthly performance
-        if: always()
-        run: python profit_top10_monthly_performance.py
+            python profit_top10_monthly_performance.py
+            python multi_hold_monthly_performance.py
 
-      - name: Update multi-hold monthly performance
-        if: always()
-        run: python multi_hold_monthly_performance.py
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json multi_hold_paper_state.json multi_hold_paper_history.csv multi_hold_monthly_performance.csv; do
+              if [ -f "$f" ]; then git add "$f"; fi
+            done
 
-      - name: Save paper ledger
-        id: ledger_save
-        if: always()
-        run: |
-          set -e
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json multi_hold_paper_state.json multi_hold_paper_history.csv multi_hold_monthly_performance.csv; do
-            if [ -f "$f" ]; then git add "$f"; echo "✅ ledger add: $f"; else echo "ℹ️ ledger skip: $f"; fi
-          done
-          if git diff --cached --quiet; then
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git commit -m 'chore: persist intraday paper trading state [skip ci]'
-          echo 'changed=true' >> "$GITHUB_OUTPUT"
-
-      - name: Push paper ledger
-        if: steps.ledger_save.outputs.changed == 'true'
-        run: |
-          set -e
-          for i in 1 2 3 4 5; do
-            git fetch origin main
-            if git rebase --autostash origin/main && git push origin HEAD:main; then
-              echo '✅ paper ledger push成功'
-              exit 0
+            if ! git diff --cached --quiet; then
+              git commit -m 'chore: persist intraday paper trading state [skip ci]'
+              PUSH_OK=0
+              for i in 1 2 3 4 5; do
+                git fetch origin main
+                if git rebase --autostash origin/main && git push origin HEAD:main; then
+                  echo '✅ paper ledger push成功'
+                  PUSH_OK=1
+                  break
+                fi
+                git rebase --abort || true
+                sleep $((i*3))
+              done
+              if [ "$PUSH_OK" -ne 1 ]; then
+                echo '❌ paper ledger push失敗'
+                exit 1
+              fi
+            else
+              echo 'ℹ️ 変更なし、pushスキップ'
             fi
-            git rebase --abort || true
-            sleep $((i*3))
-          done
-          echo '❌ paper ledger push失敗'
-          exit 1
+            )
+            ITER_EXIT=$?
 
-      - name: Upload paper artifacts
+            if [ "$ITER_EXIT" -eq 0 ]; then
+              FAIL_STREAK=0
+            else
+              FAIL_STREAK=$((FAIL_STREAK+1))
+              echo "⚠️ イテレーション失敗 (exit=$ITER_EXIT), 連続失敗=$FAIL_STREAK"
+              if [ "$FAIL_STREAK" -ge 6 ]; then
+                echo "❌ 連続6回(30分)失敗のためセッションを中断します"
+                exit 1
+              fi
+            fi
+
+            NOW_SEC=$(date +%s)
+            REMAINDER=$((NOW_SEC % 300))
+            SLEEP_SEC=$((300 - REMAINDER))
+            if [ "$SLEEP_SEC" -ge 300 ]; then SLEEP_SEC=300; fi
+            echo "💤 次のtickまで${SLEEP_SEC}秒sleep"
+            sleep "$SLEEP_SEC"
+          done
+
+      - name: Upload paper artifacts (PM)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: profit-loop-top10-${{ github.run_id }}
+          name: profit-loop-top10-pm-${{ github.run_id }}
           if-no-files-found: warn
           path: |
             strategy_policy.json
