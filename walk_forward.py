@@ -79,7 +79,7 @@ def send_discord(message):
  
 START_DATE = os.getenv(
     "WF_START_DATE",
-    "2021-01-01"
+    "2018-01-01"
 )
  
 # ★修正(2026-09): デフォルトを固定過去日にすると、WF_END_DATE未指定の

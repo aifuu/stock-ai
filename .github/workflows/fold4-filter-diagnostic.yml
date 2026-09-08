@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  WF_START_DATE: '2021-01-01'
+  WF_START_DATE: '2018-01-01'
   WF_MULTI_OOS_DAYS: '239'
   WF_TOP_N: '10'
 
