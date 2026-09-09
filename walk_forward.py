@@ -1762,7 +1762,11 @@ def calculate_signal(
     ma75 = float(
         df_row["ma75"]
     )
- 
+
+    ma25_slope5 = float(
+        df_row["ma25_slope5"]
+    )
+
     vol_ratio = float(
         df_row["vol_ratio"]
     )
@@ -1797,9 +1801,22 @@ def calculate_signal(
     if macd > signal:
         technical_score += 25
  
-    if ma25 > ma75:
+    # ゴールデンクロス接近ボーナス: 既にma25>ma75なら満点(20)は従来通り。
+    # 未クロスでもma75との乖離が小さく、ma25自体が上昇中(ma25_slope5>0)なら
+    # 「接近中」として段階的に部分点を与える。上限20点は変えないため
+    # technical_score_normalizedの正規化係数(115.0)への影響はない。
+    ma_gap_pct = (
+        (ma25 - ma75) / ma75 * 100
+        if ma75 > 0 else -999
+    )
+
+    if ma_gap_pct > 0:
         technical_score += 20
- 
+    elif ma_gap_pct > -1.5 and ma25_slope5 > 0:
+        technical_score += 15
+    elif ma_gap_pct > -3.0 and ma25_slope5 > 0:
+        technical_score += 8
+
     if vol_ratio > 1.5:
         technical_score += 20
  
