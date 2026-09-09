@@ -134,7 +134,7 @@ jobs:
 
             echo "▶ tick $(date -u +%H:%M:%S)Z JST分=$CUR_MIN iteration=$ITER SESSION=$SESSION"
 
-            (
+            if (
             set -e
             rm -f scan_candidates_cache.json
 
@@ -248,8 +248,11 @@ jobs:
             else
               echo 'ℹ️ 変更なし、pushスキップ'
             fi
-            )
-            ITER_EXIT=$?
+            ); then
+              ITER_EXIT=0
+            else
+              ITER_EXIT=$?
+            fi
 
             if [ "$ITER_EXIT" -eq 0 ]; then
               FAIL_STREAK=0
@@ -407,7 +410,7 @@ jobs:
 
             echo "▶ tick $(date -u +%H:%M:%S)Z JST分=$CUR_MIN iteration=$ITER SESSION=$SESSION"
 
-            (
+            if (
             set -e
             rm -f scan_candidates_cache.json
 
@@ -521,8 +524,11 @@ jobs:
             else
               echo 'ℹ️ 変更なし、pushスキップ'
             fi
-            )
-            ITER_EXIT=$?
+            ); then
+              ITER_EXIT=0
+            else
+              ITER_EXIT=$?
+            fi
 
             if [ "$ITER_EXIT" -eq 0 ]; then
               FAIL_STREAK=0
