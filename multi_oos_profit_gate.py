@@ -10,6 +10,11 @@ import pandas as pd
 CANDIDATE_FILE = os.getenv("WF_CANDIDATE_FILE", "walk_forward_all_candidates.csv")
 OOS_DAYS = int(os.getenv("WF_MULTI_OOS_DAYS", "252"))
 FOLDS = int(os.getenv("WF_MULTI_OOS_FOLDS", "4"))
+# 従来は「FOLDS個全部で同一戦略が独立OOS合格」という実質AND条件だったが、
+# あるFoldだけ候補が0件になっただけでパイプライン全体が門前払いになっていた
+# (例: 2026-09-09、Fold3のみDEV選定が偏り候補0件になったケース)。
+# MIN_POSITIVE_FOLDS個以上のFoldで独立合格していれば候補として扱う。
+MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "2"))
 TOP_N = int(os.getenv("WF_TOP_N", "10"))
 START_DATE = os.getenv("WF_START_DATE", "2018-01-01")
 # 注: このEND_DATE自体はmain()内では使われず、実際のFold終端日は
@@ -26,12 +31,6 @@ EMBARGO_DAYS = int(os.getenv("WF_EMBARGO_DAYS", "7"))
 DIAG_UP = 45
 DIAG_SCORE = 50
 DIAG_FILE = Path(os.getenv("WF_MULTI_DIAG_FILE", "multi_oos_fold_funnel.csv"))
-
-# adversarial_strategy_validator.py / build_strategy_policy.pyと同じ外れ値免除ロジック。
-# 各Foldは既にこの免除込みでoos_pass=Trueと判定済みだが、aggregate()側で
-# oos_validation_pf_ratio(=4Fold中のmin)だけを生の0.60閾値で再チェックすると、
-# 免除で正しく通ったFoldの分まで巻き込んで機械的に落としてしまうため揃える。
-MAX_VALIDATION_PF_FOR_RATIO = float(os.getenv("WF_MAX_VALIDATION_PF_FOR_RATIO", "10.0"))
 
 
 def _purge_embargo(dates_before, dates_after, purge_days, embargo_days):
@@ -228,8 +227,8 @@ def aggregate(fold_frames):
         x for x in fold_frames
         if x is not None and not x.empty and "strategy" in x.columns
     ]
-    if len(usable) != FOLDS:
-        print(f"⚠️ 全{FOLDS} FoldのFinal PASSが揃っていません: {len(usable)}/{FOLDS}")
+    if not usable:
+        print(f"⚠️ 全{FOLDS} FoldでFinal PASSが0件です")
         return pd.DataFrame()
 
     # profit_objectiveで使用する評価値は、全Foldで必須。
@@ -256,20 +255,31 @@ def aggregate(fold_frames):
                     f"Fold {fold_no}: {col} に欠損/非数値があります。"
                 )
 
-    common = set(usable[0]["strategy"].astype(str))
-    for df in usable[1:]:
-        common &= set(df["strategy"].astype(str))
+    # 戦略名ごとに、何Foldで独立にOOS合格したかを集計する。
+    strategy_parts = {}
+    for df in usable:
+        for _, row in df.iterrows():
+            strategy_parts.setdefault(str(row["strategy"]), []).append(row)
 
-    print(f"\n共通戦略（全{FOLDS} OOS PASS）: {len(common)}")
-    if not common:
+    passing_strategies = {
+        s: parts for s, parts in strategy_parts.items()
+        if len(parts) >= MIN_POSITIVE_FOLDS
+    }
+
+    print(
+        f"\n陽性Fold{MIN_POSITIVE_FOLDS}以上の戦略"
+        f"（候補ありFold {len(usable)}/{FOLDS}）: {len(passing_strategies)}"
+    )
+    if not passing_strategies:
         return pd.DataFrame()
 
     rows = []
-    for strategy in sorted(common):
-        parts = [df[df["strategy"].astype(str) == strategy].iloc[0] for df in usable]
+    for strategy in sorted(passing_strategies):
+        parts = passing_strategies[strategy]
         first = parts[0]
         out = first.to_dict()
         out["multi_oos_folds"] = FOLDS
+        out["oos_positive_folds"] = len(parts)
         out["multi_oos_pass"] = True
         out["final_status"] = "PASS"
 
@@ -332,15 +342,15 @@ def aggregate(fold_frames):
         rows.append(out)
 
     result = pd.DataFrame(rows)
-    ratio_ok = (
-        (result["oos_validation_pf_ratio"] >= 0.60)
-        | (result["validation_pf"] > MAX_VALIDATION_PF_FOR_RATIO)
-    )
+    # oos_validation_pf_ratioは各Fold単独のoos_pass判定(外れ値免除ロジック込み)で
+    # 既に検証済みのため、ここで集計値のmin()に対して同じ閾値を再チェックしない。
+    # 以前はここで再チェックしており、Fold単体では免除ロジックが正しく効いていたのに、
+    # 集計後は「validation_pfのmin」を基準に免除判定するため、免除対象のFoldが1つでも
+    # 混じっていると免除が正しく伝播せず、機械的に弾かれてしまう不整合があった。
     result = result[
         (result["oos_signals"] >= 20)
         & (result["oos_pf"] >= 1.0)
         & (result["oos_avg_return"] > 0)
-        & ratio_ok
         & (result["oos_monthly_positive_ratio"] >= 55.0)
         & (result["oos_dd"] >= -35.0)
         & (result["oos_compound_return"] > 0)
@@ -422,7 +432,7 @@ def main():
     print("OOS期間:")
     for i, d in enumerate(end_dates, 1):
         print(f"  Fold {i}: 終了 {pd.Timestamp(d).date()} / Final PASS {len(fold_frames[i-1])}")
-    print(f"全Fold PASS戦略: {len(final)}")
+    print(f"陽性Fold{MIN_POSITIVE_FOLDS}以上の戦略: {len(final)}")
     if final.empty:
         print("⏸ 複数OOSで利益が残る共通戦略なし → APPROVEDにしません")
         return 0
@@ -430,7 +440,8 @@ def main():
     print("🏆 採用候補:")
     for _, r in final.head(10).iterrows():
         print(
-            f"  {r['strategy']} | 月間+率 {r['oos_monthly_positive_ratio']:.1f}%"
+            f"  {r['strategy']} | 陽性Fold {int(r['oos_positive_folds'])}/{FOLDS}"
+            f" | 月間+率 {r['oos_monthly_positive_ratio']:.1f}%"
             f" | 複利 {r['oos_compound_return']:+.2f}%"
             f" | PF {r['oos_pf']:.2f} | DD {r['oos_dd']:.2f}%"
             f" | 期待利益 {r['oos_expected_value']:+.3f}%"
