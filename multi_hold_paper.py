@@ -24,7 +24,7 @@ INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000'))
 HOLDS=(1,3,5)
 WEBHOOK_URL=os.getenv('DISCORD_WEBHOOK')
 MARKET_CLOSE_MINUTES=15*60+35
-MIN_AVG_VOLUME=300_000
+MIN_AVG_VOLUME=50_000
 # ★修正(2026-09): profit_top10_paper.pyと同じ手数料率を往復(entry+exit)で適用する。
 # これまでmulti_hold_paperは手数料を一切計上しておらず、月次収益率が実態より
 # 良く見えていた。
