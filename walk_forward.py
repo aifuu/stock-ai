@@ -1817,6 +1817,10 @@ def calculate_signal(
     elif ma_gap_pct > -3.0 and ma25_slope5 > 0:
         technical_score += 8
 
+    # 診断用: 部分点(接近中)ゾーンに入っているかどうかのフラグ。
+    # ゲート判定・スコアには影響しない、VALIDATION/OOS診断ログ専用の値。
+    gc_approach = bool(ma_gap_pct <= 0 and ma_gap_pct > -3.0 and ma25_slope5 > 0)
+
     if vol_ratio > 1.5:
         technical_score += 20
  
@@ -2039,9 +2043,39 @@ def calculate_signal(
  
         "rsi":
             rsi,
- 
+
         "vol":
             vol_ratio,
+
+        # =================================================
+        # 診断用フィールド(VALIDATION/OOS専用ログ向け)。
+        # スコア・ゲート判定には一切使わない、後から
+        # 「なぜこの候補が選ばれた/落ちたか」を追えるための値。
+        # =================================================
+
+        "gc_gap":
+            ma_gap_pct,
+
+        "gc_approach":
+            gc_approach,
+
+        "gc_slope":
+            ma25_slope5,
+
+        "atr_ratio":
+            atr_ratio,
+
+        "adx":
+            float(df_row["adx"]),
+
+        "breakout20":
+            float(df_row["breakout20"]),
+
+        "relative_strength":
+            float(df_row["relative_strength"]),
+
+        "volume_surge":
+            float(df_row["volume_surge"]),
     }
  
  
@@ -3478,7 +3512,35 @@ for pos, prediction_date in enumerate(
                             "vol"
                         ]
                     ),
- 
+
+                # =================================================
+                # 診断用フィールド(VALIDATION/OOS専用ログ向け)
+                # =================================================
+
+                "gc_gap":
+                    float(candidate["gc_gap"]),
+
+                "gc_approach":
+                    bool(candidate["gc_approach"]),
+
+                "gc_slope":
+                    float(candidate["gc_slope"]),
+
+                "atr_ratio":
+                    float(candidate["atr_ratio"]),
+
+                "adx":
+                    float(candidate["adx"]),
+
+                "breakout20":
+                    float(candidate["breakout20"]),
+
+                "relative_strength":
+                    float(candidate["relative_strength"]),
+
+                "volume_surge":
+                    float(candidate["volume_surge"]),
+
                 # =================================================
                 # ここを追加: 事前計算した売買結果
                 # =================================================

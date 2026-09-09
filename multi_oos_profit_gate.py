@@ -159,6 +159,17 @@ def run_fold(fold_no, end_date, all_candidates):
             raise RuntimeError(f"Fold {fold_no}: {name} が生成されませんでした")
         shutil.copy2(src, fold_dir / name)
 
+    # 診断用CSV(VALIDATION/OOSのみ)。存在すればコピーするが、ゲート判定には
+    # 使わないため欠落してもRuntimeErrorにはしない。
+    optional_diag_outputs = [
+        "adversarial_fold_diagnostics.csv",
+        "adversarial_fold_trade_diagnostics.csv",
+    ]
+    for name in optional_diag_outputs:
+        src = Path(name)
+        if src.exists():
+            shutil.copy2(src, fold_dir / name)
+
     # OOS期待利益はprofit_objectiveの5%を担う正式な評価値。
     # 欠落時に .get(..., 0) で黙って0にせず、非空のOOS結果では必須列として検証する。
     oos_path = fold_dir / "adversarial_oos_results.csv"

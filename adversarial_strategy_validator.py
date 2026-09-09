@@ -160,7 +160,13 @@ def select_for_phase(phase_df, up, score, nikkei):
     return x.sort_values(["date", "score", "up_prob"], ascending=[True, False, False]).groupby("date", group_keys=False).head(TOP_N).copy()
 
 
-def run_strategy(phase_df, up, score, nikkei, tp, sl, hold):
+# 診断用(VALIDATION/OOS専用): 「なぜこの候補が選ばれた/落ちたか」を後から
+# 追えるようにするための特徴量スナップショット。ゲート判定には一切使わない。
+TRADE_DIAG_COLUMNS = ["gc_gap", "gc_approach", "gc_slope", "adx", "breakout20", "relative_strength", "volume_surge", "atr_ratio", "vol", "rsi"]
+trade_diagnostics = []
+
+
+def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, phase_name=None, collect_diagnostics=False):
     rows = []
     for _, r in select_for_phase(phase_df, up, score, nikkei).iterrows():
         result = evaluate_trade(r.ticker, r.date, float(r.price), float(r.atr_ratio), tp, sl, hold)
@@ -168,6 +174,11 @@ def run_strategy(phase_df, up, score, nikkei, tp, sl, hold):
             continue
         name, ret, days = result
         rows.append({"date": r.date, "ticker": r.ticker, "score": r.score, "up_prob": r.up_prob, "result": name, "return": ret, "hold_days": days, "phase": r.phase, "risk_unit": max(1e-8, float(r.atr_ratio) / 100.0 * float(sl))})
+        if collect_diagnostics:
+            diag = {"strategy": strategy_name, "phase": phase_name or r.phase, "date": r.date, "ticker": r.ticker, "result": name, "return": ret, "hold_days": days}
+            for c in TRADE_DIAG_COLUMNS:
+                diag[c] = getattr(r, c, np.nan)
+            trade_diagnostics.append(diag)
     return pd.DataFrame(rows)
 
 
@@ -284,7 +295,7 @@ dev_candidates.to_csv("adversarial_dev_selected_candidates.csv", index=False, en
 # Validation
 validation_results = []
 for _, row in dev_candidates.iterrows():
-    rd = run_strategy(validation_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
+    rd = run_strategy(validation_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), strategy_name=row.strategy, phase_name="VALIDATION", collect_diagnostics=True)
     st = stats(rd)
     lower_avg = block_bootstrap_lower(rd["return"].values, alpha=MULTIPLE_TEST_ALPHA) if not rd.empty else np.nan
     validation_results.append({**row.to_dict(), **{f"validation_{k}": v for k, v in st.items()}, "validation_avg_lower": lower_avg})
@@ -299,7 +310,7 @@ validation_summary.to_csv("adversarial_validation_results.csv", index=False, enc
 passed_validation = validation_summary[validation_summary.validation_pass].copy() if not validation_summary.empty else pd.DataFrame()
 oos_results = []
 for _, row in passed_validation.iterrows():
-    rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
+    rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), strategy_name=row.strategy, phase_name="OOS", collect_diagnostics=True)
     oos_results.append({**row.to_dict(), **{f"oos_{k}": v for k, v in stats(rd).items()}})
 oos_summary = pd.DataFrame(oos_results)
 if not oos_summary.empty:
@@ -350,6 +361,32 @@ if not final_pass.empty:
 else:
     final_pass = pd.DataFrame(columns=["final_status", "up_threshold", "score_threshold", "nikkei_filter", "tp_multiplier", "sl_multiplier", "hold_days"])
 final_pass.to_csv("adversarial_final_candidates.csv", index=False, encoding="utf-8-sig")
+
+# 診断用CSV(VALIDATION/OOSのみ)。ゲート判定・選定ロジックには一切影響しない。
+# トレード単位: adversarial_fold_trade_diagnostics.csv
+# 戦略×フェーズ単位の集計: adversarial_fold_diagnostics.csv
+trade_diag_df = pd.DataFrame(trade_diagnostics)
+trade_diag_df.to_csv("adversarial_fold_trade_diagnostics.csv", index=False, encoding="utf-8-sig")
+
+if not trade_diag_df.empty:
+    def _approach_rate(s):
+        return float(pd.Series(s).astype(bool).mean() * 100)
+
+    fold_diag = trade_diag_df.groupby(["strategy", "phase"]).agg(
+        signals=("result", "size"),
+        avg_return=("return", "mean"),
+        avg_gc_gap=("gc_gap", "mean"),
+        gc_approach_ratio=("gc_approach", _approach_rate),
+        avg_gc_slope=("gc_slope", "mean"),
+        avg_adx=("adx", "mean"),
+        avg_breakout20=("breakout20", "mean"),
+        avg_relative_strength=("relative_strength", "mean"),
+        avg_volume_surge=("volume_surge", "mean"),
+        avg_atr_ratio=("atr_ratio", "mean"),
+    ).reset_index()
+else:
+    fold_diag = pd.DataFrame(columns=["strategy", "phase", "signals", "avg_return", "avg_gc_gap", "gc_approach_ratio", "avg_gc_slope", "avg_adx", "avg_breakout20", "avg_relative_strength", "avg_volume_surge", "avg_atr_ratio"])
+fold_diag.to_csv("adversarial_fold_diagnostics.csv", index=False, encoding="utf-8-sig")
 
 validation_n = int(validation_summary.validation_pass.sum()) if not validation_summary.empty else 0
 oos_n = int(oos_summary.oos_pass.sum()) if not oos_summary.empty else 0
