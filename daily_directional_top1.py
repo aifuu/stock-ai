@@ -571,7 +571,7 @@ def make_nikkei():
     n=download("^N225")
     if n is None:return None
     c=n["Close"].squeeze(); ma25,ma75=c.rolling(25).mean(),c.rolling(75).mean()
-    return pd.DataFrame({"kairi25":(c-ma25)/ma25*100,"rsi":rsi(c),"macd":c.ewm(span=12,adjust=False).mean()-c.ewm(span=26,adjust=False).mean(),"ret5":c.pct_change(5)*100,"ret5_raw":c.pct_change(5)},index=n.index)
+    return pd.DataFrame({"kairi25":(c-ma25)/ma25*100,"rsi":rsi(c),"macd":c.ewm(span=12,adjust=False).mean()-c.ewm(span=26,adjust=False).mean(),"ret5":c.pct_change(5)*100,"ret5_raw":c.pct_change(5),"nikkei_uptrend":ma25>ma75},index=n.index)
 
 
 def load_model():

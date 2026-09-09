@@ -82,7 +82,7 @@ def trade_reasons(last,up,down,nikkei):
 def scan(policy):
     nik,model=make_nikkei(),load_model(); cand=[]; fallback=[]; scanned=0
     if model is None or nik is None: raise RuntimeError('日経またはAIモデル取得失敗')
-    cols=list(getattr(model,'feature_names_in_',[]))
+    cols=list(getattr(model,'feature_names_in_',[])); nikkei_filter_on=bool(policy.get('nikkei_filter'))
     for t in TICKERS:
         d=download(t)
         if d is None or len(d)<150: continue
@@ -96,7 +96,7 @@ def scan(policy):
             if not np.isfinite(a) or a<=0:continue
             intr=download_5m(t); price=float(d['Close'].iloc[-1])
             if intr is not None and not intr.empty: price=float(intr['Close'].iloc[-1])
-            nlast=nik.reindex(x.index).ffill().iloc[-1]
+            nlast=nik.reindex(x.index).ffill().iloc[-1]; nikkei_up=bool(nlast.get('nikkei_uptrend',True))
             reason=trade_reasons(last,up,down,nlast)
             base={'ticker':t,'company':NAMES.get(t,t),'price':price,'up_probability':up,'down_probability':down,'flat_probability':flat,'data_date':str(x.index[-1].date())}
             for direction,score in [('BUY',float(ls)),('SHORT',float(ss))]:
@@ -108,6 +108,8 @@ def scan(policy):
                 item['expected_value_pct']=win_prob*reward_pct-loss_prob*max(risk_pct,0.0)
                 fallback.append(item)
                 ok=(up>=policy['up_threshold'] and up>down and flat<50 and score>=policy['min_score_for_buy']) if direction=='BUY' else (SHORT_ENABLED and down>=policy['up_threshold'] and down>up and flat<50 and score>=policy['min_score_for_buy'])
+                if ok and nikkei_filter_on and direction=='BUY' and not nikkei_up: ok=False
+                if ok and nikkei_filter_on and direction=='SHORT' and nikkei_up: ok=False
                 if ok:cand.append(item)
         except Exception as e: print(t,e)
     cand.sort(key=lambda z:(z['expected_value_pct'],z['score']),reverse=True); fallback.sort(key=lambda z:(z['expected_value_pct'],z['score']),reverse=True)
@@ -143,29 +145,51 @@ def open_positions(s,policy,cands,today):
         s['trades_today']=int(s.get('trades_today',0))+1; s.setdefault('trades_by_ticker_today',{})[c['ticker']]=cnt+1; active.add(c['ticker']); out.append(c)
     return out
 
-def mark_and_close(s,now):
-    remaining=[]; msgs=[]
+def mark_and_close(s,now,policy):
+    # policy['hold_days']が示す営業日数だけ保有を許す(以前は毎日15:25に全ポジション
+    # 強制決済していたが、検証済み戦略は複数営業日保有を前提としているため一致させる)。
+    # まずエントリー翌営業日〜前営業日を日足で遡り、当日のイントラデイ監視を挟めずに
+    # TP/SLを踏んでいないか確認(セッション未実行日などの取りこぼし対策)。
+    remaining=[]; msgs=[]; hold_limit=max(1,int(policy.get('hold_days') or 1))
     for p in s['positions']:
-        d=download_5m(p['ticker'])
-        if d is None or d.empty:remaining.append(p);continue
-        bars=d[d.index.date==now.date()]; last=float(bars['Close'].iloc[-1]) if not bars.empty else float(p['entry_price']); p['current_price']=last
-        ep=float(p['entry_price']); sh=int(p.get('shares',0)); direction=p.get('direction','BUY'); unreal=((last-ep)*sh if direction=='BUY' else (ep-last)*sh)-ep*sh*FEE_RATE-last*sh*FEE_RATE; p['unrealized_pnl']=unreal
-        exit_price=reason=None
-        for ts,b in bars.iterrows():
-            if ts.time()<dtime(9,0):continue
-            hi,lo=float(b['High']),float(b['Low'])
-            if direction=='BUY':
-                if lo<=p['sl']:exit_price,reason=float(p['sl']),'SL'
-                elif hi>=p['tp']:exit_price,reason=float(p['tp']),'TP'
-            else:
-                if hi>=p['sl']:exit_price,reason=float(p['sl']),'SL'
-                elif lo<=p['tp']:exit_price,reason=float(p['tp']),'TP'
-            if reason or ts.time()>=FORCED_EXIT:
-                if not reason:exit_price,reason=float(b['Close']),'EOD'
-                break
+        ep=float(p['entry_price']); sh=int(p.get('shares',0)); direction=p.get('direction','BUY'); entry_date=pd.Timestamp(p['entry_date'])
+        exit_price=reason=exit_dt=None
+        prior_days=pd.bdate_range(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date())-pd.Timedelta(days=1))
+        if len(prior_days)>0:
+            daily=download(p['ticker'],period='3mo')
+            if daily is not None and not daily.empty:
+                for ts,b in daily[daily.index.normalize().isin(prior_days)].iterrows():
+                    hi,lo=float(b['High']),float(b['Low'])
+                    if direction=='BUY':
+                        if lo<=p['sl'] and hi>=p['tp']:exit_price,reason=float(p['sl']),'SL'
+                        elif hi>=p['tp']:exit_price,reason=float(p['tp']),'TP'
+                        elif lo<=p['sl']:exit_price,reason=float(p['sl']),'SL'
+                    else:
+                        if hi>=p['sl'] and lo<=p['tp']:exit_price,reason=float(p['sl']),'SL'
+                        elif lo<=p['tp']:exit_price,reason=float(p['tp']),'TP'
+                        elif hi>=p['sl']:exit_price,reason=float(p['sl']),'SL'
+                    if reason:exit_dt=ts;break
+        held=len(pd.bdate_range(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date())))
+        if exit_price is None:
+            d=download_5m(p['ticker'])
+            if d is not None and not d.empty:
+                bars=d[d.index.date==now.date()]; last=float(bars['Close'].iloc[-1]) if not bars.empty else float(p.get('current_price',ep)); p['current_price']=last
+                for ts,b in bars.iterrows():
+                    if ts.time()<dtime(9,0):continue
+                    hi,lo=float(b['High']),float(b['Low'])
+                    if direction=='BUY':
+                        if lo<=p['sl']:exit_price,reason=float(p['sl']),'SL'
+                        elif hi>=p['tp']:exit_price,reason=float(p['tp']),'TP'
+                    else:
+                        if hi>=p['sl']:exit_price,reason=float(p['sl']),'SL'
+                        elif lo<=p['tp']:exit_price,reason=float(p['tp']),'TP'
+                    if reason:exit_dt=ts;break
+                    if held>=hold_limit and ts.time()>=FORCED_EXIT:exit_price,reason=float(b['Close']),'HOLD_LIMIT';exit_dt=ts;break
+        cur=float(p.get('current_price',ep)); unreal=((cur-ep)*sh if direction=='BUY' else (ep-cur)*sh)-ep*sh*FEE_RATE-cur*sh*FEE_RATE; p['unrealized_pnl']=unreal
         if exit_price is None:remaining.append(p);continue
         gross=(exit_price-ep)*sh if direction=='BUY' else (ep-exit_price)*sh; pnl=gross-(ep+exit_price)*sh*FEE_RATE; s['capital']=float(s['capital'])+pnl; exit_value=exit_price*sh; total=s['capital']
-        append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':str(now.date()),'exit_time':now.strftime('%H:%M'),'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'expected_value_pct':p.get('expected_value_pct',0),'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason','')})
+        exit_date_str=str(pd.Timestamp(exit_dt).date()) if exit_dt is not None else str(now.date())
+        append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':exit_date_str,'exit_time':now.strftime('%H:%M'),'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'expected_value_pct':p.get('expected_value_pct',0),'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason','')})
         msgs.append(f"{'🟢' if pnl>=0 else '🔴'} 決済｜{p['company']}（{p['ticker']}）｜{direction}\n決済価格 {exit_price:,.1f}円｜{sh:,}株｜投資額 {p['invested_amount']:,.0f}円\n確定損益 {pnl:+,.0f}円｜💰総資産 {total:,.0f}円｜開始100万円から {total-INITIAL_CAPITAL:+,.0f}円")
     s['positions']=remaining; s['peak']=max(float(s.get('peak',s['capital'])),float(s['capital'])); return msgs
 
@@ -173,13 +197,13 @@ def main():
     now=datetime.now(TZ); today=now.strftime('%Y-%m-%d'); policy=load_policy(); s=load_state(); reset_daily(s,today)
     if not(now.weekday()<5 and dtime(9,0)<=now.time()<=dtime(15,30)):
         discord_send(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし'); return
-    closed=mark_and_close(s,now); cands,scanned=scan(policy); opened=open_positions(s,policy,cands,today); save_state(s)
+    closed=mark_and_close(s,now,policy); cands,scanned=scan(policy); opened=open_positions(s,policy,cands,today); save_state(s)
     equity=float(s['capital'])+sum(float(p.get('unrealized_pnl',0)) for p in s['positions']); daily=equity-float(s.get('daily_start_capital',INITIAL_CAPITAL)); cum=(equity/INITIAL_CAPITAL-1)*100
     rows=[]
     for i,p in enumerate(s['positions'],1):rows.append(f"{i}. {'買い' if p['direction']=='BUY' else '空売り'} {p['company']}（{p['ticker']}）\n   {p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円｜取得 {p['entry_price']:,.1f}円｜現在値 {p['current_price']:,.1f}円｜含み損益 {p['unrealized_pnl']:+,.0f}円\n   利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}｜期待値 {p.get('expected_value_pct',0):+.2f}%\n   🧠 買った基準: {p.get('buy_reason','')}")
     msg=('🤖 利益優先ループ｜TOP10 ペーパートレード\n━━━━━━━━━━━━━━━━━━\n'
          f'📅 {today} {now:%H:%M} JST｜⚠️ 実注文なし\n対象225銘柄(日経225)｜取得成功 {scanned}｜候補 {len(cands)}｜新規 {len(opened)}件\n'
-         f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}｜TP×{policy["atr_tp_multiplier"]:.1f}｜SL×{policy["atr_sl_multiplier"]:.1f}\n'
+         f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}｜TP×{policy["atr_tp_multiplier"]:.1f}｜SL×{policy["atr_sl_multiplier"]:.1f}｜日経フィルター{"ON" if policy.get("nikkei_filter") else "OFF"}｜最大保有{policy["hold_days"]}営業日\n'
          f'💰総資産 {equity:,.0f}円｜本日 {daily:+,.0f}円｜累計 {cum:+.2f}%\n'
          f'📦 保有 {len(s["positions"])}件\n' + ('\n'.join(rows) if rows else 'なし'))
     for m in closed: discord_send(m)

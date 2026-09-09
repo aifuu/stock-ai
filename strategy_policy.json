@@ -1,12 +1,19 @@
 {
   "status": "PENDING",
-  "updated_at": "2026-08-29T00:00:00",
-  "up_threshold": 50,
-  "min_score_for_buy": 60,
-  "nikkei_filter": false,
-  "atr_tp_multiplier": 3.0,
+  "updated_at": "2026-09-09T00:00:00",
+  "up_threshold": 45,
+  "min_score_for_buy": 50,
+  "nikkei_filter": true,
+  "atr_tp_multiplier": 3.5,
   "atr_sl_multiplier": 1.5,
   "hold_days": 5,
-  "source": "bootstrap_default",
-  "strategy_name": "BOOTSTRAP_DEFAULT_PENDING_OPTIMIZER"
+  "oos_compound_return": 57.85,
+  "oos_pf": 3.77,
+  "oos_avg_month_return": 12.92,
+  "oos_dd": -5.55,
+  "oos_expected_value": 2.456,
+  "oos_monthly_plus5_ratio": 75.0,
+  "source": "manual_selection",
+  "strategy_name": "UP45_SCORE50_NIKKEION_TP3.5_SL1.5_H5",
+  "note": "ユーザーが2026-09-09に手動選定。4Fold横断の自動承認(APPROVED)はFold2のoos_validation_pf_ratio外れ値によりまだ保留中(詳細はメモリ参照)。ここではPENDING状態のまま設定値のみ反映(署名不要)。"
 }
