@@ -142,7 +142,7 @@ def open_positions(s,policy,cands,today):
         if invested>remaining:continue
         remaining-=invested
         s['positions'].append({**c,'entry_date':today,'entry_time':datetime.now(TZ).strftime('%H:%M'),'entry_price':price,'shares':shares,'invested_amount':invested,'allocation':(invested/capital) if capital else 0,'policy_updated_at':policy.get('updated_at'),'current_price':price,'unrealized_pnl':0.0})
-        s['trades_today']=int(s.get('trades_today',0))+1; s.setdefault('trades_by_ticker_today',{})[c['ticker']]=cnt+1; active.add(c['ticker']); out.append(c)
+        s['trades_today']=int(s.get('trades_today',0))+1; s.setdefault('trades_by_ticker_today',{})[c['ticker']]=cnt+1; active.add(c['ticker']); out.append(s['positions'][-1])
     return out
 
 def mark_and_close(s,now,policy):
@@ -198,6 +198,13 @@ def main():
     if not(now.weekday()<5 and dtime(9,0)<=now.time()<=dtime(15,30)):
         discord_send(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし'); return
     closed=mark_and_close(s,now,policy); cands,scanned=scan(policy); opened=open_positions(s,policy,cands,today); save_state(s)
+    entry_msgs=[
+        f"🆕 エントリー｜{p['company']}（{p['ticker']}）｜{'買い' if p['direction']=='BUY' else '空売り'}\n"
+        f"取得価格 {p['entry_price']:,.1f}円｜{p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円\n"
+        f"利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}｜期待値 {p.get('expected_value_pct',0):+.2f}%\n"
+        f"🧠 買った基準: {p.get('buy_reason','')}"
+        for p in opened
+    ]
     equity=float(s['capital'])+sum(float(p.get('unrealized_pnl',0)) for p in s['positions']); daily=equity-float(s.get('daily_start_capital',INITIAL_CAPITAL)); cum=(equity/INITIAL_CAPITAL-1)*100
     rows=[]
     for i,p in enumerate(s['positions'],1):rows.append(f"{i}. {'買い' if p['direction']=='BUY' else '空売り'} {p['company']}（{p['ticker']}）\n   {p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円｜取得 {p['entry_price']:,.1f}円｜現在値 {p['current_price']:,.1f}円｜含み損益 {p['unrealized_pnl']:+,.0f}円\n   利確 {p['tp']:,.1f}｜損切 {p['sl']:,.1f}｜期待値 {p.get('expected_value_pct',0):+.2f}%\n   🧠 買った基準: {p.get('buy_reason','')}")
@@ -207,6 +214,7 @@ def main():
          f'💰総資産 {equity:,.0f}円｜本日 {daily:+,.0f}円｜累計 {cum:+.2f}%\n'
          f'📦 保有 {len(s["positions"])}件\n' + ('\n'.join(rows) if rows else 'なし'))
     for m in closed: discord_send(m)
+    for m in entry_msgs: discord_send(m)
     discord_send(msg)
 
 if __name__=='__main__': main()
