@@ -557,7 +557,7 @@ _TOPIX_FEATURE_CACHE = None
 def make_topix_features():
     t = download(TOPIX_PROXY)
     if t is None or t.empty:
-        print("⚠ TOPIX代替(1306.T)取得失敗: vs_topix_1d_pt特彴量はNaNにします")
+        print("⚠ TOPIX代替(1306.T)取得失敗: vs_topix_1d_pt特徴量はNaNにします")
         return None
     c = t["Close"].squeeze()
     return pd.DataFrame({"ret1": c.pct_change()}, index=t.index)
@@ -583,7 +583,7 @@ def features(df, nikkei, futures_df=None):
     n=nikkei.reindex(x.index).ffill(); x["nikkei_kairi25"]=n["kairi25"]; x["nikkei_rsi"]=n["rsi"]; x["nikkei_macd"]=n["macd"]; x["nikkei_return_5d"]=n["ret5"]; x["relative_strength"]=x["_stock_ret5"]-n["ret5_raw"]
 
     # --- 追加(2026-09): ローソク足形状・TOPIX相対強弱・出来高内訳 ---
-    # daily_movers_root_cause.py(観察専用レイヤー)で先行検証した特彴量を、
+    # daily_movers_root_cause.py(観察専用レイヤー)で先行検証した特徴量を、
     # 各行の時点までのデータだけで計算する形に揃えて移植(look-ahead biasを避けるため。
     # train_data.csv側のtargetはx["Close"].shift(-HOLD_DAYS)で未来を見るが、featuresは一切先読みしない既存方針に合わせている)。
     o,h,l=x["Open"].squeeze(),x["High"].squeeze(),x["Low"].squeeze()

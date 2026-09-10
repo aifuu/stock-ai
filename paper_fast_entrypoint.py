@@ -89,7 +89,7 @@ def _save_disk_scan_cache(result):
 class PaperFallbackDirectionalModel:
     """Paper-only DOWN/FLAT/UP fallback used when the real model is unavailable."""
 
-    # 実際に読む列だけを明示。directional.FEATURES全体を流用すると、新しく増えた特彴量
+    # 実際に読む列だけを明示。directional.FEATURES全体を流用すると、新しく増えた特徴量
     # (例: vs_topix_1d_pt)がNaNの銘柄をprofit_top10_paper.scan()のdropna(subset=cols)が
     # 丸ごと弾いてしまう(このフォールバックモデルは以下7列しか使わない)。
     feature_names_in_ = np.array(["momentum_score", "trend_alignment", "ret5", "ma25", "macd", "signal", "rsi"])
