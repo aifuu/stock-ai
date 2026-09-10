@@ -3,8 +3,7 @@
 
 Reads profit_top10_paper_history.csv and writes profit_top10_monthly_performance.csv.
 
-Unlike multi_hold_paper (independent 1d/3d/5d capital buckets, each replayed from an
-equity of 1.0), profit_top10_paper shares ONE capital pool across up to TOP_N=10
+profit_top10_paper shares ONE capital pool across up to TOP_N=10
 concurrent positions. Re-deriving equity by naively compounding each trade's own
 return_pct would double count overlapping exposure. Instead this script uses the
 `total_assets` column, which mark_and_close() already records as the real portfolio
