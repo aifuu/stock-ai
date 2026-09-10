@@ -274,7 +274,7 @@ def _close_with_provenance(state, now, policy):
 
 def cached_scan(policy):
     if _cache["result"] is not None:
-        print("♻️ PAPER FAST CACHE: 既取得候補プールをLEVEL1-6で再利用")
+        print("♻️ PAPER FAST CACHE: 既取得候補プールを再利用")
         return _cache["result"]
 
     disk_cached = _load_disk_scan_cache()

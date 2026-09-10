@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
-from sklearn.ensemble import RandomForestClassifier
 
 TZ = ZoneInfo("Asia/Tokyo")
 MODEL_FILE = "directional_model.pkl"
@@ -619,22 +618,24 @@ def make_nikkei():
 
 
 def load_model():
-    expected = list(FEATURES)
+    # ★変更(2026-09): 互換性判定を「完全一致」から「部分集合」に緩和した。
+    # FEATURESへの後方互換な追記(既存列は変えず新規列を足すだけ)では、
+    # 保存済みモデルが実際に使う列自体は変わらないため、モデルを不要に
+    # 無効化しない。また、不一致/読込失敗時にtrain_data.csvから無検証で
+    # その場再学習しMODEL_FILEを上書きする処理を廃止した。本番モデルの
+    # 更新はOOSゲート付きのdaily_model_retrain.pyだけが行うべきで、ここでの
+    # 無検証上書きはそのゲートを迂回してしまうため。
+    expected = set(FEATURES)
     if os.path.exists(MODEL_FILE):
         try:
-            m=joblib.load(MODEL_FILE); actual=list(getattr(m,"feature_names_in_",[]))
-            if np.array_equal(m.classes_,np.array([0,1,2])) and actual==expected:return m
-            print("⚠️ directional_model.pkl の特徴量セット不一致 → 現行FEATURESで再学習します")
-        except Exception as exc:print(f"⚠️ directional_model.pkl 読込失敗 → 再学習します: {exc}")
-    if not os.path.exists(TRAIN_FILE):return None
-    try:df=pd.read_csv(TRAIN_FILE)
-    except Exception:return None
-    required=expected+["target"]
-    if any(col not in df.columns for col in required):
-        print("❌ train_data.csv に現行TOP1特徴量が不足しているため、旧モデルへフォールバックしません"); return None
-    df=df.dropna(subset=required)
-    if len(df)<100 or df["target"].nunique()!=3:return None
-    m=RandomForestClassifier(n_estimators=300,max_depth=7,random_state=42,class_weight="balanced",n_jobs=-1); m.fit(df[expected],df["target"].astype(int)); joblib.dump(m,MODEL_FILE); return m
+            m = joblib.load(MODEL_FILE)
+            actual = list(getattr(m, "feature_names_in_", []))
+            if np.array_equal(m.classes_, np.array([0, 1, 2])) and set(actual).issubset(expected):
+                return m
+            print("⚠️ directional_model.pkl が現行featuresと非互換(使用列が削除/リネームされた) → 読み込みスキップ")
+        except Exception as exc:
+            print(f"⚠️ directional_model.pkl 読込失敗: {exc}")
+    return None
 
 
 def _ma_cross_points(gap_pct,slope,near1,near2):
