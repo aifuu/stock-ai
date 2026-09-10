@@ -6,6 +6,7 @@ Both BUY and SHORT are evaluated. Market regime determines the direction:
 Nikkei bullish -> BUY only, bearish -> SHORT only, neutral -> compare both.
 """
 from datetime import datetime, timedelta
+import json
 import os
 import numpy as np
 import pandas as pd
@@ -16,6 +17,32 @@ TOP10 = 10
 MAX_DAILY_TRADES = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
 MAX_TICKER_TRADES = int(os.getenv("MAX_TRADES_PER_TICKER_PER_DAY", "10"))
 SAME_TICKER_COOLDOWN_MINUTES = int(os.getenv("SAME_TICKER_COOLDOWN_MINUTES", "30"))
+
+# ★追加(2026-09): trade_feedback_engine.py(profit_top10_paper_history.csvの実績を
+# 集計)が出力するdirection_weightsを、TOP1優先順位付けに反映する。これまでこの
+# ファイルはどこからも読まれておらず、「取引しながら成長するAI」の輪が閉じて
+# いなかった(フィードバック分析自体もファイル参照ミスで常に空だった、別途修正済み)。
+FEEDBACK_POLICY_FILE = "trade_feedback_policy.json"
+_FEEDBACK_WEIGHTS_CACHE = None
+
+
+def _load_feedback_weights():
+    global _FEEDBACK_WEIGHTS_CACHE
+    if _FEEDBACK_WEIGHTS_CACHE is not None:
+        return _FEEDBACK_WEIGHTS_CACHE
+    weights = {"BUY": 1.0, "SHORT": 1.0}
+    try:
+        with open(FEEDBACK_POLICY_FILE, encoding="utf-8") as f:
+            policy = json.load(f)
+        raw = policy.get("direction_weights", {})
+        for key in ("BUY", "SHORT"):
+            value = raw.get(key)
+            if isinstance(value, (int, float)) and 0.5 <= value <= 2.0:
+                weights[key] = float(value)
+    except Exception:
+        pass
+    _FEEDBACK_WEIGHTS_CACHE = weights
+    return weights
 
 def _market_regime():
     try:
@@ -38,6 +65,7 @@ def profit_priority(candidates):
     """Regime gate: bearish means SHORT candidates only; bullish means BUY only.
     Neutral compares BUY/SHORT by expected value and score."""
     regime, kairi25, ret5 = _market_regime()
+    feedback_weights = _load_feedback_weights()
     print(f"🌐 日経レジーム: {regime.upper()}" + (f"｜25MA乖離 {kairi25:+.2f}%｜5日騰落 {ret5:+.2f}%" if kairi25 is not None else ""))
     ranked = []
     for c in candidates:
@@ -65,12 +93,14 @@ def profit_priority(candidates):
             ev = up * reward - down * risk + flat * flat_cost
         preferred = (regime == "bullish" and direction == "BUY") or (regime == "bearish" and direction == "SHORT")
         regime_bonus = 10.0 if preferred else 0.0
-        rank = 0.65 * float(c.get("score", 0)) + 0.35 * max(-10.0, min(10.0, ev)) * 10.0 + regime_bonus
+        feedback_weight = feedback_weights.get(direction, 1.0)
+        rank = (0.65 * float(c.get("score", 0)) + 0.35 * max(-10.0, min(10.0, ev)) * 10.0 + regime_bonus) * feedback_weight
         item = dict(c)
         item["market_regime"] = regime
         item["regime_preferred"] = bool(preferred)
         item["regime_bonus"] = regime_bonus
         item["profit_ev_pct"] = round(ev, 4)
+        item["feedback_weight"] = feedback_weight
         item["profit_priority"] = round(rank, 4)
         ranked.append(item)
     return sorted(ranked, key=lambda x: (x["profit_priority"], x.get("score", 0), max(x.get("up_probability", 0), x.get("down_probability", 0))), reverse=True)
@@ -175,7 +205,7 @@ def open_top1_only(state,policy,candidates,today):
     finally:
         app.MAX_TOTAL_TRADES_PER_DAY=old_max_total;app.MAX_TRADES_PER_TICKER_PER_DAY=old_max_ticker
     if opened:
-        p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}%")
+        p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));p["feedback_weight"]=float(top1.get("feedback_weight",1.0));print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}% FEEDBACK_W={p['feedback_weight']:.2f}")
     return opened
 
 app.scan=scan_candidates_fixed

@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-HISTORY_FILE = "directional_paper_history.csv"
+HISTORY_FILE = "profit_top10_paper_history.csv"
 POLICY_FILE = "trade_feedback_policy.json"
 REPORT_FILE = "trade_feedback_report.csv"
 JST = ZoneInfo("Asia/Tokyo")
@@ -63,6 +63,26 @@ def stats(df, key):
     return out
 
 
+def _json_safe_stats(rows):
+    """statsの返り値(pfにfloat('inf')を含みうる)をJSON書き出し可能な形にする。
+    ★変更(2026-09): resultでグルーピングすると、TP群は定義上必ず無敗(pf=inf)、
+    SL群は定義上必ず無勝(pf=0)になる。json.dump(allow_nan=False)はinf/nanを
+    直列化できずエラーになるため、既存コード(daily_retrain_report.csv等)と
+    同じ"inf"文字列表現に変換する。pf_weight()による重み計算は、この変換前の
+    生のfloat値に対して行うこと(文字列化後に渡すとnp.isfinite()が壊れる)。
+    """
+    out = []
+    for row in rows:
+        row = dict(row)
+        pf = row.get("pf")
+        if isinstance(pf, float) and not np.isfinite(pf):
+            row["pf"] = "inf" if pf > 0 else "-inf"
+        else:
+            row["pf"] = round(float(pf), 3)
+        out.append(row)
+    return out
+
+
 def pf_weight(pf):
     if not np.isfinite(pf):
         return MAX_WEIGHT
@@ -86,24 +106,28 @@ def main():
         "sample_trades": int(len(df)),
         "direction_weights": {"BUY": 1.0, "SHORT": 1.0},
     }
+    # direction_weightsの計算は、json直列化用に文字列化する前の生のpf(float)に
+    # 対して行う(pf_weight()はnp.isfinite()を使うため文字列"inf"だと壊れる)。
     direction_stats = stats(df, "direction")
     for row in direction_stats:
         if row["group"] in policy["direction_weights"]:
             policy["direction_weights"][row["group"]] = pf_weight(row["pf"])
-    policy["direction_stats"] = direction_stats
-    policy["exit_reason_stats"] = stats(df, "exit_reason")
+    policy["direction_stats"] = _json_safe_stats(direction_stats)
+    # ★変更(2026-09): 実際のprofit_top10_paper_history.csvには"exit_reason"列は
+    # 存在せず、決済理由は"result"列(TP/SL/HOLD_LIMIT)に入っている。
+    policy["result_stats"] = _json_safe_stats(stats(df, "result"))
     if "score" in df.columns:
         s = df.copy()
         s["score_bucket"] = pd.cut(s["score"], [-np.inf,50,60,70,80,np.inf],
                                     labels=["<50","50-59","60-69","70-79","80+"],
                                     right=False)
-        policy["score_bucket_stats"] = stats(s, "score_bucket")
+        policy["score_bucket_stats"] = _json_safe_stats(stats(s, "score_bucket"))
     else:
         policy["score_bucket_stats"] = []
     with open(POLICY_FILE, "w", encoding="utf-8") as f:
         json.dump(policy, f, ensure_ascii=False, indent=2, allow_nan=False)
     rows = []
-    for category in ["direction_stats", "exit_reason_stats", "score_bucket_stats"]:
+    for category in ["direction_stats", "result_stats", "score_bucket_stats"]:
         for row in policy[category]:
             rows.append({"date": today, "category": category.replace("_stats", ""), **row})
     pd.DataFrame(rows).to_csv(REPORT_FILE, index=False, encoding="utf-8-sig")

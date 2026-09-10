@@ -47,7 +47,12 @@ JST = ZoneInfo("Asia/Tokyo")
 
 MODEL_FILE = trader.MODEL_FILE
 TRAIN_FILE = trader.TRAIN_FILE
-HISTORY_FILE = trader.HISTORY_FILE
+# ★変更(2026-09): trader.HISTORY_FILE("directional_paper_history.csv")は
+# 実際には誰も書き込まない別系統の履歴ファイル名で、本番のTOP10ペーパー
+# トレードの実績は"profit_top10_paper_history.csv"(profit_top10_paper.py側)
+# に記録される。recent_live_performance()がこの取り違えのせいで常に
+# 「実績なし」になっていたため、実際に書き込まれるファイルを直接指す。
+HISTORY_FILE = "profit_top10_paper_history.csv"
 FEATURES = trader.FEATURES
 HOLD_DAYS = trader.HOLD_DAYS
 TP_MULT = trader.TP_MULT
