@@ -209,10 +209,10 @@ if not hasattr(loop, "_ORIGINAL_APPEND_HISTORY"):
 loop.app.append_history = _append_history_with_provenance
 
 
-def _close_with_provenance(state, now):
+def _close_with_provenance(state, now, policy):
     loop._ACTIVE_CLOSE_STATE = state
     try:
-        return loop.close_positions_with_cooldown(state, now)
+        return loop.close_positions_with_cooldown(state, now, policy)
     finally:
         loop._ACTIVE_CLOSE_STATE = None
 

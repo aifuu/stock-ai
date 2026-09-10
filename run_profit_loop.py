@@ -175,8 +175,8 @@ def _as_aware_jst(value):
     ts=value if isinstance(value,datetime) else app.pd.Timestamp(value).to_pydatetime()
     return ts.replace(tzinfo=app.TZ) if ts.tzinfo is None else ts.astimezone(app.TZ)
 
-def close_positions_with_cooldown(state,now):
-    before={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};messages=_original_close(state,now);after={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};cooldowns=state.setdefault("last_exit_by_ticker",{})
+def close_positions_with_cooldown(state,now,policy):
+    before={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};messages=_original_close(state,now,policy);after={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};cooldowns=state.setdefault("last_exit_by_ticker",{})
     for ticker in sorted(before-after):cooldowns[ticker]=app.pd.Timestamp(now).isoformat();print(f"⏳ 同一銘柄クールダウン開始: {ticker} {SAME_TICKER_COOLDOWN_MINUTES}分")
     return messages
 
