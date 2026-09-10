@@ -30,7 +30,13 @@ FEATURES = [
     "ret5","ret20","ma25_slope5","volume_surge","breakout20","trend_alignment","momentum_score","bb_position",
     "bb_width","obv_change","atr_ratio","volatility20","avg_volume_ratio","nikkei_kairi25","nikkei_rsi",
     "nikkei_macd","nikkei_return_5d","future_return","future_ma5","future_rsi","future_gap",
+    "upper_wick_pct","lower_wick_pct","body_pct","dist_from_20d_high_pct","failed_breakout",
+    "volume_accel_3v10","down_day_volume_bias","vs_nikkei_1d_pt","vs_topix_1d_pt",
 ]
+
+# TOPIX代替指標。yfinanceの^TOPXは価格データが取得できない(delisted扱い)ため、
+# TOPIX連動型ETF(1306.T)を代替プロキシとして使う。daily_movers_root_cause.pyと同じ方針。
+TOPIX_PROXY = "1306.T"
 
 TICKERS = [
     "2002.T",
@@ -545,6 +551,25 @@ def _get_futures_features():
     return _FUTURES_FEATURE_CACHE
 
 
+_TOPIX_FEATURE_CACHE = None
+
+
+def make_topix_features():
+    t = download(TOPIX_PROXY)
+    if t is None or t.empty:
+        print("⚠ TOPIX代替(1306.T)取得失敗: vs_topix_1d_pt特彴量はNaNにします")
+        return None
+    c = t["Close"].squeeze()
+    return pd.DataFrame({"ret1": c.pct_change()}, index=t.index)
+
+
+def _get_topix_features():
+    global _TOPIX_FEATURE_CACHE
+    if _TOPIX_FEATURE_CACHE is None:
+        _TOPIX_FEATURE_CACHE = make_topix_features()
+    return _TOPIX_FEATURE_CACHE
+
+
 def features(df, nikkei, futures_df=None):
     x=df.copy(); c,v=x["Close"].squeeze(),x["Volume"].squeeze()
     x["ret1"]=c.pct_change(); x["ma25"]=c.rolling(25).mean(); x["ma75"]=c.rolling(75).mean(); x["ma5"]=c.rolling(5).mean(); x["ma5_slope3"]=(x["ma5"]/x["ma5"].shift(3)-1)*100; x["vol_ratio"]=v/v.rolling(20).mean(); x["rsi"]=rsi(c); x["adx"]=adx(x)
@@ -556,6 +581,25 @@ def features(df, nikkei, futures_df=None):
     x["momentum_score"]=ms.clip(0,100); bbm,bbs=c.rolling(20).mean(),c.rolling(20).std(); upper,lower=bbm+2*bbs,bbm-2*bbs; x["bb_position"]=(c-lower)/(upper-lower); x["bb_width"]=(upper-lower)/bbm*100
     direction=np.sign(c.diff()); obv=(v*direction).fillna(0).cumsum(); x["obv_change"]=obv.diff(5)/v.rolling(5).sum()*100; a=atr(x); x["atr_ratio"]=a/c*100; av20,av60=v.rolling(20).mean(),v.rolling(60).mean(); x["volatility20"]=x["ret1"].rolling(20).std()*100; x["avg_volume_ratio"]=av20/av60.replace(0,np.nan)
     n=nikkei.reindex(x.index).ffill(); x["nikkei_kairi25"]=n["kairi25"]; x["nikkei_rsi"]=n["rsi"]; x["nikkei_macd"]=n["macd"]; x["nikkei_return_5d"]=n["ret5"]; x["relative_strength"]=x["_stock_ret5"]-n["ret5_raw"]
+
+    # --- 追加(2026-09): ローソク足形状・TOPIX相対強弱・出来高内訳 ---
+    # daily_movers_root_cause.py(観察専用レイヤー)で先行検証した特彴量を、
+    # 各行の時点までのデータだけで計算する形に揃えて移植(look-ahead biasを避けるため。
+    # train_data.csv側のtargetはx["Close"].shift(-HOLD_DAYS)で未来を見るが、featuresは一切先読みしない既存方針に合わせている)。
+    o,h,l=x["Open"].squeeze(),x["High"].squeeze(),x["Low"].squeeze()
+    rng=(h-l).clip(lower=1e-9)
+    x["upper_wick_pct"]=(h-np.maximum(o,c))/rng*100; x["lower_wick_pct"]=(np.minimum(o,c)-l)/rng*100; x["body_pct"]=(c-o).abs()/rng*100
+    prior_high20=h.shift(1).rolling(20).max(); x["dist_from_20d_high_pct"]=(c/prior_high20-1.0)*100; x["failed_breakout"]=((h>prior_high20)&(c<prior_high20)).astype(int)
+    x["volume_accel_3v10"]=v.rolling(3).mean()/v.rolling(10).mean().replace(0,np.nan)
+    down_vol_roll=v.where(x["ret1"]<0).rolling(10,min_periods=1).mean(); up_vol_roll=v.where(x["ret1"]>0).rolling(10,min_periods=1).mean(); x["down_day_volume_bias"]=down_vol_roll/up_vol_roll.replace(0,np.nan)
+    x["vs_nikkei_1d_pt"]=(x["ret1"]-n["ret1"])*100
+    topix_feat=_get_topix_features()
+    if topix_feat is None:
+        x["vs_topix_1d_pt"]=np.nan
+    else:
+        tp_aligned=topix_feat.reindex(pd.to_datetime(x.index).normalize()).ffill(); tp_aligned.index=x.index
+        x["vs_topix_1d_pt"]=(x["ret1"]-tp_aligned["ret1"].to_numpy())*100
+
     if futures_df is None:
         futures_df = _get_futures_features()
     if futures_df is None:
@@ -571,7 +615,7 @@ def make_nikkei():
     n=download("^N225")
     if n is None:return None
     c=n["Close"].squeeze(); ma25,ma75=c.rolling(25).mean(),c.rolling(75).mean()
-    return pd.DataFrame({"kairi25":(c-ma25)/ma25*100,"rsi":rsi(c),"macd":c.ewm(span=12,adjust=False).mean()-c.ewm(span=26,adjust=False).mean(),"ret5":c.pct_change(5)*100,"ret5_raw":c.pct_change(5),"nikkei_uptrend":ma25>ma75},index=n.index)
+    return pd.DataFrame({"kairi25":(c-ma25)/ma25*100,"rsi":rsi(c),"macd":c.ewm(span=12,adjust=False).mean()-c.ewm(span=26,adjust=False).mean(),"ret5":c.pct_change(5)*100,"ret5_raw":c.pct_change(5),"ret1":c.pct_change(),"nikkei_uptrend":ma25>ma75},index=n.index)
 
 
 def load_model():
