@@ -27,6 +27,10 @@ TOP_N = int(os.getenv("DAILY_MOVERS_TOP_N", "10"))
 MIN_PRICE = float(os.getenv("DAILY_MOVERS_MIN_PRICE", "100"))
 MIN_AVG_VOLUME = int(os.getenv("DAILY_MOVERS_MIN_AVG_VOLUME", "300000"))
 
+# TOPIX代替指標。yfinanceの^TOPXは価格データが取得できない(delisted扱い)ため、
+# TOPIX連動型ETF(1306.T)を代替プロキシとして使う。
+TOPIX_PROXY = "1306.T"
+
 
 def _name(ticker: str) -> str:
     if isinstance(COMPANY_NAMES, dict):
@@ -67,15 +71,67 @@ def _download(tickers: list[str]) -> dict[str, pd.DataFrame]:
     return out
 
 
-def _market_return() -> float:
+def _index_return(symbol: str) -> float:
     try:
-        d = yf.download("^N225", period="10d", interval="1d", auto_adjust=False, progress=False)
+        d = yf.download(symbol, period="10d", interval="1d", auto_adjust=False, progress=False)
         close = d["Close"].squeeze().dropna()
         if len(close) >= 2:
             return float(close.iloc[-1] / close.iloc[-2] - 1.0)
     except Exception:
         pass
     return 0.0
+
+
+def _market_return() -> float:
+    return _index_return("^N225")
+
+
+def _topix_return() -> float:
+    return _index_return(TOPIX_PROXY)
+
+
+def _candle_features(openp: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series) -> dict:
+    o, h, l, c = float(openp.iloc[-1]), float(high.iloc[-1]), float(low.iloc[-1]), float(close.iloc[-1])
+    rng = max(h - l, 1e-9)
+    upper_wick_pct = (h - max(o, c)) / rng * 100
+    lower_wick_pct = (min(o, c) - l) / rng * 100
+    body_pct = abs(c - o) / rng * 100
+
+    # 直近20営業日(当日除く)の高値からの乖離。ブレイク失敗=当日高値が直近高値を
+    # 上抜けたが、終値はその直近高値を割り込んで引けたケース。
+    prior_high20 = float(high.iloc[-21:-1].max())
+    dist_from_high_pct = (c / prior_high20 - 1.0) * 100 if prior_high20 > 0 else 0.0
+    failed_breakout = bool(h > prior_high20 and c < prior_high20)
+
+    return {
+        "upper_wick_pct": round(upper_wick_pct, 2),
+        "lower_wick_pct": round(lower_wick_pct, 2),
+        "body_pct": round(body_pct, 2),
+        "dist_from_20d_high_pct": round(dist_from_high_pct, 2),
+        "failed_breakout": failed_breakout,
+    }
+
+
+def _volume_features(vol: pd.Series, close: pd.Series) -> dict:
+    vol_accel = float(vol.tail(3).mean() / max(1.0, vol.tail(10).mean()))
+
+    rets10 = close.pct_change().tail(10)
+    vols10 = vol.tail(10)
+    up_mask = rets10 > 0
+    down_mask = rets10 < 0
+    if bool(up_mask.any()) and bool(down_mask.any()):
+        up_vol = float(vols10[up_mask].mean())
+        down_vol = float(vols10[down_mask].mean())
+        down_day_volume_bias = float(down_vol / up_vol) if up_vol > 0 else 1.0
+    else:
+        # 直近10日に上昇日/下落日どちらかが無く比較できない場合はニュートラル(1.0)とし、
+        # どちらのcauseフラグも誤って立てないようにする。
+        down_day_volume_bias = 1.0
+
+    return {
+        "volume_accel_3v10": round(vol_accel, 3),
+        "down_day_volume_bias": round(down_day_volume_bias, 3),
+    }
 
 
 def _cause(row: dict, market_ret: float) -> tuple[str, str]:
@@ -113,16 +169,47 @@ def _cause(row: dict, market_ret: float) -> tuple[str, str]:
         reasons.append(f"日中値幅拡大({range_pct*100:.1f}%)")
         score += 1
 
+    # --- 追加(2026-09): 日経乖離・ローソク足形状・出来高内訳 ---
+    # 日経の動きだけでは説明できない乖離が大きい場合、個別要因(ニュース・決算等)の
+    # 可能性が高いと判断する。「日経連動」と同時に立つこともあるが、それは
+    # 「市場全体にも連動しつつ、動きの大きさは市場だけでは説明しきれない」ことを示す。
+    vs_market_pt = row.get("vs_nikkei_pt", 0.0)
+    if abs(vs_market_pt) >= 3.0:
+        reasons.append(f"日経比乖離大({vs_market_pt:+.1f}pt、個別要因の可能性)")
+        score += 2
+    if row.get("failed_breakout"):
+        reasons.append("直近高値更新後に失速(ブレイク失敗)")
+        score += 1
+    if ret < 0 and row.get("lower_wick_pct", 100) <= 10 and row.get("body_pct", 0) >= 60:
+        reasons.append("安値圏で引け(下ヒゲ小・売り継続)")
+        score += 1
+    elif ret > 0 and row.get("upper_wick_pct", 100) <= 10 and row.get("body_pct", 0) >= 60:
+        reasons.append("高値圏で引け(上ヒゲ小・買い継続)")
+        score += 1
+    if row.get("volume_accel_3v10", 1.0) >= 1.5:
+        reasons.append(f"出来高加速(直近3日平均が10日平均の{row['volume_accel_3v10']:.1f}倍)")
+        score += 1
+    dvb = row.get("down_day_volume_bias", 1.0)
+    if ret < 0 and dvb >= 1.5:
+        reasons.append("下落日に出来高集中")
+        score += 1
+    elif ret > 0 and dvb <= 0.67:
+        reasons.append("上昇日に出来高集中")
+        score += 1
+
     if not reasons:
         reasons.append("価格・出来高テクニカル要因のみでは主因を特定できず")
-    confidence = "高" if score >= 5 else ("中" if score >= 3 else "低")
-    return "＋".join(reasons[:4]), confidence
+    # 旧しきい値(高≥5/中≥3、満点9)から、新シグナル追加分(満点+6=15)に合わせて
+    # 比例的に引き上げ(高≥7/中≥4)。低スコア域が入りやすくなり過ぎないようにするため。
+    confidence = "高" if score >= 7 else ("中" if score >= 4 else "低")
+    return "＋".join(reasons[:5]), confidence
 
 
 def main() -> int:
     tickers = list(dict.fromkeys(str(x) for x in TICKERS if str(x).endswith(".T")))
     frames = _download(tickers)
     market_ret = _market_return()
+    topix_ret = _topix_return()
     rows = []
     for ticker, d in frames.items():
         try:
@@ -130,6 +217,7 @@ def main() -> int:
             vol = d["Volume"].astype(float).dropna()
             high = d["High"].astype(float)
             low = d["Low"].astype(float)
+            openp = d["Open"].astype(float)
             if len(close) < 30 or float(close.iloc[-1]) < MIN_PRICE:
                 continue
             avg_vol = float(vol.tail(20).mean())
@@ -156,7 +244,12 @@ def main() -> int:
                 "rsi14": round(rsi, 2),
                 "avg_volume20": int(avg_vol),
                 "market_nikkei_return_pct": round(market_ret * 100, 3),
+                "topix_proxy_return_pct": round(topix_ret * 100, 3),
+                "vs_nikkei_pt": round(day_ret * 100 - market_ret * 100, 3),
+                "vs_topix_pt": round(day_ret * 100 - topix_ret * 100, 3),
             }
+            row.update(_candle_features(openp, high, low, close))
+            row.update(_volume_features(vol, close))
             row["cause"], row["cause_confidence"] = _cause(row, market_ret)
             rows.append(row)
         except Exception:
@@ -175,11 +268,21 @@ def main() -> int:
     selected = pd.concat([ups, downs]).sort_values("abs_return", ascending=False).head(TOP_N).drop(columns=["abs_return"])
 
     selected.to_csv(OUTPUT, index=False, encoding="utf-8-sig")
-    header = not HISTORY.exists()
-    selected.to_csv(HISTORY, mode="a", header=header, index=False, encoding="utf-8-sig")
+    # 単純追記(mode="a")だと、今回のように列を追加した際に既存行と列数が食い違い
+    # historyファイルが壊れる。既存行を読み込んでpd.concatで列を揃えてから書き直す
+    # (欠けている列はNaNで埋まる=過去データの欠損として正しく扱われる)。
+    if HISTORY.exists():
+        try:
+            old_history = pd.read_csv(HISTORY)
+        except Exception:
+            old_history = pd.DataFrame()
+        combined_history = pd.concat([old_history, selected], ignore_index=True, sort=False)
+    else:
+        combined_history = selected
+    combined_history.to_csv(HISTORY, index=False, encoding="utf-8-sig")
 
     print("=" * 90)
-    print(f"📊 毎日値動きTOP{TOP_N} 原因分析 | {selected.iloc[0]['date']} | 日経 {market_ret*100:+.2f}%")
+    print(f"📊 毎日値動きTOP{TOP_N} 原因分析 | {selected.iloc[0]['date']} | 日経 {market_ret*100:+.2f}% | TOPIX(代替) {topix_ret*100:+.2f}%")
     print("※観察・学習用。既存の売買選定/執行には介入しません。")
     print("=" * 90)
     for i, r in enumerate(selected.to_dict("records"), 1):
