@@ -7,7 +7,6 @@ can reuse the exact same candidate pool instead of fetching/scoring twice.
 """
 import argparse
 import json
-import math
 import os
 import time
 
@@ -16,7 +15,6 @@ import pandas as pd
 import yfinance as yf
 
 import run_profit_loop as loop
-import daily_directional_top1 as directional
 
 _base_scan = loop._original_scan
 _cache = {"result": None}
@@ -86,42 +84,6 @@ def _save_disk_scan_cache(result):
         print(f"⚠️ scan cache保存失敗（続行します、次回は再スキャン）: {exc}")
 
 
-class PaperFallbackDirectionalModel:
-    """Paper-only DOWN/FLAT/UP fallback used when the real model is unavailable."""
-
-    # 実際に読む列だけを明示。directional.FEATURES全体を流用すると、新しく増えた特徴量
-    # (例: vs_topix_1d_pt)がNaNの銘柄をprofit_top10_paper.scan()のdropna(subset=cols)が
-    # 丸ごと弾いてしまう(このフォールバックモデルは以下7列しか使わない)。
-    feature_names_in_ = np.array(["momentum_score", "trend_alignment", "ret5", "ma25", "macd", "signal", "rsi"])
-    classes_ = np.array([0, 1, 2])
-
-    def predict_proba(self, X):
-        rows = pd.DataFrame(X)
-        out = []
-        for _, r in rows.iterrows():
-            def num(name, default=0.0):
-                try:
-                    v = float(r.get(name, default))
-                    return v if np.isfinite(v) else default
-                except Exception:
-                    return default
-
-            momentum = (num("momentum_score") - 50.0) / 25.0
-            trend = num("trend_alignment") - 1.5
-            ret5 = max(-3.0, min(3.0, num("ret5") / 3.0))
-            macd_scale = max(abs(num("ma25")) * 0.003, 1e-9)
-            macd_bias = max(-3.0, min(3.0, (num("macd") - num("signal")) / macd_scale))
-            rsi_bias = max(-2.0, min(2.0, (num("rsi", 50.0) - 50.0) / 20.0))
-            ds = 0.55 * momentum + 0.65 * trend + 0.35 * ret5 + 0.25 * macd_bias - 0.15 * rsi_bias
-            strength = min(3.0, abs(ds))
-            flat = max(0.08, 0.42 - 0.10 * strength)
-            up_raw = math.exp(max(-5.0, min(5.0, ds)))
-            down_raw = math.exp(max(-5.0, min(5.0, -ds)))
-            total = up_raw + down_raw + flat
-            out.append([down_raw / total, flat / total, up_raw / total])
-        return np.asarray(out, dtype=float)
-
-
 _original_load_model = loop.app.load_model
 _original_features = loop.app.features
 _original_download = loop.app.download
@@ -179,6 +141,13 @@ def _download_with_batch_cache(ticker, period="3y"):
 
 
 def _load_model_for_paper():
+    # ★変更(2026-09): 検証済みモデルが無い/読み込めない場合、一度も
+    # OOS検証されていない簡易フォールバックモデル(PaperFallbackDirectionalModel)
+    # で取引を継続する経路を廃止した。フォールバックでも実際に(紙の)資金は
+    # 動き月次実績に影響するため、「毎月プラスを優先」する方針とは相容れない。
+    # Noneを返すことで、profit_top10_paper.scan()側の既存の安全装置
+    # (if model is None: raise RuntimeError(...))に処理を委ね、そのサイクルは
+    # 取引をスキップする(ワークフロー側の失敗許容リトライで次サイクルに再挑戦)。
     global PAPER_MODEL_TYPE
     try:
         model = _original_load_model()
@@ -188,9 +157,9 @@ def _load_model_for_paper():
             return model
     except Exception as exc:
         print(f"⚠️ directional AIモデル取得失敗: {exc}")
-    PAPER_MODEL_TYPE = "fallback"
-    print("🟠 PAPER FALLBACK: directional_model.pkl が未準備/不一致 → 紙取引専用モデルで継続 | provenance=fallback")
-    return PaperFallbackDirectionalModel()
+    PAPER_MODEL_TYPE = "unavailable"
+    print("🛑 PAPER: 検証済みAIモデルが利用できないため、本サイクルの取引をスキップします(フォールバックモデルは使用しません)")
+    return None
 
 
 def _features_for_paper(df, nikkei, futures_df=None):
@@ -284,9 +253,6 @@ def cached_scan(policy):
         return _cache["result"]
 
     base_policy = dict(policy)
-    # First build a broad candidate pool. Progressive levels below apply the
-    # real thresholds; these relaxed values only prevent early filtering in
-    # the expensive base scan.
     base_policy["up_threshold"] = 0.0
     base_policy["min_score_for_buy"] = 0.0
     base_policy["nikkei_filter"] = False
