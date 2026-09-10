@@ -1,0 +1,48 @@
+name: TEMP Verify Prefilter Removal
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Apply Nikkei 225 stock universe
+        run: python apply_expanded_universe.py
+
+      - name: Run analysis-only with real data (no trading, no state writes)
+        env:
+          AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+        run: |
+          echo "=== START $(date -u +%FT%TZ) ==="
+          set +e
+          timeout 280 python paper_fast_entrypoint.py --analysis-only 2>&1 | tee analysis_output.log
+          echo "=== END $(date -u +%FT%TZ) ==="
+          echo "--- error scan ---"
+          grep -iE "traceback|error|exception" analysis_output.log && echo "ERRORS_FOUND=1" || echo "ERRORS_FOUND=0"
+          echo "--- batch/scan summary lines ---"
+          grep -E "BATCH DOWNLOAD|FULL SCAN|TOP[0-9]|scanned" analysis_output.log || true
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmp-verify-prefilter-log
+          path: analysis_output.log
+          if-no-files-found: warn
