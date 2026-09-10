@@ -130,10 +130,12 @@ def open_positions(s,policy,cands,today):
         if cnt>=MAX_TRADES_PER_TICKER_PER_DAY or int(s.get('trades_today',0))>=MAX_TOTAL_TRADES_PER_DAY: continue
         price=float(c['price'])
         if price<=0:continue
-        # 1銘柄あたりの目安予算(資産/TOP_N)を100株単位に丸める。目安予算では
-        # 1単元(100株)すら買えない銘柄は、残り資金があれば1単元だけ買う
-        # (10分割の目安を超えて残り予算を取り崩す)。
-        slot_budget=capital/TOP_N
+        # ★変更(2026-09): 資産をTOP_Nで分割せず、毎回その時点の総資産を丸ごと
+        # 予算として使う(ユーザー承認済みのハイリスク運用)。これにより実質的に
+        # 1銘柄集中投資となる(最初に処理される最有力候補が残り現金のほぼ全額を
+        # 使うため、同一スキャン内で複数銘柄に新規エントリーすることは通常ない)。
+        # 1単元(100株)すら買えない銘柄は、残り資金があれば1単元だけ買う。
+        slot_budget=capital
         shares=(int(slot_budget//price)//LOT_SIZE)*LOT_SIZE
         if shares<LOT_SIZE:
             shares=LOT_SIZE if remaining>=price*LOT_SIZE else 0
