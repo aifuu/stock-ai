@@ -303,7 +303,7 @@ def scan_progressive_with_prefilter(policy):
     previous = loop._original_scan
     loop._original_scan = cached_scan
     try:
-        return loop.scan_candidates_progressive(policy)
+        return loop.scan_candidates_fixed(policy)
     finally:
         loop._original_scan = previous
 

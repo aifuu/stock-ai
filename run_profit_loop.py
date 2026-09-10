@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified Profit Loop: progressive levels -> TOP10 -> TOP1 paper trade.
+"""Unified Profit Loop: fixed approved policy -> TOP10 -> TOP1 paper trade.
 
 Research/OOS gates remain separate. This runtime path is for paper execution only.
 Both BUY and SHORT are evaluated. Market regime determines the direction:
@@ -16,15 +16,6 @@ TOP10 = 10
 MAX_DAILY_TRADES = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
 MAX_TICKER_TRADES = int(os.getenv("MAX_TRADES_PER_TICKER_PER_DAY", "10"))
 SAME_TICKER_COOLDOWN_MINUTES = int(os.getenv("SAME_TICKER_COOLDOWN_MINUTES", "30"))
-
-PAPER_ENTRY_LEVELS = [
-    {"level": 1, "up_threshold": 60.0, "min_score": 70.0, "nikkei_filter": True},
-    {"level": 2, "up_threshold": 55.0, "min_score": 65.0, "nikkei_filter": True},
-    {"level": 3, "up_threshold": 50.0, "min_score": 60.0, "nikkei_filter": False},
-    {"level": 4, "up_threshold": 45.0, "min_score": 55.0, "nikkei_filter": False},
-    {"level": 5, "up_threshold": 40.0, "min_score": 50.0, "nikkei_filter": False},
-    {"level": 6, "up_threshold": 35.0, "min_score": 45.0, "nikkei_filter": False},
-]
 
 def _market_regime():
     try:
@@ -113,63 +104,41 @@ def _load_model_feature_safe():
 
 app.load_model = _load_model_feature_safe
 
-def _policy_for_level(base_policy, spec):
-    p = dict(base_policy)
-    p["up_threshold"] = float(spec["up_threshold"])
-    p["min_score_for_buy"] = float(spec["min_score"])
-    p["nikkei_filter"] = False
-    return p
-
-def _passes_level(candidate, spec):
+def _passes_policy(candidate, policy):
     direction = str(candidate.get("direction", "BUY")).upper()
     up = float(candidate.get("up_probability", 0) or 0)
     down = float(candidate.get("down_probability", 0) or 0)
     flat = float(candidate.get("flat_probability", 0) or 0)
     score = float(candidate.get("score", 0) or 0)
-    threshold = float(spec["up_threshold"])
-    score_min = float(spec["min_score"])
+    threshold = float(policy["up_threshold"])
+    score_min = float(policy["min_score_for_buy"])
     if flat >= 50.0 or score < score_min: return False
     if direction == "SHORT": return down >= threshold and down > up
     return up >= threshold and up > down
 
-def _print_gate_diagnostics(emergency_pool, scanned):
-    pool = emergency_pool or []
-    print("\n" + "=" * 86)
-    print("🔎 PAPER候補ゲート診断（ペーパー専用。OOS/Adversarialとは独立）")
-    print("=" * 86)
-    print(f"スキャン成功: {int(scanned or 0)}")
-    print("固定条件通過: BUY=UP>DOWN / SHORT=DOWN>UP かつ Flat<50%")
-    print(f"固定条件通過件数: {len(pool)}\n")
-    print("LEVEL | 方向 | 確率条件 | SCORE条件 | 両方通過")
-    print("------+-------+----------+------------+----------")
-    for spec in PAPER_ENTRY_LEVELS:
-        long_both=[c for c in pool if str(c.get("direction","BUY")).upper()!="SHORT" and _passes_level(c,spec)]
-        short_both=[c for c in pool if str(c.get("direction","BUY")).upper()=="SHORT" and _passes_level(c,spec)]
-        print(f" {spec['level']:>2}   | BUY   | UP≥{spec['up_threshold']:>3.0f}%   | SCORE≥{spec['min_score']:>3.0f}     | {len(long_both):>8}")
-        print(f" {spec['level']:>2}   | SHORT | DOWN≥{spec['up_threshold']:>3.0f}% | SCORE≥{spec['min_score']:>3.0f}     | {len(short_both):>8}")
-    print("注: 日経レジーム判定後、弱気=SHORTのみ、強気=BUYのみ、neutral=両方向比較でTOP1を決定します。\n" + "=" * 86)
-
-def scan_candidates_progressive(policy):
-    last_scanned=0
-    for spec in PAPER_ENTRY_LEVELS:
-        raw,scanned=_original_scan(_policy_for_level(policy,spec)); last_scanned=max(last_scanned,int(scanned or 0)); pool=raw or []; qualified=[c for c in pool if _passes_level(c,spec)]; top10=profit_priority(qualified)[:TOP10]
-        print(f"🧭 PAPER LEVEL {spec['level']}: BUY UP≥{spec['up_threshold']:.0f}% / SHORT DOWN≥{spec['up_threshold']:.0f}% SCORE≥{spec['min_score']:.0f} REGIME-AWARE qualified={len(qualified)} / TOP10={len(top10)}")
-        if top10:
-            print(f"🏁 実行LEVEL={spec['level']} / 候補={len(top10)} → TOP1へ")
-            for rank,c in enumerate(top10,1):
-                c["selection_level"]=int(spec["level"]);c["selection_mode"]="normal" if spec["level"]==1 else "progressive_level";c["top10_rank"]=rank
-            return top10,last_scanned
-        print("  ↳ 候補0 → 次のLEVELへ条件緩和")
-    emergency_policy=dict(policy);emergency_policy["up_threshold"]=0.0;emergency_policy["min_score_for_buy"]=0.0;emergency_policy["nikkei_filter"]=False
-    try: emergency_pool,emergency_scanned=_original_scan(emergency_policy)
-    except Exception as exc: emergency_pool,emergency_scanned=[],0;print(f"⚠️ PAPER強制経路の再スキャン失敗: {exc}")
-    last_scanned=max(last_scanned,int(emergency_scanned or 0));_print_gate_diagnostics(emergency_pool,last_scanned)
-    if emergency_pool:
-        ranked=profit_priority(emergency_pool);top10=ranked[:TOP10]
-        for rank,c in enumerate(top10,1):c["selection_level"]=7;c["selection_mode"]="forced_min_trade";c["top10_rank"]=rank
-        print(f"🟠 最終PAPER強制経路: スキャン済み候補={len(emergency_pool)} → TOP10={len(top10)} → TOP1を選出")
-        return top10,last_scanned
-    return [],last_scanned
+def scan_candidates_fixed(policy):
+    """承認済みpolicy(strategy_policy.json)の固定条件で1回だけスキャンする。
+    ★変更(2026-09): 従来のLEVEL段階的緩和(PAPER_ENTRY_LEVELS)と、それでも
+    候補0件だった場合の無条件強制エントリ(emergency_policy, up_threshold=0)を
+    廃止した。LEVELの閾値は承認済みpolicy(例: UP45/SCORE60)と一致しない
+    ハードコード値で、実運用では毎回のように緊い方の水準(LEVEL6や強制経路)まで
+    条件が緩和されてから約定しており、検証済みのOOS実績(PF/月次収益率)を
+    大きく下回る弱い/無条件のシグナルで取引してしまっていた。「毎月プラスを
+    優先」する方針では、条件を満たす候補が無い日は無理に建てず見送る方が良い。
+    """
+    raw, scanned = _original_scan(policy)
+    pool = raw or []
+    qualified = [c for c in pool if _passes_policy(c, policy)]
+    top10 = profit_priority(qualified)[:TOP10]
+    print(f"🧭 PAPER FIXED POLICY: BUY UP≥{policy['up_threshold']:.0f}% / SHORT DOWN≥{policy['up_threshold']:.0f}% SCORE≥{policy['min_score_for_buy']:.0f} REGIME-AWARE qualified={len(qualified)} / TOP10={len(top10)}")
+    if not top10:
+        print("⏸ 承認済み条件を満たす候補なし → 本日はエントリなし(強制経路は廃止済み)")
+        return [], scanned
+    for rank, c in enumerate(top10, 1):
+        c["selection_level"] = 1
+        c["selection_mode"] = "normal"
+        c["top10_rank"] = rank
+    return top10, scanned
 
 def _as_aware_jst(value):
     ts=value if isinstance(value,datetime) else app.pd.Timestamp(value).to_pydatetime()
@@ -196,7 +165,7 @@ def open_top1_only(state,policy,candidates,today):
             if remaining>0:print(f"⏸ 同一銘柄クールダウン中: {ticker} 残り約{int(remaining//60)+1}分");continue
             cooldowns.pop(ticker,None)
         eligible.append(candidate)
-    if not eligible:print("⏸ 候補内に新規エントリー可能なTOP1なし");return []
+    if not eligible:print("⏸ 候補内に新規エントリ可能なTOP1なし");return []
     top1=eligible[0];old_max_total=app.MAX_TOTAL_TRADES_PER_DAY;old_max_ticker=app.MAX_TRADES_PER_TICKER_PER_DAY
     # 注意: app.TOP_N は上書きしない。budget=capital/TOP_N の計算がTOP_N=1だと
     # 毎回「資金全額」を予算にしてしまい、複数ポジション同時保有時に資金オーバーする
@@ -209,7 +178,7 @@ def open_top1_only(state,policy,candidates,today):
         p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}%")
     return opened
 
-app.scan=scan_candidates_progressive
+app.scan=scan_candidates_fixed
 app.mark_and_close=close_positions_with_cooldown
 app.open_positions=open_top1_only
 
