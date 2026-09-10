@@ -79,6 +79,16 @@ def trade_reasons(last,up,down,nikkei):
         except Exception: pass
     return '｜'.join(vals)
 
+def _tp_sl(price,direction,a,policy):
+    if direction=='BUY':
+        return price+a*policy['atr_tp_multiplier'],max(.01,price-a*policy['atr_sl_multiplier'])
+    return price-a*policy['atr_tp_multiplier'],price+a*policy['atr_sl_multiplier']
+
+def _reward_risk(price,tp,sl,direction):
+    if direction=='BUY':
+        return ((tp-price)/price*100 if price>0 else 0.0),((price-sl)/price*100 if price>0 else 0.0)
+    return ((price-tp)/price*100 if price>0 else 0.0),((sl-price)/price*100 if price>0 else 0.0)
+
 def scan(policy):
     nik,model=make_nikkei(),load_model(); cand=[]; fallback=[]; scanned=0
     if model is None or nik is None: raise RuntimeError('日経またはAIモデル取得失敗')
@@ -94,23 +104,35 @@ def scan(policy):
             down,up,flat=float(pr[cl.index(0)])*100,float(pr[cl.index(2)])*100,float(pr[cl.index(1)])*100
             ls,ss=directional_score(last,up/100,down/100); a=float(atr(d).iloc[-1])
             if not np.isfinite(a) or a<=0:continue
-            intr=download_5m(t); price=float(d['Close'].iloc[-1])
-            if intr is not None and not intr.empty: price=float(intr['Close'].iloc[-1])
+            # 5分足による価格精緻化は、フィルタ通過済みの候補にだけ後段でまとめて行う
+            # (プレフィルター廃止で全225銘柄スキャンになったため、個別ネットワーク
+            # 呼び出しが増えすぎないようにする)。
+            price=float(d['Close'].iloc[-1])
             nlast=nik.reindex(x.index).ffill().iloc[-1]; nikkei_up=bool(nlast.get('nikkei_uptrend',True))
             reason=trade_reasons(last,up,down,nlast)
             base={'ticker':t,'company':NAMES.get(t,t),'price':price,'up_probability':up,'down_probability':down,'flat_probability':flat,'data_date':str(x.index[-1].date())}
+            pending=[]
             for direction,score in [('BUY',float(ls)),('SHORT',float(ss))]:
-                item=dict(base); item.update(direction=direction,score=score,tp=price+(a*policy['atr_tp_multiplier'] if direction=='BUY' else -a*policy['atr_tp_multiplier']),sl=max(.01,price-a*policy['atr_sl_multiplier']) if direction=='BUY' else price+a*policy['atr_sl_multiplier'],buy_reason=reason)
-                if direction=='BUY':
-                    reward_pct=(item['tp']-price)/price*100 if price>0 else 0.0; risk_pct=(price-item['sl'])/price*100 if price>0 else 0.0; win_prob=up/100; loss_prob=down/100
-                else:
-                    reward_pct=(price-item['tp'])/price*100 if price>0 else 0.0; risk_pct=(item['sl']-price)/price*100 if price>0 else 0.0; win_prob=down/100; loss_prob=up/100
+                tp,sl=_tp_sl(price,direction,a,policy)
+                item=dict(base); item.update(direction=direction,score=score,tp=tp,sl=sl,buy_reason=reason)
+                reward_pct,risk_pct=_reward_risk(price,tp,sl,direction)
+                win_prob,loss_prob=(up/100,down/100) if direction=='BUY' else (down/100,up/100)
                 item['expected_value_pct']=win_prob*reward_pct-loss_prob*max(risk_pct,0.0)
                 fallback.append(item)
                 ok=(up>=policy['up_threshold'] and up>down and flat<50 and score>=policy['min_score_for_buy']) if direction=='BUY' else (SHORT_ENABLED and down>=policy['up_threshold'] and down>up and flat<50 and score>=policy['min_score_for_buy'])
                 if ok and nikkei_filter_on and direction=='BUY' and not nikkei_up: ok=False
                 if ok and nikkei_filter_on and direction=='SHORT' and nikkei_up: ok=False
-                if ok:cand.append(item)
+                if ok: pending.append((item,win_prob,loss_prob))
+            if pending:
+                intr=download_5m(t); refined=price
+                if intr is not None and not intr.empty: refined=float(intr['Close'].iloc[-1])
+                for item,win_prob,loss_prob in pending:
+                    if refined>0 and refined!=price:
+                        direction=item['direction']
+                        tp,sl=_tp_sl(refined,direction,a,policy)
+                        reward_pct,risk_pct=_reward_risk(refined,tp,sl,direction)
+                        item.update(price=refined,tp=tp,sl=sl,expected_value_pct=win_prob*reward_pct-loss_prob*max(risk_pct,0.0))
+                    cand.append(item)
         except Exception as e: print(t,e)
     cand.sort(key=lambda z:(z['expected_value_pct'],z['score']),reverse=True); fallback.sort(key=lambda z:(z['expected_value_pct'],z['score']),reverse=True)
     return (cand or fallback)[:TOP_N],scanned

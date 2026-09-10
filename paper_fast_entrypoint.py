@@ -18,7 +18,6 @@ import yfinance as yf
 import run_profit_loop as loop
 import daily_directional_top1 as directional
 
-DETAIL_UNIVERSE = 50
 _base_scan = loop._original_scan
 _cache = {"result": None}
 PAPER_MODEL_TYPE = "validated_model"
@@ -122,6 +121,58 @@ class PaperFallbackDirectionalModel:
 
 _original_load_model = loop.app.load_model
 _original_features = loop.app.features
+_original_download = loop.app.download
+_download_cache = {}
+
+
+def _batch_download_all(tickers, period="3y"):
+    """225銘柄をyf.download()で1回だけ一括取得し、daily_directional_top1.download()と
+    同じ後処理(MultiIndexのフラット化)を揃えてキャッシュに格納する。
+    出来高偏重プレフィルター(TOP50絞り込み)を廃止し、全銘柄を本物のAIモデルに
+    かけられるようにするための置き換え。
+    """
+    print(f"📦 BATCH DOWNLOAD: {len(tickers)}銘柄を一括取得（プレフィルターなし・全銘柄をAI詳細分析）")
+    try:
+        data = yf.download(
+            tickers,
+            period=period,
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+            group_by="ticker",
+        )
+    except Exception as exc:
+        print(f"⚠️ 一括取得失敗: {exc} → 個別取得にフォールバック")
+        return {}
+
+    cache = {}
+    for ticker in tickers:
+        try:
+            if isinstance(data.columns, pd.MultiIndex):
+                if ticker not in data.columns.get_level_values(0):
+                    continue
+                df = data[ticker].copy()
+            else:
+                df = data.copy()
+            if df is None or df.empty:
+                continue
+            df = df.dropna(how="all")
+            if df.empty:
+                continue
+            cache[ticker] = df
+        except Exception:
+            continue
+    print(f"✅ BATCH DOWNLOAD完了: {len(cache)}/{len(tickers)}銘柄取得成功（未取得分のみ個別取得にフォールバック）")
+    return cache
+
+
+def _download_with_batch_cache(ticker, period="3y"):
+    if period == "3y":
+        cached = _download_cache.get(ticker)
+        if cached is not None:
+            return cached
+    return _original_download(ticker, period=period)
 
 
 def _load_model_for_paper():
@@ -160,6 +211,7 @@ def _features_for_paper(df, nikkei, futures_df=None):
 
 loop.app.load_model = _load_model_for_paper
 loop.app.features = _features_for_paper
+loop.app.download = _download_with_batch_cache
 
 
 def _append_history_with_provenance(row):
@@ -217,68 +269,6 @@ def _close_with_provenance(state, now, policy):
         loop._ACTIVE_CLOSE_STATE = None
 
 
-def _prefilter_universe(tickers):
-    if not tickers:
-        return []
-    print(f"⚡ PAPER PREFILTER: {len(tickers)}銘柄を日足バッチ取得 → TOP{DETAIL_UNIVERSE}")
-    try:
-        data = yf.download(
-            tickers,
-            period="60d",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            threads=True,
-            group_by="ticker",
-        )
-    except Exception as exc:
-        print(f"⚠️ 日足バッチ取得失敗: {exc} → 元ユニバースをそのまま使用")
-        return list(tickers)
-
-    rows = []
-    for ticker in tickers:
-        try:
-            if isinstance(data.columns, pd.MultiIndex):
-                if ticker not in data.columns.get_level_values(0):
-                    continue
-                df = data[ticker].copy()
-            else:
-                df = data.copy()
-            if df.empty or "Close" not in df or "Volume" not in df:
-                continue
-            close = pd.to_numeric(df["Close"], errors="coerce").dropna()
-            volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
-            if len(close) < 26 or len(volume) < 20:
-                continue
-            price = float(close.iloc[-1])
-            ma25 = float(close.rolling(25).mean().iloc[-1])
-            ret5 = float(close.iloc[-1] / close.iloc[-6] - 1.0)
-            avg20 = float(volume.tail(20).mean())
-            recent5 = float(volume.tail(5).mean())
-            if price <= 0 or avg20 <= 0:
-                continue
-            vol_ratio = recent5 / avg20
-            kairi = abs(price / ma25 - 1.0) if ma25 > 0 else 0.0
-            momentum = abs(ret5)
-            activity = max(0.0, min(vol_ratio, 5.0))
-            score = (
-                0.45 * math.log1p(activity)
-                + 0.35 * min(momentum * 10.0, 2.0)
-                + 0.20 * min(kairi * 10.0, 2.0)
-            )
-            rows.append((score, vol_ratio, ticker))
-        except Exception:
-            continue
-
-    rows.sort(reverse=True)
-    selected = [ticker for _, _, ticker in rows[:DETAIL_UNIVERSE]]
-    if not selected:
-        return list(tickers)
-    print(f"✅ PREFILTER選抜: {len(selected)}/{len(tickers)}銘柄")
-    print("   " + ", ".join(selected[:10]) + (" ..." if len(selected) > 10 else ""))
-    return selected
-
-
 def cached_scan(policy):
     if _cache["result"] is not None:
         print("♻️ PAPER FAST CACHE: 既取得候補プールをLEVEL1-6で再利用")
@@ -297,15 +287,12 @@ def cached_scan(policy):
     base_policy["up_threshold"] = 0.0
     base_policy["min_score_for_buy"] = 0.0
     base_policy["nikkei_filter"] = False
-    original_tickers = list(loop.app.TICKERS)
-    detail_tickers = _prefilter_universe(original_tickers)
-    loop.app.TICKERS = detail_tickers
-    try:
-        print(f"🔬 DETAIL SCAN: {len(detail_tickers)}銘柄だけ5分足＋AI詳細分析")
-        _cache["result"] = _base_scan(base_policy)
-        _save_disk_scan_cache(_cache["result"])
-    finally:
-        loop.app.TICKERS = original_tickers
+    tickers = list(loop.app.TICKERS)
+    _download_cache.clear()
+    _download_cache.update(_batch_download_all(tickers))
+    print(f"🔬 FULL SCAN: {len(tickers)}銘柄全てにAI詳細分析（出来高偏重プレフィルターは廃止・全銘柄が対象）")
+    _cache["result"] = _base_scan(base_policy)
+    _save_disk_scan_cache(_cache["result"])
     return _cache["result"]
 
 
