@@ -1,3 +1,4 @@
 ﻿month,hold_days,trades,profit_factor,monthly_return_pct,monthly_profit_jpy,monthly_plus5_achieved,cumulative_return_pct,max_drawdown_pct
 2026-09,1,1,0.0,-0.172,-1719.0,False,-0.172,0.172
-2026-09,ALL,1,0.0,-0.172,-1719.0,False,-0.172,0.172
+2026-09,3,1,0.0,-5.342,-53422.0,False,-5.342,5.342
+2026-09,ALL,2,0.0,-5.505,-55049.0,False,-5.505,5.505

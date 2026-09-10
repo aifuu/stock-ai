@@ -1,23 +1,10 @@
 {
   "capitals": {
     "1": 998280.8049535605,
-    "3": 1000000.0,
+    "3": 946578.0185758515,
     "5": 1000000.0
   },
   "positions": [
-    {
-      "entry_date": "2026-09-07",
-      "ticker": "6098.T",
-      "company": "6098.T",
-      "direction": "BUY",
-      "entry_price": 16150.0,
-      "hold_days": 3,
-      "exit_date": "2026-09-09",
-      "score": 38.09563191612021,
-      "up_probability": 34.869475182756474,
-      "down_probability": 26.26599454810051,
-      "forced_entry": true
-    },
     {
       "entry_date": "2026-09-07",
       "ticker": "6098.T",
@@ -30,10 +17,23 @@
       "up_probability": 34.869475182756474,
       "down_probability": 26.26599454810051,
       "forced_entry": true
+    },
+    {
+      "entry_date": "2026-09-10",
+      "ticker": "4506.T",
+      "company": "住友ファーマ",
+      "direction": "BUY",
+      "entry_price": 1522.5,
+      "hold_days": 1,
+      "exit_date": "2026-09-10",
+      "score": 54.755408445062336,
+      "up_probability": 31.847299336029288,
+      "down_probability": 25.528979021935587,
+      "forced_entry": true
     }
   ],
-  "trades_today": 3,
-  "last_entry_date": "2026-09-07",
+  "trades_today": 1,
+  "last_entry_date": "2026-09-10",
   "peaks": {
     "1": 1000000.0,
     "3": 1000000.0,
@@ -44,5 +44,5 @@
     "3": 1000000.0,
     "5": 1000000.0
   },
-  "risk_date": "2026-09-08"
+  "risk_date": "2026-09-10"
 }
