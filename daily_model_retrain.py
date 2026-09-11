@@ -31,6 +31,7 @@ directional_paper_history.csv(実際のペーパートレード結果)は学習
 に記録するだけに留める(自分の予測ミスを学習に混ぜて悪循環になるのを避けるため)。
 """
 
+import json
 import os
 import time
 from datetime import datetime
@@ -54,9 +55,30 @@ TRAIN_FILE = trader.TRAIN_FILE
 # 「実績なし」になっていたため、実際に書き込まれるファイルを直接指す。
 HISTORY_FILE = "profit_top10_paper_history.csv"
 FEATURES = trader.FEATURES
-HOLD_DAYS = trader.HOLD_DAYS
-TP_MULT = trader.TP_MULT
-SL_MULT = trader.SL_MULT
+
+# ★修正(2026-09): 以前はTP_MULT/SL_MULT/HOLD_DAYSをdaily_directional_top1.py側の
+# ハードコード値(3.0/1.5/5)からそのまま使っていたため、OOSゲートのシミュレーションが
+# 実運用(profit_top10_paper.py、承認済みすtrategy_policy.jsonのatr_tp_multiplier=4.0/
+# atr_sl_multiplier=1.75)と異なるTP/SL幅で「合格/不合格」を判定していた。TP/SL幅が
+# 違えばTP到達率・SL到達率・TIME決済率・PF・最大DDは全て変わりうるため、「OOSで合格
+# =実運用条件でも合格」と言えない状態だった。strategy_policy.jsonから直接読み、実運用と
+# 同じ条件でOOSシミュレーションするようにする(署名検証はここでは行わない。実発注の
+# 安全性はprofit_top10_paper.load_policy()側の厳格な検証が別途担保しているため、ここは
+# OOSシミュレーション用の参考値取得に留める)。
+POLICY_FILE = "strategy_policy.json"
+
+
+def _load_policy_exit_rule():
+    try:
+        with open(POLICY_FILE, encoding="utf-8") as f:
+            p = json.load(f)
+        return float(p["atr_tp_multiplier"]), float(p["atr_sl_multiplier"]), int(p["hold_days"])
+    except Exception as e:
+        print(f"⚠ {POLICY_FILE}読込失敗、daily_directional_top1.pyのデフォルト値にフォールバック: {e}")
+        return trader.TP_MULT, trader.SL_MULT, trader.HOLD_DAYS
+
+
+TP_MULT, SL_MULT, HOLD_DAYS = _load_policy_exit_rule()
 ATR_TARGET_MULTIPLIER = 1.0
 
 PREV_MODEL_FILE = "model_prev.pkl"
