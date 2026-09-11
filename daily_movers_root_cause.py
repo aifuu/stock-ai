@@ -20,12 +20,17 @@ try:
     from common import TICKERS, COMPANY_NAMES
 except Exception:
     from daily_directional_top1 import TICKERS, NAMES as COMPANY_NAMES
+from nikkei225_sectors import SECTORS, sector_ja
 
 OUTPUT = Path("daily_movers_root_cause.csv")
 HISTORY = Path("daily_movers_root_cause_history.csv")
+SECTOR_OUTPUT = Path("daily_sector_performance.csv")
+SECTOR_HISTORY = Path("daily_sector_performance_history.csv")
 TOP_N = int(os.getenv("DAILY_MOVERS_TOP_N", "10"))
 MIN_PRICE = float(os.getenv("DAILY_MOVERS_MIN_PRICE", "100"))
 MIN_AVG_VOLUME = int(os.getenv("DAILY_MOVERS_MIN_AVG_VOLUME", "300000"))
+NEWS_WINDOW_HOURS = float(os.getenv("DAILY_MOVERS_NEWS_WINDOW_HOURS", "40"))
+_GENERIC_COMPANY_WORDS = {"corp", "corporation", "holdings", "holding", "hldgs", "group", "grp", "co", "ltd", "inc", "company", "the", "plc", "group corp", "financial"}
 
 # TOPIX代替指標。yfinanceの^TOPXは価格データが取得できない(delisted扱い)ため、
 # TOPIX連動型ETF(1306.T)を代替プロキシとして使う。
@@ -88,6 +93,50 @@ def _market_return() -> float:
 
 def _topix_return() -> float:
     return _index_return(TOPIX_PROXY)
+
+
+def _company_keywords(short_name: str) -> list[str]:
+    tokens = [w.strip(",.").lower() for w in (short_name or "").split()]
+    return [w for w in tokens if w and w not in _GENERIC_COMPANY_WORDS and len(w) >= 3]
+
+
+def _is_relevant_news(title: str, ticker: str, short_name: str) -> bool:
+    title_l = title.lower()
+    code = ticker.split(".")[0]
+    if code and code in title:
+        return True
+    return any(kw in title_l for kw in _company_keywords(short_name))
+
+
+def _fetch_news_headline(ticker: str, short_name: str, window_hours: float = NEWS_WINDOW_HOURS) -> str | None:
+    try:
+        news = yf.Ticker(ticker).news
+    except Exception:
+        return None
+    if not news:
+        return None
+    now_utc = pd.Timestamp.now(tz="UTC")
+    best_title, best_time = None, None
+    for item in news:
+        content = item.get("content", item) if isinstance(item, dict) else {}
+        title = str(content.get("title") or "").strip()
+        pub_raw = content.get("pubDate") or content.get("displayTime")
+        if not title or not pub_raw:
+            continue
+        try:
+            pub_ts = pd.Timestamp(pub_raw)
+            if pub_ts.tzinfo is None:
+                pub_ts = pub_ts.tz_localize("UTC")
+        except Exception:
+            continue
+        age_hours = (now_utc - pub_ts).total_seconds() / 3600.0
+        if not (0 <= age_hours <= window_hours):
+            continue
+        if not _is_relevant_news(title, ticker, short_name):
+            continue
+        if best_time is None or pub_ts > best_time:
+            best_title, best_time = title, pub_ts
+    return best_title
 
 
 def _candle_features(openp: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series) -> dict:
@@ -235,6 +284,7 @@ def main() -> int:
                 "date": str(close.index[-1].date()),
                 "ticker": ticker,
                 "company": _name(ticker),
+                "sector": sector_ja(ticker),
                 "direction": "UP" if day_ret > 0 else "DOWN",
                 "return_pct": round(day_ret * 100, 3),
                 "volume_ratio": round(volume_ratio, 3),
@@ -260,12 +310,30 @@ def main() -> int:
         return 0
 
     df = pd.DataFrame(rows)
+    the_date = str(df["date"].iloc[0])
+    sector_perf = (
+        df.groupby("sector")["return_pct"]
+        .agg(avg_return_pct="mean", median_return_pct="median", n_tickers="count")
+        .reset_index()
+        .sort_values("avg_return_pct", ascending=False)
+    )
+    sector_perf.insert(0, "date", the_date)
+    for col in ("avg_return_pct", "median_return_pct"):
+        sector_perf[col] = sector_perf[col].round(3)
     df["abs_return"] = df["return_pct"].abs()
     # Keep both directions visible when possible: 5 strongest up + 5 strongest down.
     half = max(1, TOP_N // 2)
     ups = df[df.direction == "UP"].sort_values("abs_return", ascending=False).head(half)
     downs = df[df.direction == "DOWN"].sort_values("abs_return", ascending=False).head(TOP_N - len(ups))
     selected = pd.concat([ups, downs]).sort_values("abs_return", ascending=False).head(TOP_N).drop(columns=["abs_return"])
+
+    news_headlines = []
+    for r in selected.to_dict("records"):
+        short_name = SECTORS.get(r["ticker"], {}).get("short_name", "")
+        headline = _fetch_news_headline(r["ticker"], short_name)
+        news_headlines.append(headline or "")
+    selected = selected.copy()
+    selected["news_headline"] = news_headlines
 
     selected.to_csv(OUTPUT, index=False, encoding="utf-8-sig")
     # 単純追記(mode="a")だと、今回のように列を追加した際に既存行と列数が食い違い
@@ -281,20 +349,41 @@ def main() -> int:
         combined_history = selected
     combined_history.to_csv(HISTORY, index=False, encoding="utf-8-sig")
 
+    sector_perf.to_csv(SECTOR_OUTPUT, index=False, encoding="utf-8-sig")
+    if SECTOR_HISTORY.exists():
+        try:
+            old_sector_history = pd.read_csv(SECTOR_HISTORY)
+        except Exception:
+            old_sector_history = pd.DataFrame()
+        combined_sector_history = pd.concat([old_sector_history, sector_perf], ignore_index=True, sort=False)
+    else:
+        combined_sector_history = sector_perf
+    combined_sector_history.to_csv(SECTOR_HISTORY, index=False, encoding="utf-8-sig")
+
     print("=" * 90)
     print(f"📊 毎日値動きTOP{TOP_N} 原因分析 | {selected.iloc[0]['date']} | 日経 {market_ret*100:+.2f}% | TOPIX(代替) {topix_ret*100:+.2f}%")
     print("※観察・学習用。既存の売買選定/執行には介入しません。")
     print("=" * 90)
     for i, r in enumerate(selected.to_dict("records"), 1):
-        print(f"{i:>2}. {r['ticker']} {r['company']} {r['direction']} {r['return_pct']:+.2f}% | 出来高{r['volume_ratio']:.1f}x | RSI {r['rsi14']:.0f} | {r['cause']} [{r['cause_confidence']}]")
+        print(f"{i:>2}. {r['ticker']} {r['company']}[{r['sector']}] {r['direction']} {r['return_pct']:+.2f}% | 出来高{r['volume_ratio']:.1f}x | RSI {r['rsi14']:.0f} | {r['cause']} [{r['cause_confidence']}]")
+        if r.get("news_headline"):
+            print(f"     📰 {r['news_headline']}")
 
     webhook = os.getenv("DISCORD_WEBHOOK", "").strip()
     if webhook:
         import requests
         lines = [f"📊 今日の値動きTOP{TOP_N}・原因分析 ({selected.iloc[0]['date']})", f"日経: {market_ret*100:+.2f}%", ""]
+        strong_sectors = sector_perf.head(3).to_dict("records")
+        weak_sectors = sector_perf.tail(3).to_dict("records")
+        lines.append("【セクター動向】")
+        lines.append("好調セクターTOP3: " + " / ".join(f"{s['sector']}({s['avg_return_pct']:+.2f}%)" for s in strong_sectors))
+        lines.append("不調セクターTOP3: " + " / ".join(f"{s['sector']}({s['avg_return_pct']:+.2f}%)" for s in weak_sectors))
+        lines.append("")
         for i, r in enumerate(selected.to_dict("records"), 1):
-            lines.append(f"{i}. {r['ticker']} {r['company']} {r['direction']} {r['return_pct']:+.2f}%")
+            lines.append(f"{i}. {r['ticker']} {r['company']}[{r['sector']}] {r['direction']} {r['return_pct']:+.2f}%")
             lines.append(f"   原因: {r['cause']} / 信頼度:{r['cause_confidence']}")
+            if r.get("news_headline"):
+                lines.append(f"   📰 {r['news_headline']}")
         requests.post(webhook, json={"content": "\n".join(lines)[:1950]}, timeout=30).raise_for_status()
     return 0
 

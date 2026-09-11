@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -34,7 +36,7 @@ jobs:
         run: python daily_movers_root_cause.py
 
       - name: Syntax check
-        run: python -m py_compile daily_movers_root_cause.py
+        run: python -m py_compile daily_movers_root_cause.py nikkei225_sectors.py
 
       - name: Commit daily analysis history
         if: always()
@@ -43,7 +45,23 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add daily_movers_root_cause.csv 2>/dev/null || true
           git add daily_movers_root_cause_history.csv 2>/dev/null || true
+          git add daily_sector_performance.csv 2>/dev/null || true
+          git add daily_sector_performance_history.csv 2>/dev/null || true
           git add -u
           git diff --cached --quiet && exit 0
           git commit -m 'Update daily movers root-cause analysis'
-          git push
+          PUSH_OK=0
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
+              echo '✅ daily movers root-cause push成功'
+              PUSH_OK=1
+              break
+            fi
+            git rebase --abort || true
+            sleep $((i*3))
+          done
+          if [ "$PUSH_OK" -ne 1 ]; then
+            echo '❌ daily movers root-cause push失敗'
+            exit 1
+          fi
