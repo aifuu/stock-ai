@@ -236,3 +236,118 @@ jobs:
             multi_oos_fold_funnel.csv
             multi_oos_threshold_diagnostics.csv
             strategy_policy.json
+
+  # 案3拡張: 先物トレンド軸(上昇/下落)専用のTOP1戦略を週次で別途算出する。
+  # 既存の本番ジョブ(strategy_policy.json)には一切影響しない。
+  # strategy_policy_up.json / strategy_policy_down.json が両方生成されるまでは
+  # profit_top10_paper.py は従来通りstrategy_policy.jsonにフォールバックする。
+  validate_trend_variants:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        trend: [up, down]
+    env:
+      AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
+      WF_TREND_FILTER: ${{ matrix.trend }}
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Syntax check
+        run: |
+          python -m py_compile futures_trend.py
+          python -m py_compile adversarial_strategy_validator.py
+          python -m py_compile multi_oos_profit_gate.py
+          python -m py_compile build_strategy_policy.py
+
+      - name: Build candidates when needed
+        run: |
+          if [ ! -s walk_forward_all_candidates.csv ]; then
+            python daily_model_retrain.py
+            python walk_forward.py
+          fi
+          test -s walk_forward_all_candidates.csv
+
+      - name: Run 4 independent OOS profit gate (trend-filtered)
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python multi_oos_profit_gate.py
+
+      - name: Build trend-specific policy
+        env:
+          BSP_INPUT_FILE: adversarial_final_candidates_${{ matrix.trend }}.csv
+          BSP_POLICY_FILE: strategy_policy_${{ matrix.trend }}.json
+        run: python build_strategy_policy.py
+
+      - name: Show selected trend policy
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('strategy_policy_${{ matrix.trend }}.json')
+          if not path.exists():
+              print('policyファイル未生成(Final PASS 0件のため既存を維持)')
+          else:
+              with open(path, encoding='utf-8') as f:
+                  p = json.load(f)
+              print('===== TREND=${{ matrix.trend }} POLICY =====')
+              print('status:', p.get('status'))
+              print('strategy:', p.get('strategy_name'))
+              print('monthly positive:', p.get('oos_monthly_positive_ratio'), '%')
+              print('OOS compound:', p.get('oos_compound_return'), '%')
+              print('PF:', p.get('oos_pf'))
+              print('max DD:', p.get('oos_dd'), '%')
+          PY
+
+      - name: Commit trend-specific optimizer outputs
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add strategy_policy_${{ matrix.trend }}.json adversarial_final_candidates_${{ matrix.trend }}.csv adversarial_validation_results_${{ matrix.trend }}.csv adversarial_oos_results_${{ matrix.trend }}.csv multi_oos_folds_${{ matrix.trend }}.csv multi_oos_fold_funnel_${{ matrix.trend }}.csv multi_oos_results_${{ matrix.trend }}/ 2>/dev/null || true
+          git add -u
+          if git diff --cached --quiet; then
+            echo '変更なし'
+            exit 0
+          fi
+          git commit -m "chore: update trend=${{ matrix.trend }} policy outputs [skip ci]"
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo '✅ trend=${{ matrix.trend }} outputs pushed'
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((i * 3))
+          done
+          echo '❌ push failed'
+          exit 1
+
+      - name: Upload trend-specific artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: profit-optimizer-trend-${{ matrix.trend }}-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            adversarial_final_candidates_${{ matrix.trend }}.csv
+            adversarial_validation_results_${{ matrix.trend }}.csv
+            adversarial_oos_results_${{ matrix.trend }}.csv
+            multi_oos_folds_${{ matrix.trend }}.csv
+            multi_oos_results_${{ matrix.trend }}/**
+            multi_oos_fold_funnel_${{ matrix.trend }}.csv
+            strategy_policy_${{ matrix.trend }}.json

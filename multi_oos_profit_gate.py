@@ -10,6 +10,20 @@ import pandas as pd
 CANDIDATE_FILE = os.getenv("WF_CANDIDATE_FILE", "walk_forward_all_candidates.csv")
 OOS_DAYS = int(os.getenv("WF_MULTI_OOS_DAYS", "252"))
 FOLDS = int(os.getenv("WF_MULTI_OOS_FOLDS", "4"))
+# 案3拡張: 先物トレンド軸での週次二本立て検証。"all"(既定, 従来通り)/"up"/"down"。
+# up/downで実行すると、各Foldでadversarial_strategy_validator.pyにも同じ値を渡し、
+# 出力ファイル名にサフィックスを付けて従来のall実行と衝突しないようにする。
+TREND_FILTER = os.getenv("WF_TREND_FILTER", "all").strip().lower()
+if TREND_FILTER not in ("all", "up", "down"):
+    raise RuntimeError("WF_TREND_FILTERはall/up/downのいずれかを指定してください")
+_OUT_SUFFIX = "" if TREND_FILTER == "all" else f"_{TREND_FILTER}"
+
+
+def _out(name):
+    if "." in name:
+        base, ext = name.rsplit(".", 1)
+        return f"{base}{_OUT_SUFFIX}.{ext}"
+    return f"{name}{_OUT_SUFFIX}"
 # 従来は「FOLDS個全部で同一戦略が独立OOS合格」という実質AND条件だったが、
 # あるFoldだけ候補が0件になっただけでパイプライン全体が門前払いになっていた
 # (例: 2026-09-09、Fold3のみDEV選定が偏り候補0件になったケース)。
@@ -23,14 +37,14 @@ START_DATE = os.getenv("WF_START_DATE", "2018-01-01")
 # それでも固定過去日をデフォルトにしておくと紛らわしいため当日にする。
 END_DATE = os.getenv("WF_END_DATE") or pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
 INITIAL_CAPITAL = float(os.getenv("WF_INITIAL_CAPITAL", "1000000"))
-OUT_DIR = Path(os.getenv("WF_MULTI_OUT_DIR", "multi_oos_results"))
+OUT_DIR = Path(os.getenv("WF_MULTI_OUT_DIR") or _out("multi_oos_results"))
 PURGE_DAYS = int(os.getenv("WF_PURGE_DAYS", "7"))
 EMBARGO_DAYS = int(os.getenv("WF_EMBARGO_DAYS", "7"))
 
 # 診断専用。ゲート条件・探索空間は変更しない。
 DIAG_UP = 45
 DIAG_SCORE = 50
-DIAG_FILE = Path(os.getenv("WF_MULTI_DIAG_FILE", "multi_oos_fold_funnel.csv"))
+DIAG_FILE = Path(os.getenv("WF_MULTI_DIAG_FILE") or _out("multi_oos_fold_funnel.csv"))
 
 
 def _purge_embargo(dates_before, dates_after, purge_days, embargo_days):
@@ -132,6 +146,7 @@ def run_fold(fold_no, end_date, all_candidates):
         "WF_OOS_DAYS": str(OOS_DAYS),
         "WF_TOP_N": str(TOP_N),
         "WF_INITIAL_CAPITAL": str(INITIAL_CAPITAL),
+        "WF_TREND_FILTER": TREND_FILTER,
     })
 
     print("\n" + "=" * 90)
@@ -149,9 +164,9 @@ def run_fold(fold_no, end_date, all_candidates):
     )
 
     required_outputs = [
-        "adversarial_final_candidates.csv",
-        "adversarial_validation_results.csv",
-        "adversarial_oos_results.csv",
+        _out("adversarial_final_candidates.csv"),
+        _out("adversarial_validation_results.csv"),
+        _out("adversarial_oos_results.csv"),
     ]
     for name in required_outputs:
         src = Path(name)
@@ -162,8 +177,8 @@ def run_fold(fold_no, end_date, all_candidates):
     # 診断用CSV(VALIDATION/OOSのみ)。存在すればコピーするが、ゲート判定には
     # 使わないため欠落してもRuntimeErrorにはしない。
     optional_diag_outputs = [
-        "adversarial_fold_diagnostics.csv",
-        "adversarial_fold_trade_diagnostics.csv",
+        _out("adversarial_fold_diagnostics.csv"),
+        _out("adversarial_fold_trade_diagnostics.csv"),
     ]
     for name in optional_diag_outputs:
         src = Path(name)
@@ -172,7 +187,7 @@ def run_fold(fold_no, end_date, all_candidates):
 
     # OOS期待利益はprofit_objectiveの5%を担う正式な評価値。
     # 欠落時に .get(..., 0) で黙って0にせず、非空のOOS結果では必須列として検証する。
-    oos_path = fold_dir / "adversarial_oos_results.csv"
+    oos_path = fold_dir / _out("adversarial_oos_results.csv")
     oos_df = pd.read_csv(oos_path)
     if not oos_df.empty:
         if "oos_expected_value" not in oos_df.columns:
@@ -196,7 +211,7 @@ def run_fold(fold_no, end_date, all_candidates):
         )
 
     # Fold単位の最終候補が0件でも、診断用に0件として明示的に保存する。
-    final_path = fold_dir / "adversarial_final_candidates.csv"
+    final_path = fold_dir / _out("adversarial_final_candidates.csv")
     df = pd.read_csv(final_path)
     if not df.empty:
         if "oos_expected_value" not in df.columns:
@@ -408,6 +423,7 @@ def main():
 
     print("=" * 90)
     print("🛡️ MULTI-OOS PROFIT GATE")
+    print(f"TREND_FILTER: {TREND_FILTER}")
     print(f"Fold数: {FOLDS} / 各OOS: {OOS_DAYS}営業日 / TOP_N: {TOP_N}")
     print(f"候補日数: {len(dates)} / 必要目安: {required_days + 100}")
     print("診断: 条件を緩めず、各Foldの候補ファネルを同時保存")
@@ -429,13 +445,13 @@ def main():
     print(f"📁 {DIAG_FILE} を保存しました")
 
     final = aggregate(fold_frames)
-    final.to_csv("adversarial_final_candidates.csv", index=False, encoding="utf-8-sig")
+    final.to_csv(_out("adversarial_final_candidates.csv"), index=False, encoding="utf-8-sig")
     pd.DataFrame({
         "fold": range(1, FOLDS + 1),
         "oos_end": [str(x.date()) for x in end_dates],
         "oos_days": OOS_DAYS,
         "final_pass_count": [len(x) if x is not None else 0 for x in fold_frames],
-    }).to_csv("multi_oos_folds.csv", index=False, encoding="utf-8-sig")
+    }).to_csv(_out("multi_oos_folds.csv"), index=False, encoding="utf-8-sig")
 
     print("\n" + "=" * 90)
     print("🛡️ MULTI-OOS PROFIT GATE RESULT")
