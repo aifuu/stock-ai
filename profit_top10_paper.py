@@ -7,6 +7,7 @@ import yfinance as yf
 from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_model, features, atr, directional_score
 import paper_risk_policy
 import futures_trend
+import discord_progress
 
 TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; POLICY_FILE_UP='strategy_policy_up.json'; POLICY_FILE_DOWN='strategy_policy_down.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
 
@@ -189,6 +190,8 @@ def open_positions(s,policy,cands,today):
         remaining-=invested
         s['positions'].append({**c,'entry_date':today,'entry_time':datetime.now(TZ).strftime('%H:%M'),'entry_price':price,'shares':shares,'invested_amount':invested,'allocation':(invested/capital) if capital else 0,'policy_updated_at':policy.get('updated_at'),'current_price':price,'unrealized_pnl':0.0})
         s['trades_today']=int(s.get('trades_today',0))+1; s.setdefault('trades_by_ticker_today',{})[c['ticker']]=cnt+1; active.add(c['ticker']); out.append(s['positions'][-1])
+        try: discord_progress.notify_trade(c['ticker'],c['direction'],price)
+        except Exception as e: print(f'⚠️ discord_progress notify_trade失敗: {e}')
     return out
 
 def mark_and_close(s,now,policy):
@@ -237,13 +240,22 @@ def mark_and_close(s,now,policy):
         exit_date_str=str(pd.Timestamp(exit_dt).date()) if exit_dt is not None else str(now.date())
         append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':exit_date_str,'exit_time':now.strftime('%H:%M'),'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'expected_value_pct':p.get('expected_value_pct',0),'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason','')})
         msgs.append(f"{'🟢' if pnl>=0 else '🔴'} 決済｜{p['company']}（{p['ticker']}）｜{direction}\n決済価格 {exit_price:,.1f}円｜{sh:,}株｜投資額 {p['invested_amount']:,.0f}円\n確定損益 {pnl:+,.0f}円｜💰総資産 {total:,.0f}円｜開始100万円から {total-INITIAL_CAPITAL:+,.0f}円")
+        try: discord_progress.notify_exit(p['ticker'],exit_price,pnl)
+        except Exception as e: print(f'⚠️ discord_progress notify_exit失敗: {e}')
     s['positions']=remaining; s['peak']=max(float(s.get('peak',s['capital'])),float(s['capital'])); return msgs
 
-def main():
+def _run():
     now=datetime.now(TZ); today=now.strftime('%Y-%m-%d'); policy_file,trend_result=select_policy_file(); policy=load_policy(policy_file); s=load_state(); reset_daily(s,today)
     if not(now.weekday()<5 and dtime(9,0)<=now.time()<=dtime(15,30)):
         discord_send(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし'); return
-    closed=mark_and_close(s,now,policy); cands,scanned=scan(policy); opened=open_positions(s,policy,cands,today); save_state(s)
+    closed=mark_and_close(s,now,policy); cands,scanned=scan(policy)
+    if cands:
+        top1=cands[0]
+        try:
+            if discord_progress.top1_changed(top1.get('ticker',''),top1.get('direction','BUY')):
+                discord_progress.notify_selection_start(); discord_progress.notify_top10(cands); discord_progress.notify_top1(top1.get('ticker',''),top1.get('direction','BUY'),float(top1.get('score',0) or 0))
+        except Exception as e: print(f'⚠️ discord_progress TOP1通知失敗: {e}')
+    opened=open_positions(s,policy,cands,today); save_state(s)
     entry_msgs=[
         f"🆕 エントリー｜{p['company']}（{p['ticker']}）｜{'買い' if p['direction']=='BUY' else '空売り'}\n"
         f"取得価格 {p['entry_price']:,.1f}円｜{p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円\n"
@@ -263,5 +275,15 @@ def main():
     for m in closed: discord_send(m)
     for m in entry_msgs: discord_send(m)
     discord_send(msg)
+    try: discord_progress.notify_progress(msg)
+    except Exception as e: print(f'⚠️ discord_progress notify_progress失敗: {e}')
+
+def main():
+    try:
+        _run()
+    except Exception as e:
+        try: discord_progress.notify_error('main',str(e))
+        except Exception: pass
+        raise
 
 if __name__=='__main__': main()

@@ -90,6 +90,11 @@ jobs:
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
 
+      - name: Notify AM session start (Discord)
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python -c "import discord_progress; discord_progress.notify_start('AM')"
+
       - name: AM session loop (09:20-12:35 JST, 5分おきtick)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -188,7 +193,7 @@ jobs:
 
             python profit_top10_monthly_performance.py
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv; do
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json; do
               if [ -f "$f" ]; then git add "$f"; fi
             done
 
@@ -327,6 +332,11 @@ jobs:
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
 
+      - name: Notify PM session start (Discord)
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python -c "import discord_progress; discord_progress.notify_start('PM')"
+
       - name: PM session loop (12:25-15:35 JST, 5分おきtick、15:25強制決済を含む)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -425,7 +435,7 @@ jobs:
 
             python profit_top10_monthly_performance.py
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv; do
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json; do
               if [ -f "$f" ]; then git add "$f"; fi
             done
 
