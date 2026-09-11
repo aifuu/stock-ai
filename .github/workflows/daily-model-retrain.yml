@@ -111,12 +111,23 @@ jobs:
           # が読む本番ファイル)。旧"model.pkl"は無関係な別ファイル名で、
           # 生成された検証済みモデルが一度もコミットされずランナー終了と共に
           # 消滅していた。
+          # ★変更(2026-09): 上記の事故(2026-09-03)は当時のファイル名不一致バグが
+          # 原因でgit add自体が実質的に空振りしていた。同種の再発(git add失敗の
+          # 黙殺・将来のtypo等)を検知できるよう、add前に「新規/更新されたdirectional_
+          # model.pklが作業ツリーにあるか」を記録しておき、あった場合はadd後に必ず
+          # stageされていることを確認する(deploy=Falseで既存モデル無変更の通常ケース
+          # では何もチェックしない、誤検知防止)。
+          PKL_CHANGED_BEFORE_ADD=$(git status --porcelain -- directional_model.pkl)
           git add directional_model.pkl 2>/dev/null || true
           git add train_data.csv 2>/dev/null || true
           git add daily_retrain_report.csv 2>/dev/null || true
           git add trade_feedback_policy.json 2>/dev/null || true
           git add trade_feedback_report.csv 2>/dev/null || true
           git add -u
+          if [ -n "$PKL_CHANGED_BEFORE_ADD" ] && ! git diff --cached --name-only | grep -qx 'directional_model.pkl'; then
+            echo '❌ directional_model.pklが新規/更新されているのにgit stageに含まれていません(git add失敗の可能性、要調査)'
+            exit 1
+          fi
           git diff --cached --quiet && exit 0
           git commit -m 'chore: daily model retrain and feedback [skip ci]'
           for i in 1 2 3 4 5; do
