@@ -81,7 +81,7 @@ def load_existing_policy():
 def keep_existing_policy(reason):
     print("")
     print("🟡", reason)
-    print("strategy_policy.jsonは変更しません")
+    print(f"{POLICY_FILE}は変更しません")
     raise SystemExit(0)
 
 
@@ -274,12 +274,12 @@ try:
     with open(POLICY_FILE, "w", encoding="utf-8") as f:
         json.dump(new_policy, f, ensure_ascii=False, indent=2)
 except Exception as e:
-    print("❌ strategy_policy.json保存失敗:", e)
+    print(f"❌ {POLICY_FILE}保存失敗:", e)
     raise SystemExit(1)
 
 print("")
 print("=" * 60)
-print("✅ strategy_policy.json 更新")
+print(f"✅ {POLICY_FILE} 更新")
 print("=" * 60)
 print("採用戦略:", new_policy["strategy_name"])
 print("UP:", new_policy["up_threshold"])
