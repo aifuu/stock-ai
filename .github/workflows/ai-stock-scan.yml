@@ -36,6 +36,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
+      # ★変更(2026-09): 以前はこの通知がユニバース検証・構文チェック・policy検証の
+      # 後段にあったため、これらいずれかが失敗するとジョブ起動通知自体が届かず、
+      # 「何時何分に起動したか」の監視目的を果たせなかった。checkout+依存インストール
+      # 直後の最も早いタイミングに移動し、後続チェックの成否に関わらず必ず送信する。
+      - name: Notify AM session start (Discord)
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python -c "import discord_progress; discord_progress.notify_start('AM')"
+
       - name: Apply Nikkei 225 stock universe
         run: |
           python apply_expanded_universe.py
@@ -89,11 +98,6 @@ jobs:
           print(f'✅ paper policy mode = {status}')
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
-
-      - name: Notify AM session start (Discord)
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python -c "import discord_progress; discord_progress.notify_start('AM')"
 
       - name: AM session loop (09:20-12:35 JST, 5分おきtick)
         env:
@@ -281,6 +285,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
 
+      # ★変更(2026-09): AM側と同じ理由で、ユニバース検証・構文チェック・policy検証
+      # より前の最も早いタイミングに移動(理由の詳細はAM側の同コメント参照)。
+      - name: Notify PM session start (Discord)
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python -c "import discord_progress; discord_progress.notify_start('PM')"
+
       - name: Apply Nikkei 225 stock universe
         run: |
           python apply_expanded_universe.py
@@ -331,11 +342,6 @@ jobs:
           print(f'✅ paper policy mode = {status}')
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
-
-      - name: Notify PM session start (Discord)
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python -c "import discord_progress; discord_progress.notify_start('PM')"
 
       - name: PM session loop (12:25-15:35 JST, 5分おきtick、15:25強制決済を含む)
         env:

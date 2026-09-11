@@ -11,8 +11,10 @@ from __future__ import annotations
 - OOS/Adversarialの採用ゲートとは独立したペーパー実行ルール。
 - 同一銘柄は決済後30分だけ再取引禁止。別銘柄は選択可能。
 - 1日最大30回。
-- 1日最低1回は14:45時点で0件ならforced_min_tradeを発火するための状態フラグを保持。
-- forced_min_trade は normal シグナル成績から分離する前提。
+- ★変更(2026-09): 以前あった「14:45時点で0件なら強制的に1回取引する
+  (forced_min_trade)」という概念は、run_profit_loop.py側で無理やりエントリー
+  する経路(緊い方の水準まで条件を緩める強制経路)を廃止した方針と矛盾するため
+  廃止した。条件を満たす候補が無い日は無理に建てず見送るのが現行方針。
 
 このモジュール自体は「時間フェーズと実行ルールの司令塔」であり、実際の
 銘柄評価・売買執行は既存の run_profit_loop.py / profit_top10_paper.py に接続する。
@@ -38,8 +40,6 @@ FINAL_DECISION_MIN = 9 * 60 + 30
 MARKET_CLOSE_MIN = 15 * 60 + 30
 COOLDOWN_MINUTES = 30
 MAX_TRADES_PER_DAY = 30
-MIN_TRADES_PER_DAY = 1
-FORCE_MIN_TRADE_DEADLINE_MIN = 14 * 60 + 45
 
 
 def now_jst() -> datetime:
@@ -58,7 +58,6 @@ def load_state() -> dict:
         "premarket_done": False,
         "open_rescore_done": False,
         "final_decision_done": False,
-        "forced_min_trade_done": False,
         "trades_today": 0,
         "last_exit_by_ticker": {},
     }
@@ -153,24 +152,14 @@ def can_start_paper_trading(now: datetime | None = None) -> bool:
     return minute_of_day(now) >= FINAL_DECISION_MIN and minute_of_day(now) < MARKET_CLOSE_MIN
 
 
-def can_force_min_trade(now: datetime | None = None) -> bool:
-    now = now or now_jst()
-    state = load_state()
-    if state.get("forced_min_trade_done"):
-        return False
-    return state.get("trades_today", 0) < MIN_TRADES_PER_DAY and minute_of_day(now) >= FORCE_MIN_TRADE_DEADLINE_MIN
-
-
-def record_trade(ticker: str, mode: str = "normal") -> dict:
+def record_trade(ticker: str) -> dict:
     state = load_state()
     trades = int(state.get("trades_today", 0))
     if trades >= MAX_TRADES_PER_DAY:
         raise RuntimeError(f"1日最大取引回数{MAX_TRADES_PER_DAY}回に到達")
     state["trades_today"] = trades + 1
-    if mode == "forced_min_trade":
-        state["forced_min_trade_done"] = True
     save_state(state)
-    log.info("📄 paper trade recorded: %s mode=%s count=%d/%d", ticker, mode, state["trades_today"], MAX_TRADES_PER_DAY)
+    log.info("📄 paper trade recorded: %s count=%d/%d", ticker, state["trades_today"], MAX_TRADES_PER_DAY)
     return state
 
 
@@ -178,7 +167,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", choices=["auto", "premarket", "open", "rescore", "final", "trading", "closed"], default="auto")
     parser.add_argument("--record-trade", dest="record_trade_ticker")
-    parser.add_argument("--record-mode", choices=["normal", "forced_min_trade"], default="normal")
     parser.add_argument("--record-exit", dest="record_exit_ticker")
     args = parser.parse_args()
 
@@ -195,7 +183,7 @@ def main() -> None:
     if args.record_trade_ticker:
         if is_in_cooldown(args.record_trade_ticker, now):
             raise SystemExit(f"❌ {args.record_trade_ticker}: 同一銘柄30分クールダウン中")
-        record_trade(args.record_trade_ticker, args.record_mode)
+        record_trade(args.record_trade_ticker)
 
     print("========================================")
     print("INTRADAY SCHEDULER")
@@ -204,7 +192,6 @@ def main() -> None:
     print(f"phase: {phase}")
     print(f"paper trading start: {'YES' if can_start_paper_trading(now) else 'NO'}")
     print(f"trades today: {state.get('trades_today', 0)}/{MAX_TRADES_PER_DAY}")
-    print(f"minimum-trade force due: {'YES' if can_force_min_trade(now) else 'NO'}")
 
 
 if __name__ == "__main__":
