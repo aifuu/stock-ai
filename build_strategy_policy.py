@@ -6,8 +6,8 @@ from datetime import datetime
 
 import pandas as pd
 
-INPUT_FILE = "adversarial_final_candidates.csv"
-POLICY_FILE = "strategy_policy.json"
+INPUT_FILE = os.getenv("BSP_INPUT_FILE", "adversarial_final_candidates.csv")
+POLICY_FILE = os.getenv("BSP_POLICY_FILE", "strategy_policy.json")
 
 MIN_OOS_TRADES = 20
 MIN_OOS_PF = 1.00

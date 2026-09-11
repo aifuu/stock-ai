@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+import futures_trend
+
 CANDIDATE_FILE = os.getenv("WF_CANDIDATE_FILE", "walk_forward_all_candidates.csv")
 START_DATE = pd.Timestamp(os.getenv("WF_START_DATE", "2021-01-01"))
 # ★修正(2026-09): デフォルトを固定過去日にすると、WF_END_DATE未指定の
@@ -16,6 +18,22 @@ TOP_N = int(os.getenv("WF_TOP_N", "10"))
 PURGE_DAYS = int(os.getenv("WF_PURGE_DAYS", "7"))
 EMBARGO_DAYS = int(os.getenv("WF_EMBARGO_DAYS", "7"))
 INITIAL_CAPITAL = float(os.getenv("WF_INITIAL_CAPITAL", "1000000"))
+
+# 案3拡張: 先物トレンド軸での週次二本立て検証。"all"(既定, 従来通り)/"up"/"down"。
+# up/downで実行すると、その期間のみに候補を絞り込み、出力ファイル名にサフィックスを付ける。
+TREND_FILTER = os.getenv("WF_TREND_FILTER", "all").strip().lower()
+if TREND_FILTER not in ("all", "up", "down"):
+    raise RuntimeError("WF_TREND_FILTERはall/up/downのいずれかを指定してください")
+_OUT_SUFFIX = "" if TREND_FILTER == "all" else f"_{TREND_FILTER}"
+
+
+def _out(name):
+    """TREND_FILTERに応じた出力ファイル名を返す(up/down並行実行時に上書きを防ぐ)。"""
+    if "." in name:
+        base, ext = name.rsplit(".", 1)
+        return f"{base}{_OUT_SUFFIX}.{ext}"
+    return f"{name}{_OUT_SUFFIX}"
+
 
 MIN_VALIDATION_TRADES = int(os.getenv("WF_MIN_VALIDATION_TRADES", "30"))
 MIN_TRADES_HARD = int(os.getenv("WF_MIN_TRADES_HARD", "20"))
@@ -92,6 +110,21 @@ if candidates.empty:
     raise RuntimeError("指定期間に有効な候補データがありません。")
 
 candidates["atr_ratio"] = (((candidates.take_profit / candidates.price) - 1) / 3.0 * 100).clip(0.01, 20.0)
+
+# 先物トレンド軸のマージ+絞り込み(TREND_FILTER!=allの場合のみ)。
+# サンプル数確保のため、all実行時はこの処理をスキップして従来通りの母集団を使う。
+if TREND_FILTER != "all":
+    trend_series = futures_trend.historical_trend_series(START_DATE, END_DATE)
+    if trend_series.empty:
+        raise RuntimeError("先物トレンド系列が取得できませんでした(TREND_FILTER指定時は必須)")
+    trend_map = trend_series["trend"].to_dict()
+    candidates["futures_trend"] = candidates.date.map(lambda d: trend_map.get(d.normalize()))
+    before_n = len(candidates)
+    candidates = candidates[candidates.futures_trend == TREND_FILTER].copy()
+    print(f"📈 TREND_FILTER={TREND_FILTER}: 候補 {before_n}件 → {len(candidates)}件に絞り込み")
+    if candidates.empty:
+        raise RuntimeError(f"TREND_FILTER={TREND_FILTER}に該当する候補データがありません")
+
 all_dates = sorted(candidates.date.drop_duplicates().tolist())
 if len(all_dates) <= OOS_DAYS:
     raise RuntimeError("OOS_DAYSが予測日数以上です。")
@@ -277,7 +310,7 @@ for i, (up, score, nikkei, tp, sl, hold) in enumerate(param_space, 1):
     st = stats(rd)
     all_dev_rows.append({"strategy": f"UP{up}_SCORE{score}_NIKKEI{'ON' if nikkei else 'OFF'}_TP{tp}_SL{sl}_H{hold}", "up": up, "score": score, "nikkei": nikkei, "tp": tp, "sl": sl, "hold": hold, **{f"dev_{k}": v for k, v in st.items()}})
 dev_summary = pd.DataFrame(all_dev_rows)
-dev_summary.to_csv("adversarial_dev_all_results.csv", index=False, encoding="utf-8-sig")
+dev_summary.to_csv(_out("adversarial_dev_all_results.csv"), index=False, encoding="utf-8-sig")
 dev_candidates = dev_summary[(dev_summary.dev_signals >= MIN_TRADES_HARD) & (dev_summary.dev_annual_signals >= MIN_ANNUAL_SIGNALS) & (dev_summary.dev_avg_return > MIN_RETURN_LOWER) & (dev_summary.dev_pf >= MIN_PF_LOWER)].copy()
 # 優先順位: ①月間収益率(=月間利益額と線形同値) ②月間+5%達成率 ③OOS系累積収益率(=複利最終資産と線形同値)
 # ④平均利益率/期待利益率 ⑤Profit Factor ⑥最大DD(ペナルティ)。勝率(win_rate)は一切使わない。
@@ -290,7 +323,7 @@ dev_candidates["dev_objective"] = (
     - np.clip(-dev_candidates.dev_dd, 0, 100) * 0.03
 )
 dev_candidates = dev_candidates.sort_values("dev_objective", ascending=False).head(50).copy()
-dev_candidates.to_csv("adversarial_dev_selected_candidates.csv", index=False, encoding="utf-8-sig")
+dev_candidates.to_csv(_out("adversarial_dev_selected_candidates.csv"), index=False, encoding="utf-8-sig")
 
 # Validation
 validation_results = []
@@ -304,7 +337,7 @@ if not validation_summary.empty:
     validation_summary["validation_pass"] = ((validation_summary.validation_signals >= MIN_VALIDATION_TRADES) & (validation_summary.validation_pf >= MIN_PF_LOWER) & (validation_summary.validation_avg_return > MIN_RETURN_LOWER) & (validation_summary.validation_dd >= -MAX_VALIDATION_DD) & (validation_summary.validation_annual_signals >= MIN_ANNUAL_SIGNALS) & (validation_summary.validation_monthly_positive_ratio >= MIN_MONTHLY_POSITIVE_RATIO * 100) & (validation_summary.validation_avg_lower > 0))
 else:
     validation_summary["validation_pass"] = False
-validation_summary.to_csv("adversarial_validation_results.csv", index=False, encoding="utf-8-sig")
+validation_summary.to_csv(_out("adversarial_validation_results.csv"), index=False, encoding="utf-8-sig")
 
 # OOS
 passed_validation = validation_summary[validation_summary.validation_pass].copy() if not validation_summary.empty else pd.DataFrame()
@@ -322,7 +355,7 @@ else:
     oos_summary["oos_pf_ratio"] = pd.Series(dtype=float)
     oos_summary["oos_insufficient_data"] = pd.Series(dtype=bool)
     oos_summary["oos_pass"] = False
-oos_summary.to_csv("adversarial_oos_results.csv", index=False, encoding="utf-8-sig")
+oos_summary.to_csv(_out("adversarial_oos_results.csv"), index=False, encoding="utf-8-sig")
 
 # Final ranking + mandatory MC risk gate
 final_pass = oos_summary[oos_summary.oos_pass].copy() if not oos_summary.empty else pd.DataFrame()
@@ -360,13 +393,13 @@ if not final_pass.empty:
     final_pass["oos_validation_pf_ratio"] = final_pass.oos_pf_ratio
 else:
     final_pass = pd.DataFrame(columns=["final_status", "up_threshold", "score_threshold", "nikkei_filter", "tp_multiplier", "sl_multiplier", "hold_days"])
-final_pass.to_csv("adversarial_final_candidates.csv", index=False, encoding="utf-8-sig")
+final_pass.to_csv(_out("adversarial_final_candidates.csv"), index=False, encoding="utf-8-sig")
 
 # 診断用CSV(VALIDATION/OOSのみ)。ゲート判定・選定ロジックには一切影響しない。
 # トレード単位: adversarial_fold_trade_diagnostics.csv
 # 戦略×フェーズ単位の集計: adversarial_fold_diagnostics.csv
 trade_diag_df = pd.DataFrame(trade_diagnostics)
-trade_diag_df.to_csv("adversarial_fold_trade_diagnostics.csv", index=False, encoding="utf-8-sig")
+trade_diag_df.to_csv(_out("adversarial_fold_trade_diagnostics.csv"), index=False, encoding="utf-8-sig")
 
 if not trade_diag_df.empty:
     def _approach_rate(s):
@@ -386,13 +419,14 @@ if not trade_diag_df.empty:
     ).reset_index()
 else:
     fold_diag = pd.DataFrame(columns=["strategy", "phase", "signals", "avg_return", "avg_gc_gap", "gc_approach_ratio", "avg_gc_slope", "avg_adx", "avg_breakout20", "avg_relative_strength", "avg_volume_surge", "avg_atr_ratio"])
-fold_diag.to_csv("adversarial_fold_diagnostics.csv", index=False, encoding="utf-8-sig")
+fold_diag.to_csv(_out("adversarial_fold_diagnostics.csv"), index=False, encoding="utf-8-sig")
 
 validation_n = int(validation_summary.validation_pass.sum()) if not validation_summary.empty else 0
 oos_n = int(oos_summary.oos_pass.sum()) if not oos_summary.empty else 0
 oos_insufficient_n = int(oos_summary.oos_insufficient_data.sum()) if not oos_summary.empty else 0
 print("=" * 80)
 print("🛡️ AI PROFIT OPTIMIZER RESULT")
+print("TREND_FILTER:", TREND_FILTER)
 print("期間:", START_DATE.date(), "～", END_DATE.date())
 print("探索数:", len(param_space), "N_eff:", N_EFFECTIVE_STRATEGIES)
 print("Purge/Embargo:", PURGE_DAYS, EMBARGO_DAYS, "TOP_N:", TOP_N)
@@ -400,7 +434,7 @@ print("DEV候補:", len(dev_candidates), "Validation PASS:", validation_n, "OOS 
 print(f"OOS 判定不能(シグナル数<{MIN_OOS_TRADES}):", oos_insufficient_n, "/", len(oos_summary))
 print("Final PASS:", len(final_pass))
 
-msg = (f"🛡️ AI PROFIT OPTIMIZER\n期間: {START_DATE.date()} ～ {END_DATE.date()}\nTOP_N: {TOP_N}\nDEV候補: {len(dev_candidates)}\nValidation PASS: {validation_n}\nOOS PASS: {oos_n}(うちOOSシグナル数不足で判定不能: {oos_insufficient_n}件)\nFinal PASS: {len(final_pass)}\n目標: 月間損益プラス率・OOS複利資産・期待利益を優先")
+msg = (f"🛡️ AI PROFIT OPTIMIZER{'（' + TREND_FILTER + 'トレンド専用）' if TREND_FILTER != 'all' else ''}\n期間: {START_DATE.date()} ～ {END_DATE.date()}\nTOP_N: {TOP_N}\nDEV候補: {len(dev_candidates)}\nValidation PASS: {validation_n}\nOOS PASS: {oos_n}(うちOOSシグナル数不足で判定不能: {oos_insufficient_n}件)\nFinal PASS: {len(final_pass)}\n目標: 月間損益プラス率・OOS複利資産・期待利益を優先")
 if not final_pass.empty:
     msg += "\n\n🏆 BEST STRATEGIES\n"
     for _, r in final_pass.head(10).iterrows():

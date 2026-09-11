@@ -6,8 +6,29 @@ import pandas as pd
 import yfinance as yf
 from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_model, features, atr, directional_score
 import paper_risk_policy
+import futures_trend
 
-TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
+TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; POLICY_FILE_UP='strategy_policy_up.json'; POLICY_FILE_DOWN='strategy_policy_down.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
+
+def select_policy_file():
+    """先物トレンド(案3)に応じて、その日使うpolicyファイルを選ぶ。
+
+    上昇用/下落用の個別policyファイルが両方揃っていない間は、
+    既存の単一strategy_policy.jsonにフォールバックする(安全側の既定動作)。
+    判定結果は本番選定には使わず、futures_trend_history.csvへ記録するだけの
+    週次専用戦略検討用データとしても蓄積される。
+    """
+    result = futures_trend.detect_futures_trend()
+    try:
+        futures_trend.log_daily_trend(result)
+    except Exception as e:
+        print(f'⚠️ futures_trend記録失敗: {e}')
+    candidate = POLICY_FILE_DOWN if result.get('trend') == futures_trend.DOWN else POLICY_FILE_UP
+    if os.path.exists(candidate):
+        print(f'📈 先物トレンド判定: {result.get("trend")}｜{result.get("reason")}｜使用policy: {candidate}')
+        return candidate, result
+    print(f'📈 先物トレンド判定: {result.get("trend")}｜{result.get("reason")}｜{candidate}未整備のため{POLICY_FILE}を使用')
+    return POLICY_FILE, result
 INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000')); TOP_N=10; MAX_TRADES_PER_TICKER_PER_DAY=10; MAX_TOTAL_TRADES_PER_DAY=30; FEE_RATE=float(os.getenv('INTRADAY_FEE_RATE','0.00055')); FORCED_EXIT=dtime(15,25); SHORT_ENABLED=os.getenv('ENABLE_SHORT_PAPER','1').lower() in ('1','true','yes','on'); LOT_SIZE=100
 
 def discord_send(message,required=False):
@@ -25,8 +46,9 @@ def _canonical(p):
     keys=('status','updated_at','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days','validation_signals','validation_avg_month_return','validation_avg_return','validation_pf','validation_dd','oos_signals','oos_avg_month_return','oos_monthly_plus5_ratio','oos_compound_return','oos_avg_return','oos_pf','oos_dd','oos_validation_pf_ratio','mc_sizing','mc_10y_probability','mc_15y_probability','mc_20y_probability','mc_bankruptcy_probability','mc_p90_max_dd','strategy_name','source')
     return json.dumps({k:p.get(k) for k in keys},ensure_ascii=False,sort_keys=True,separators=(',',':'))
 
-def load_policy():
-    with open(POLICY_FILE,encoding='utf-8') as f:p=json.load(f)
+def load_policy(policy_file=None):
+    path = policy_file or POLICY_FILE
+    with open(path,encoding='utf-8') as f:p=json.load(f)
     req=['status','up_threshold','min_score_for_buy','nikkei_filter','atr_tp_multiplier','atr_sl_multiplier','hold_days']; miss=[k for k in req if k not in p]
     if miss: raise RuntimeError('policy不足: '+','.join(miss))
     status=str(p['status']).upper()
@@ -218,7 +240,7 @@ def mark_and_close(s,now,policy):
     s['positions']=remaining; s['peak']=max(float(s.get('peak',s['capital'])),float(s['capital'])); return msgs
 
 def main():
-    now=datetime.now(TZ); today=now.strftime('%Y-%m-%d'); policy=load_policy(); s=load_state(); reset_daily(s,today)
+    now=datetime.now(TZ); today=now.strftime('%Y-%m-%d'); policy_file,trend_result=select_policy_file(); policy=load_policy(policy_file); s=load_state(); reset_daily(s,today)
     if not(now.weekday()<5 and dtime(9,0)<=now.time()<=dtime(15,30)):
         discord_send(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし'); return
     closed=mark_and_close(s,now,policy); cands,scanned=scan(policy); opened=open_positions(s,policy,cands,today); save_state(s)
@@ -235,6 +257,7 @@ def main():
     msg=('🤖 利益優先ループ｜TOP10 ペーパートレード\n━━━━━━━━━━━━━━━━━━\n'
          f'📅 {today} {now:%H:%M} JST｜⚠️ 実注文なし\n対象225銘柄(日経225)｜取得成功 {scanned}｜候補 {len(cands)}｜新規 {len(opened)}件\n'
          f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}｜TP×{policy["atr_tp_multiplier"]:.1f}｜SL×{policy["atr_sl_multiplier"]:.1f}｜日経フィルター{"ON" if policy.get("nikkei_filter") else "OFF"}｜最大保有{policy["hold_days"]}営業日\n'
+         f'📈 先物トレンド: {trend_result.get("trend")}｜{trend_result.get("reason")}｜使用policy: {policy_file}\n'
          f'💰総資産 {equity:,.0f}円｜本日 {daily:+,.0f}円｜累計 {cum:+.2f}%\n'
          f'📦 保有 {len(s["positions"])}件\n' + ('\n'.join(rows) if rows else 'なし'))
     for m in closed: discord_send(m)

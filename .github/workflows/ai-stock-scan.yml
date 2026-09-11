@@ -188,7 +188,7 @@ jobs:
 
             python profit_top10_monthly_performance.py
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json; do
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv; do
               if [ -f "$f" ]; then git add "$f"; fi
             done
 
@@ -425,7 +425,7 @@ jobs:
 
             python profit_top10_monthly_performance.py
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json; do
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv; do
               if [ -f "$f" ]; then git add "$f"; fi
             done
 
