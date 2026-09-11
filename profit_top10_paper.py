@@ -112,7 +112,18 @@ def _reward_risk(price,tp,sl,direction):
         return ((tp-price)/price*100 if price>0 else 0.0),((price-sl)/price*100 if price>0 else 0.0)
     return ((price-tp)/price*100 if price>0 else 0.0),((sl-price)/price*100 if price>0 else 0.0)
 
-def scan(policy):
+def scan(policy,limit=TOP_N):
+    # ★修正(2026-09): paper_fast_entrypoint.pyのcached_scan()は「225銘柄全部を
+    # AI分析する」ためにpolicyのUP/SCORE/日経フィルターを一時的に0/OFFにしてこの
+    # scan()を呼ぶが、この関数自身が最後にTOP_N=10へ内部で絞ってしまうため、
+    # 「緩い条件のexpected_value上位10銘柄」だけが下流のscan_candidates_fixed()に
+    # 渡り、そこで承認済みpolicyにより再フィルターされていた。つまり本来
+    # 「225銘柄→承認policyで選別→TOP10→TOP1」であるべきところが
+    # 「225銘柄→緩い条件でTOP10に切る→その10銘柄だけ承認policyで選別→TOP1」に
+    # なっており、本来TOP10に入るはずの承認条件適合銘柄が、最初の緩い基準の
+    # 10位以内に入っていないだけで消えていた。呼び出し側がlimit=Noneを渡せば
+    # 打ち切らず全件返せるようにし、通常呼び出し(limit省略)は従来通りTOP_N件のまま
+    # 互換性を保つ。
     nik,model=make_nikkei(),load_model(); cand=[]; fallback=[]; scanned=0
     if model is None or nik is None: raise RuntimeError('日経またはAIモデル取得失敗')
     cols=list(getattr(model,'feature_names_in_',[])); nikkei_filter_on=bool(policy.get('nikkei_filter'))
@@ -158,7 +169,8 @@ def scan(policy):
                     cand.append(item)
         except Exception as e: print(t,e)
     cand.sort(key=lambda z:(z['expected_value_pct'],z['score']),reverse=True); fallback.sort(key=lambda z:(z['expected_value_pct'],z['score']),reverse=True)
-    return (cand or fallback)[:TOP_N],scanned
+    pool=cand or fallback
+    return (pool if limit is None else pool[:limit]),scanned
 
 def open_positions(s,policy,cands,today):
     active={p['ticker'] for p in s['positions']}; out=[]

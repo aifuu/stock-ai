@@ -65,20 +65,49 @@ FEATURES = trader.FEATURES
 # 同じ条件でOOSシミュレーションするようにする(署名検証はここでは行わない。実発注の
 # 安全性はprofit_top10_paper.load_policy()側の厳格な検証が別途担保しているため、ここは
 # OOSシミュレーション用の参考値取得に留める)。
+#
+# ★修正(2026-09、追加): TP/SL同期だけでは不十分だった。simulate_oos_top1()の候補選定が
+# 「全銘柄から単純にスコア最大の1件」を無条件採用する別戦略になっており、実運用
+# (run_profit_loop.py)が使う (1)承認済みpolicyのUP/SCORE閾値・日経フィルター、
+# (2)日経レジーム(強気=BUYのみ/弱気=SHORTのみ)、(3)売買手数料 を一切反映していなかった。
+# これらもpolicyから読み込み、simulate_oos_top1()側で再現する。
+# (trade_feedback_policy.jsonのフィードバック重みだけは、フィードバック自体が
+# 「その時点までの実績」に依存し将来分を含めるとリークになり得るため、意図的に含めない)
 POLICY_FILE = "strategy_policy.json"
 
 
-def _load_policy_exit_rule():
+def _load_policy_rules():
     try:
         with open(POLICY_FILE, encoding="utf-8") as f:
             p = json.load(f)
-        return float(p["atr_tp_multiplier"]), float(p["atr_sl_multiplier"]), int(p["hold_days"])
+        return {
+            "tp_mult": float(p["atr_tp_multiplier"]),
+            "sl_mult": float(p["atr_sl_multiplier"]),
+            "hold_days": int(p["hold_days"]),
+            "up_threshold": float(p["up_threshold"]),
+            "min_score": float(p["min_score_for_buy"]),
+            "nikkei_filter": str(p["nikkei_filter"]).lower() in ("true", "1", "yes", "on"),
+        }
     except Exception as e:
-        print(f"⚠ {POLICY_FILE}読込失敗、daily_directional_top1.pyのデフォルト値にフォールバック: {e}")
-        return trader.TP_MULT, trader.SL_MULT, trader.HOLD_DAYS
+        print(f"⚠ {POLICY_FILE}読込失敗、フィルター無し(旧仕様相当)にフォールバック: {e}")
+        return {
+            "tp_mult": trader.TP_MULT, "sl_mult": trader.SL_MULT, "hold_days": trader.HOLD_DAYS,
+            "up_threshold": 0.0, "min_score": 0.0, "nikkei_filter": False,
+        }
 
 
-TP_MULT, SL_MULT, HOLD_DAYS = _load_policy_exit_rule()
+_POLICY_RULES = _load_policy_rules()
+TP_MULT = _POLICY_RULES["tp_mult"]
+SL_MULT = _POLICY_RULES["sl_mult"]
+HOLD_DAYS = _POLICY_RULES["hold_days"]
+UP_THRESHOLD = _POLICY_RULES["up_threshold"]
+MIN_SCORE_FOR_BUY = _POLICY_RULES["min_score"]
+NIKKEI_FILTER_ON = _POLICY_RULES["nikkei_filter"]
+# profit_top10_paper.pyのFEE_RATE(片道)と同じデフォルト・同じ環境変数名。
+# 実運用は1トレードにつき往復(エントリー+決済の2回)分の手数料を資金から
+# 差し引くため、%換算では概ね FEE_RATE*2*100 に相当する(profit_priority()の
+# flat_cost計算と同じ近似)。
+FEE_RATE_PCT = float(os.getenv("INTRADAY_FEE_RATE", "0.00055")) * 2 * 100.0
 ATR_TARGET_MULTIPLIER = 1.0
 
 PREV_MODEL_FILE = "model_prev.pkl"
@@ -166,7 +195,7 @@ def build_universe(tickers):
 
     if not ticker_frames:
         raise RuntimeError("有効な学習データが1件も作れませんでした")
-    return ticker_frames
+    return ticker_frames, nikkei
 
 
 def flatten_training_rows(ticker_frames, before_date=None):
@@ -188,8 +217,32 @@ def flatten_training_rows(ticker_frames, before_date=None):
     return pd.concat(frames, ignore_index=True)
 
 
-def simulate_oos_top1(model, ticker_frames, oos_dates):
-    """OOS区間だけでTOP1を日次シミュレーションする。"""
+def _oos_regime(nikkei_ff, date):
+    """指定日時点での日経レジーム(run_profit_loop._market_regime()と同じ判定式)。
+    データが無い/NaNの場合はneutral・日経上昇扱い(安全側=フィルター実質無効)にする。"""
+    if date not in nikkei_ff.index:
+        return "neutral", True
+    row = nikkei_ff.loc[date]
+    kairi, ret5 = row.get("kairi25"), row.get("ret5")
+    if pd.isna(kairi) or pd.isna(ret5):
+        return "neutral", True
+    kairi, ret5 = float(kairi), float(ret5)
+    if kairi > 0 and ret5 > 0:
+        regime = "bullish"
+    elif kairi < 0 and ret5 < 0:
+        regime = "bearish"
+    else:
+        regime = "neutral"
+    nikkei_up = bool(row.get("nikkei_uptrend", True))
+    return regime, nikkei_up
+
+
+def simulate_oos_top1(model, ticker_frames, oos_dates, nikkei_ff):
+    """OOS区間だけでTOP1を日次シミュレーションする。
+    ★修正(2026-09): 承認済みpolicyのUP/SCORE閾値・日経フィルター・日経レジーム
+    (強気=BUYのみ/弱気=SHORTのみ)・売買手数料を反映し、実運用(run_profit_loop.py+
+    profit_top10_paper.py)の選定ロジックに揃える(feedback_weightのみ意図的に除外、
+    理由は本ファイル冒頭コメント参照)。"""
     position = None
     trades = []
 
@@ -229,6 +282,7 @@ def simulate_oos_top1(model, ticker_frames, oos_dates):
                     if position["direction"] == "BUY"
                     else (entry / exit_price - 1.0) * 100.0
                 )
+                ret -= FEE_RATE_PCT
                 trades.append({
                     "entry_date": position["entry_date"], "exit_date": date,
                     "ticker": ticker, "direction": position["direction"],
@@ -237,6 +291,7 @@ def simulate_oos_top1(model, ticker_frames, oos_dates):
                 position = None
             continue
 
+        regime, nikkei_up = _oos_regime(nikkei_ff, date)
         candidates = []
         for ticker, xf in ticker_frames.items():
             if date not in xf.index:
@@ -252,25 +307,54 @@ def simulate_oos_top1(model, ticker_frames, oos_dates):
                 classes = list(model.classes_)
                 down = float(probs[classes.index(0)])
                 up = float(probs[classes.index(2)])
+                flat = float(probs[classes.index(1)])
             except Exception:
                 continue
 
             long_s, short_s = trader.directional_score(row, up, down)
-            direction = "BUY" if long_s >= short_s else "SHORT"
-            score = max(long_s, short_s)
             price = float(row["Close"])
-            if direction == "BUY":
-                tp, sl = price + atr_abs * TP_MULT, price - atr_abs * SL_MULT
-            else:
-                tp, sl = price - atr_abs * TP_MULT, price + atr_abs * SL_MULT
-            candidates.append({
-                "ticker": ticker, "direction": direction, "score": score,
-                "price": price, "tp": tp, "sl": sl,
-            })
+            up_pct, down_pct, flat_pct = up * 100.0, down * 100.0, flat * 100.0
+
+            for direction, score in (("BUY", long_s), ("SHORT", short_s)):
+                if direction == "BUY":
+                    ok = up_pct >= UP_THRESHOLD and up_pct > down_pct and flat_pct < 50.0 and score >= MIN_SCORE_FOR_BUY
+                else:
+                    ok = down_pct >= UP_THRESHOLD and down_pct > up_pct and flat_pct < 50.0 and score >= MIN_SCORE_FOR_BUY
+                if not ok:
+                    continue
+                if NIKKEI_FILTER_ON and direction == "BUY" and not nikkei_up:
+                    continue
+                if NIKKEI_FILTER_ON and direction == "SHORT" and nikkei_up:
+                    continue
+                if regime == "bullish" and direction != "BUY":
+                    continue
+                if regime == "bearish" and direction != "SHORT":
+                    continue
+
+                if direction == "BUY":
+                    tp, sl = price + atr_abs * TP_MULT, price - atr_abs * SL_MULT
+                    reward_pct = max(0.0, (tp / price - 1.0) * 100.0) if price > 0 else 0.0
+                    risk_pct = max(0.0, (1.0 - sl / price) * 100.0) if price > 0 else 0.0
+                    ev = up * reward_pct - down * risk_pct
+                else:
+                    tp, sl = price - atr_abs * TP_MULT, price + atr_abs * SL_MULT
+                    reward_pct = max(0.0, (1.0 - tp / price) * 100.0) if price > 0 else 0.0
+                    risk_pct = max(0.0, (sl / price - 1.0) * 100.0) if price > 0 else 0.0
+                    ev = down * reward_pct - up * risk_pct
+                ev -= flat * FEE_RATE_PCT
+
+                preferred = (regime == "bullish" and direction == "BUY") or (regime == "bearish" and direction == "SHORT")
+                regime_bonus = 10.0 if preferred else 0.0
+                rank = 0.65 * score + 0.35 * max(-10.0, min(10.0, ev)) * 10.0 + regime_bonus
+
+                candidates.append({
+                    "ticker": ticker, "direction": direction, "score": score, "rank": rank,
+                    "price": price, "tp": tp, "sl": sl,
+                })
 
         if not candidates:
             continue
-        candidates.sort(key=lambda z: z["score"], reverse=True)
+        candidates.sort(key=lambda z: z["rank"], reverse=True)
         top = candidates[0]
         position = {
             "ticker": top["ticker"], "direction": top["direction"],
@@ -288,6 +372,7 @@ def simulate_oos_top1(model, ticker_frames, oos_dates):
                 if position["direction"] == "BUY"
                 else (entry / last_close - 1.0) * 100.0
             )
+            ret -= FEE_RATE_PCT
             trades.append({
                 "entry_date": position["entry_date"], "exit_date": xf.index[-1],
                 "ticker": position["ticker"], "direction": position["direction"],
@@ -362,8 +447,9 @@ def main():
     today = datetime.now(JST).strftime("%Y-%m-%d")
     print(f"=== 日次モデル再学習(Walk-Forward OOSゲート付き) {today} ===")
 
-    ticker_frames = build_universe(trader.TICKERS)
+    ticker_frames, nikkei = build_universe(trader.TICKERS)
     all_dates = sorted(set().union(*[set(x.index) for x in ticker_frames.values()]))
+    nikkei_ff = nikkei.reindex(all_dates).ffill()
     last_date = pd.Timestamp(all_dates[-1])
     oos_cutoff = last_date - pd.Timedelta(days=HOLDOUT_DAYS)
     oos_dates = [d for d in all_dates if pd.Timestamp(d) >= oos_cutoff]
@@ -380,7 +466,7 @@ def main():
         return
 
     oos_model = fit_rf(fit_rows)
-    oos_trades = simulate_oos_top1(oos_model, ticker_frames, oos_dates)
+    oos_trades = simulate_oos_top1(oos_model, ticker_frames, oos_dates, nikkei_ff)
     metrics = compute_pf_metrics(oos_trades)
     print(
         f"OOSシミュレーション結果: 取引数={metrics['trades']} "
@@ -389,8 +475,20 @@ def main():
     )
 
     if metrics["trades"] < MIN_OOS_TRADES:
-        deploy = False
-        reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・前回モデルを継続使用"
+        # ★修正(2026-09): 本ファイル冒頭の設計コメントでは「OOS取引数が少なすぎて
+        # 判定不能な場合は、参考採用として差し替える(判断材料が無いのに機械的に
+        # 止め続けないため)」と明記されていたが、実装は無条件でdeploy=False
+        # (=前回モデル継続)になっていた。既存のdirectional_model.pklが無い
+        # (初回投入前)の場合、この不一致により「有効なOOS実績が貯まるまで
+        # 永久にモデルが投入されず、ペーパートレードが1件も実行できない」
+        # というデッドロックになっていたため、コメント通りの挙動に修正する。
+        # 既にモデルが存在する場合は、従来通り安全側(前回モデル継続)を維持する。
+        if os.path.exists(MODEL_FILE):
+            deploy = False
+            reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・前回モデルを継続使用"
+        else:
+            deploy = True
+            reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定不能だが、既存モデル無し(初回投入前)のため参考採用として投入"
     elif metrics["pf"] >= MIN_OOS_PF and abs(metrics["max_dd_pct"]) <= MAX_OOS_DD_PCT:
         deploy = True
         reason = f"OOSゲート通過(PF={metrics['pf']:.2f}>={MIN_OOS_PF}, 最大DD={metrics['max_dd_pct']:.1f}%)"

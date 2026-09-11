@@ -10,11 +10,19 @@ from __future__ import annotations
 重要:
 - OOS/Adversarialの採用ゲートとは独立したペーパー実行ルール。
 - 同一銘柄は決済後30分だけ再取引禁止。別銘柄は選択可能。
-- 1日最大30回。
+- 1日最大30回(実際の上限判定・カウントはprofit_top10_paper_state.json側で行う。
+  詳細は下記2026-09追加コメント参照)。
 - ★変更(2026-09): 以前あった「14:45時点で0件なら強制的に1回取引する
   (forced_min_trade)」という概念は、run_profit_loop.py側で無理やりエントリー
   する経路(緊い方の水準まで条件を緩める強制経路)を廃止した方針と矛盾するため
   廃止した。条件を満たす候補が無い日は無理に建てず見送るのが現行方針。
+- ★修正(2026-09、追加): このモジュール自身が持っていたtrades_today/record_trade()
+  は、実際の売買本体(run_profit_loop.py)からは一度も呼ばれておらず
+  (--record-tradeはワークフロー上どこからも指定されない)、常に0のまま
+  表示専用の別カウンターとして残っていた。実際の1日上限判定・カウントは
+  profit_top10_paper_state.json側のtrades_todayで行われているため、
+  二重管理による表示不一致を避けるためこちらのカウンターは廃止し、
+  ステータス表示は実際の状態ファイルを直接参照する。
 
 このモジュール自体は「時間フェーズと実行ルールの司令塔」であり、実際の
 銘柄評価・売買執行は既存の run_profit_loop.py / profit_top10_paper.py に接続する。
@@ -39,7 +47,10 @@ OPEN_RESCORE_END_MIN = 9 * 60 + 10
 FINAL_DECISION_MIN = 9 * 60 + 30
 MARKET_CLOSE_MIN = 15 * 60 + 30
 COOLDOWN_MINUTES = 30
-MAX_TRADES_PER_DAY = 30
+# 表示専用。実際の1日上限判定はrun_profit_loop.py側(MAX_TRADES_PER_DAY環境変数)で
+# 行われるため、同じ環境変数名を参照して表示の食い違いを避ける。
+MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
+PAPER_STATE_FILE = Path("profit_top10_paper_state.json")
 
 
 def now_jst() -> datetime:
@@ -58,7 +69,6 @@ def load_state() -> dict:
         "premarket_done": False,
         "open_rescore_done": False,
         "final_decision_done": False,
-        "trades_today": 0,
         "last_exit_by_ticker": {},
     }
     if not STATE_FILE.exists():
@@ -152,21 +162,25 @@ def can_start_paper_trading(now: datetime | None = None) -> bool:
     return minute_of_day(now) >= FINAL_DECISION_MIN and minute_of_day(now) < MARKET_CLOSE_MIN
 
 
-def record_trade(ticker: str) -> dict:
-    state = load_state()
-    trades = int(state.get("trades_today", 0))
-    if trades >= MAX_TRADES_PER_DAY:
-        raise RuntimeError(f"1日最大取引回数{MAX_TRADES_PER_DAY}回に到達")
-    state["trades_today"] = trades + 1
-    save_state(state)
-    log.info("📄 paper trade recorded: %s count=%d/%d", ticker, state["trades_today"], MAX_TRADES_PER_DAY)
-    return state
+def real_trades_today() -> int:
+    """実際の売買本体(run_profit_loop.py/profit_top10_paper.py)が管理する
+    profit_top10_paper_state.jsonから、本日の実取引数を読む(表示専用・
+    ベストエフォート)。"""
+    try:
+        if not PAPER_STATE_FILE.exists():
+            return 0
+        state = json.loads(PAPER_STATE_FILE.read_text(encoding="utf-8"))
+        if state.get("trade_count_date") != now_jst().strftime("%Y-%m-%d"):
+            return 0
+        return int(state.get("trades_today", 0))
+    except Exception as exc:
+        log.warning("profit_top10_paper_state.json読込失敗: %s", exc)
+        return 0
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", choices=["auto", "premarket", "open", "rescore", "final", "trading", "closed"], default="auto")
-    parser.add_argument("--record-trade", dest="record_trade_ticker")
     parser.add_argument("--record-exit", dest="record_exit_ticker")
     args = parser.parse_args()
 
@@ -180,18 +194,13 @@ def main() -> None:
     if args.record_exit_ticker:
         apply_exit_cooldown(args.record_exit_ticker, now)
 
-    if args.record_trade_ticker:
-        if is_in_cooldown(args.record_trade_ticker, now):
-            raise SystemExit(f"❌ {args.record_trade_ticker}: 同一銘柄30分クールダウン中")
-        record_trade(args.record_trade_ticker)
-
     print("========================================")
     print("INTRADAY SCHEDULER")
     print("========================================")
     print(f"JST: {now:%Y-%m-%d %H:%M:%S}")
     print(f"phase: {phase}")
     print(f"paper trading start: {'YES' if can_start_paper_trading(now) else 'NO'}")
-    print(f"trades today: {state.get('trades_today', 0)}/{MAX_TRADES_PER_DAY}")
+    print(f"trades today: {real_trades_today()}/{MAX_TRADES_PER_DAY}")
 
 
 if __name__ == "__main__":

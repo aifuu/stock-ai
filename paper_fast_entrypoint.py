@@ -260,7 +260,12 @@ def cached_scan(policy):
     _download_cache.clear()
     _download_cache.update(_batch_download_all(tickers))
     print(f"🔬 FULL SCAN: {len(tickers)}銘柄全てにAI詳細分析（出来高偏重プレフィルターは廃止・全銘柄が対象）")
-    _cache["result"] = _base_scan(base_policy)
+    # ★修正(2026-09): ここでbase_policy(閾値0/日経フィルターOFF)のままscan()を
+    # 呼ぶと、scan()内部のTOP_N=10打ち切りが「緩い条件のEV上位10銘柄」に対して
+    # 先に効いてしまい、下流のscan_candidates_fixed()が承認済みpolicyで再選別する
+    # 対象が実質10銘柄に減っていた(詳細はprofit_top10_paper.scan()のコメント参照)。
+    # limit=Noneで全件受け取り、承認済みpolicyによる本来の絞り込みに委ねる。
+    _cache["result"] = _base_scan(base_policy, limit=None)
     _save_disk_scan_cache(_cache["result"])
     return _cache["result"]
 
