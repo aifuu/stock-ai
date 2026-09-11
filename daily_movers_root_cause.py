@@ -16,10 +16,12 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-try:
-    from common import TICKERS, COMPANY_NAMES
-except Exception:
-    from daily_directional_top1 import TICKERS, NAMES as COMPANY_NAMES
+# ★修正(2026-09): common.pyが偶然にも"TICKERS"/"COMPANY_NAMES"という同名を
+# エクスポートしているため、以前はこのtry節が常に成功し、common.py側の
+# 30分監視モード専用の14銘柄だけがスキャン対象になっていた(本来意図していた
+# 日経225全銘柄=daily_directional_top1.TICKERSには一度も到達していなかった)。
+# このモジュールは「日経225の値動き観察」が目的なので、常に225銘柄側を使う。
+from daily_directional_top1 import TICKERS, NAMES as COMPANY_NAMES
 from nikkei225_sectors import SECTORS, sector_ja
 
 OUTPUT = Path("daily_movers_root_cause.csv")
@@ -262,8 +264,15 @@ def main() -> int:
     rows = []
     for ticker, d in frames.items():
         try:
-            close = d["Close"].astype(float).dropna()
-            vol = d["Volume"].astype(float).dropna()
+            # ★修正(2026-09): 以前はclose/volを別々に.dropna()していたため、
+            # 直近日にClose欠損(出来高は取得済み)のような行があると両者のindexが
+            # ズレ、_volume_features()内のブールインデックス参照が
+            # "Unalignable boolean Series"例外で全銘柄失敗していた(毎回
+            # 「usable data not found"に落ちる系統的バグ)。Close基準で
+            # 全列を揃えてから使う。
+            d = d.dropna(subset=["Close"])
+            close = d["Close"].astype(float)
+            vol = d["Volume"].astype(float)
             high = d["High"].astype(float)
             low = d["Low"].astype(float)
             openp = d["Open"].astype(float)
