@@ -17,7 +17,10 @@ END_DATE = pd.Timestamp(os.getenv("WF_END_DATE") or pd.Timestamp.today().normali
 TOTAL_OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "252"))
 FOLDS = int(os.getenv("WF_OOS_FOLDS", "4"))
 FOLD_OOS_DAYS = max(40, TOTAL_OOS_DAYS // FOLDS)
-TOP_N = int(os.getenv("WF_TOP_N", "10"))
+# ★修正(2026-09): 実際の承認policy生成パイプライン(adversarial_strategy_validator.py/
+# multi_oos_profit_gate.py)はTOP1に統一済み。このファイルはどのworkflowからも実行されない
+# デッドコードだが、検証系内でTOP1/TOP10が混在して見えるのを避けるため同じ基準に揃える。
+TOP_N = int(os.getenv("WF_TOP_N", "1"))
 PURGE = int(os.getenv("WF_PURGE_DAYS", "7"))
 EMBARGO = int(os.getenv("WF_EMBARGO_DAYS", "7"))
 INITIAL_CAPITAL = float(os.getenv("WF_INITIAL_CAPITAL", "1000000"))
