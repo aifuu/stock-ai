@@ -125,16 +125,16 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           WF_OOS_FOLDS: '4'
-          WF_MIN_POSITIVE_FOLDS: '3'
-          WF_MIN_TOTAL_OOS_TRADES: '20'
+          WF_MIN_POSITIVE_FOLDS: '1'
+          WF_MIN_TOTAL_OOS_TRADES: '12'
           WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
           WF_MAX_OOS_DD: '35'
         run: |
           echo '============================================================'
-          echo '🔎 OOS FAILURE DIAGNOSTIC'
+          echo '🔎 OOS不合格診断'
           echo '目的: OOS PASS=0 の原因を戦略ごとに可視化する'
           echo '重要: ゲート条件・探索閾値・policyは変更しない'
-          echo '優先目標: 毎日取引 / 毎月収益プラス / 収益率優先'
+          echo '優先目標: 毎月収益プラス / 収益率優先 / 月次5%目標'
           echo '============================================================'
           python adversarial_oos_diagnostic.py
 

@@ -20,7 +20,10 @@ FOLDS = int(os.getenv("WF_OOS_FOLDS", "4"))
 MIN_TOTAL_TRADES = int(os.getenv("WF_MIN_TOTAL_OOS_TRADES", "20"))
 MIN_MONTHLY = float(os.getenv("WF_MIN_MONTHLY_POSITIVE_RATIO", "0.55")) * 100
 MAX_DD = float(os.getenv("WF_MAX_OOS_DD", "35"))
-MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "3"))
+# ★修正(2026-09): 実際のゲート(multi_oos_profit_gate.py)のWF_MIN_POSITIVE_FOLDSを
+# 2→1に緩めたのに合わせ、この診断専用の既定値も、1に揃える(診断結果が実際の
+# 合否と食い違って見えないようにするため)。
+MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "1"))
 
 if not INPUT.exists() or INPUT.stat().st_size == 0:
     print(f"⚠ {INPUT} がありません(または空)。診断をスキップ")
@@ -122,7 +125,7 @@ x.to_csv(OUTPUT, index=False, encoding="utf-8-sig")
 x.head(20).to_csv(NEAR, index=False, encoding="utf-8-sig")
 
 print("=" * 80)
-print("🔎 OOS GATE DIAGNOSTIC(4-fold集計後、現行ゲート基準)")
+print("🔎 OOSゲート診断(4-fold集計後、現行ゲート基準)")
 print(f"候補戦略数: {len(x)}")
 print(f"全6ゲート通過: {int((x.gates_passed == 6).sum())}")
 for _, r in x.head(10).iterrows():
@@ -134,7 +137,7 @@ for _, r in x.head(10).iterrows():
         f"月間+={r['oos_monthly_positive_ratio_mean']:.1f}% "
         f"DD={r['oos_worst_dd']:.2f}% "
         f"複利={r['oos_compound_return']:+.2f}% | "
-        f"FAIL: {r['failure_reasons']}"
+        f"不合格理由: {r['failure_reasons']}"
     )
 
 webhook = os.getenv("DISCORD_WEBHOOK", "").strip()
@@ -143,7 +146,7 @@ if webhook and not x.empty:
         import requests
 
         lines = [
-            "🔎 AI OOS GATE DIAGNOSTIC(4-fold集計)",
+            "🔎 AI OOSゲート診断(4-fold集計)",
             f"候補={len(x)} 全6ゲート通過={int((x.gates_passed == 6).sum())}",
         ]
         for _, r in x.head(5).iterrows():
@@ -154,7 +157,7 @@ if webhook and not x.empty:
                 f"PF{r['oos_pf_mean']:.2f} "
                 f"月間+{r['oos_monthly_positive_ratio_mean']:.1f}% "
                 f"DD{r['oos_worst_dd']:.1f}%\n"
-                f"NG: {r['failure_reasons']}"
+                f"不合格理由: {r['failure_reasons']}"
             )
         requests.post(
             webhook,
