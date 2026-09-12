@@ -1,6 +1,6 @@
 {
   "status": "APPROVED",
-  "updated_at": "2026-09-12T11:45:22",
+  "updated_at": "2026-09-12T12:59:45",
   "up_threshold": 45,
   "min_score_for_buy": 50,
   "nikkei_filter": true,
@@ -29,5 +29,5 @@
   "strategy_name": "UP45_SCORE50_NIKKEION_TP3.5_SL2.0_H3",
   "source": "adversarial_strategy_validator",
   "approval_signature_version": 1,
-  "approval_signature": "33f3797f70de089dc77e6587d3297b2cfac42c412f580f3b72de139b4fe1d2ed"
+  "approval_signature": "648f9bb2ab5d34017aac5b76ccd01b4cdcec714d3facf6d9eca22a7f771ffe4d"
 }
