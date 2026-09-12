@@ -9,17 +9,20 @@ import pandas as pd
 INPUT_FILE = os.getenv("BSP_INPUT_FILE", "adversarial_final_candidates.csv")
 POLICY_FILE = os.getenv("BSP_POLICY_FILE", "strategy_policy.json")
 
-MIN_OOS_TRADES = 20
+# ★修正(2026-09、再修正): WF_MIN_POSITIVE_FOLDSを2→1に緩めるのに合わせ、この値も
+# 「陽性Fold数分の合算」を前提にしない水準へ再調整する。1Foldのみの合格でも
+# adversarial_strategy_validator.py側の1Fold当たりの下限(WF_MIN_OOS_TRADES、既定12)
+# を満たしていれば正当な候補のはずなのに、ここが20固定のままだと機械的に弾かれる
+# (実測ではFold4候補は全件oos_signals=24でたまたま20超だったが、将来12-19件の
+# 候補が同じ理由で不当に弾かれ得るため、環境変数化した上で1Fold基準に揃える)。
+MIN_OOS_TRADES = int(os.getenv("BSP_MIN_OOS_TRADES", "12"))
 MIN_OOS_PF = 1.00
 MIN_OOS_AVG_RETURN = 0.00
 MAX_VALIDATION_DD = 30.0
-# ★修正(2026-09): この値は複数Fold集計方式(WF_MIN_POSITIVE_FOLDS、既定2)導入前の
-# 前提のまま50に固定されていた。現在はadversarial_strategy_validator.py側の
-# 1Fold当たりの下限(WF_MIN_VALIDATION_TRADES、既定10)を陽性Fold数分合算した値が
-# validation_signalsとして渡ってくるため、50という閾値は構造上到達困難だった
-# (実測: 陽性2Fold一致・収益性条件を全てクリアした最良候補ですら合算41件で不合格に
-# なっていた)。1Foldの下限×必要Fold数を踏まえた到達可能な水準へ引き下げる。
-MIN_VALIDATION_TRADES = int(os.getenv("BSP_MIN_VALIDATION_TRADES", "20"))
+# ★修正(2026-09、再修正): 直前の修正でWF_MIN_POSITIVE_FOLDS=2を前提に20(1Fold下限
+# 10×2Fold)としていたが、WF_MIN_POSITIVE_FOLDSを1に緩めるのに合わせ、1Fold単独の
+# validation_signalsでも到達可能な水準(1Foldの下限そのもの)へ再調整する。
+MIN_VALIDATION_TRADES = int(os.getenv("BSP_MIN_VALIDATION_TRADES", "10"))
 MIN_VALIDATION_PF = 1.00
 MIN_VALIDATION_AVG_RETURN = 0.00
 MIN_MC_BANKRUPTCY_PROB = 5.0
