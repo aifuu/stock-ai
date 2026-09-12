@@ -17,7 +17,9 @@ concurrency:
 env:
   WF_START_DATE: '2018-01-01'
   WF_MULTI_OOS_DAYS: '239'
-  WF_TOP_N: '10'
+  # ★修正(2026-09): 実際のゲート(adversarial_strategy_validator.py等)をTOP1に
+  # 合わせたため、この診断も同じ基準に揃える。
+  WF_TOP_N: '1'
 
 jobs:
   diagnostic:

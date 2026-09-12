@@ -14,7 +14,15 @@ START_DATE = pd.Timestamp(os.getenv("WF_START_DATE", "2021-01-01"))
 # 手動実行が気づかず古いデータで走ってしまう。未指定時は当日を使う。
 END_DATE = pd.Timestamp(os.getenv("WF_END_DATE") or pd.Timestamp.today().normalize())
 OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "90"))
-TOP_N = int(os.getenv("WF_TOP_N", "10"))
+# ★修正(2026-09): 本番(run_profit_loop.py)は承認済みpolicyの条件を通過した
+# 候補群の中からTOP1(スコア・EV・レジームで最優先の1件)だけをエントリーするが、
+# この検証は従来 groupby("date").head(TOP_N) でTOP10全件を評価し、
+# stats()側でその日の複数銘柄リターンを単純平均していた。これは「TOP10に分散
+# 投資した場合の成績」であり、実際にTOP1だけを1点集中で建てる本番運用の成績とは
+# 統計的性質(平均化によるブレの縮小)が異なる。承認済みpolicyの
+# validation_avg_month_return等は「TOP1本番と同条件」とは言えなかったため、
+# デフォルトをTOP1に合わせる(環境変数で上書きすれば従来の分散評価も可能)。
+TOP_N = int(os.getenv("WF_TOP_N", "1"))
 PURGE_DAYS = int(os.getenv("WF_PURGE_DAYS", "7"))
 EMBARGO_DAYS = int(os.getenv("WF_EMBARGO_DAYS", "7"))
 INITIAL_CAPITAL = float(os.getenv("WF_INITIAL_CAPITAL", "1000000"))

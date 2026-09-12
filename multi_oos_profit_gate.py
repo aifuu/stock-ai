@@ -29,7 +29,10 @@ def _out(name):
 # (例: 2026-09-09、Fold3のみDEV選定が偏り候補0件になったケース)。
 # MIN_POSITIVE_FOLDS個以上のFoldで独立合格していれば候補として扱う。
 MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "2"))
-TOP_N = int(os.getenv("WF_TOP_N", "10"))
+# ★修正(2026-09): adversarial_strategy_validator.py側と同じ理由で、TOP10全件を
+# 平均評価するのではなく本番のTOP1本番運用に条件を合わせる(下位のadversarial_
+# strategy_validator.pyサブプロセスへWF_TOP_Nとして伝播する値でもある)。
+TOP_N = int(os.getenv("WF_TOP_N", "1"))
 START_DATE = os.getenv("WF_START_DATE", "2018-01-01")
 # 注: このEND_DATE自体はmain()内では使われず、実際のFold終端日は
 # walk_forward_all_candidates.csvの実データ最終日から動的に決まる

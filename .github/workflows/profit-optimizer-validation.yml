@@ -14,7 +14,11 @@ concurrency:
 
 env:
   WF_START_DATE: '2018-01-01'
-  WF_TOP_N: '10'
+  # ★修正(2026-09): 本番(run_profit_loop.py)はTOP10全件ではなくTOP1のみ建てる。
+  # TOP_N=10のままだと、承認policyの検証成績(月間収益率・PF・複利)が
+  # 「TOP10に分散した場合の平均リターン」になり、実際のTOP1集中運用の成績とは
+  # 統計的性質が異なっていた。TOP1に合わせる。
+  WF_TOP_N: '1'
   WF_MULTI_OOS_FOLDS: '4'
   WF_MULTI_OOS_DAYS: '239'
   WF_INITIAL_CAPITAL: '1000000'

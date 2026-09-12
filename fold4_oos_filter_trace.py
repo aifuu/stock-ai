@@ -12,7 +12,11 @@ START_DATE = pd.Timestamp(os.getenv("WF_START_DATE", "2021-01-01"))
 # 手動実行が気づかず古いデータで走ってしまう。未指定時は当日を使う。
 END_DATE = pd.Timestamp(os.getenv("WF_END_DATE") or pd.Timestamp.today().normalize())
 OOS_DAYS = int(os.getenv("WF_MULTI_OOS_DAYS", "239"))
-TOP_N = int(os.getenv("WF_TOP_N", "10"))
+# ★修正(2026-09): adversarial_strategy_validator.py/multi_oos_profit_gate.py側と
+# 同じ理由(本番はTOP1のみ建てる)でデフォルトをTOP1に合わせる。この診断スクリプト
+# 自体はゲート判定をしないが、実際の選定ロジックと乗離した基準で段階別件数を出しても
+# 誤解を招くため揃える。
+TOP_N = int(os.getenv("WF_TOP_N", "1"))
 UP = 45
 SCORE = 50
 NIKKEI = False
