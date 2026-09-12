@@ -22,7 +22,14 @@ TP_MULT = 3.0
 SL_MULT = 1.5
 NORMAL_UP_MIN = float(os.getenv("TOP1_NORMAL_UP_MIN", "0.40"))
 NORMAL_SCORE_MIN = float(os.getenv("TOP1_NORMAL_SCORE_MIN", "55.0"))
-FORCED_TOP1_ENABLED = os.getenv("DAILY_TOP1_FORCED_ENABLED", "true").lower() == "true"
+# ★修正(2026-09): FORCED_TOP1_ENABLED(forced_top1、通常候補が無い日に無条件で
+# candidates[0]を強制的に建てる経路)を廃止した。このmain()自体が本番経路
+# (ai-stock-scan.yml → paper_fast_entrypoint.py → run_profit_loop.py)からは一度も直接
+# 実行されない(python daily_directional_top1.pyという呼び出しはどのworkflowにも
+# 存在しない)ため実害はなかったが、run_profit_loop.py側で既に廃止済みの
+# 「無理やりエントリーする強制経路」がこのファイルにだけ残っており、コード全体として
+# 非常に紛らわしい状態だったため、同じ方針(条件を満たす候補が無い日は
+# 無理に建てず見送る)に揃える。
 
 FEATURES = [
     "ret1","ma25","ma75","vol_ratio","rsi","adx","macd","signal","from_high","from_low","relative_strength",
@@ -673,7 +680,7 @@ def load_state():
         try:
             with open(STATE_FILE,encoding="utf-8") as f:return json.load(f)
         except Exception:pass
-    return {"capital":INITIAL_CAPITAL,"position":None,"peak":INITIAL_CAPITAL,"max_dd":0.0,"trades_today":0,"trade_count_date":None,"daily_start_capital":INITIAL_CAPITAL,"forced_top1_used_date":None}
+    return {"capital":INITIAL_CAPITAL,"position":None,"peak":INITIAL_CAPITAL,"max_dd":0.0,"trades_today":0,"trade_count_date":None,"daily_start_capital":INITIAL_CAPITAL}
 
 
 def save_state(state):
@@ -755,8 +762,8 @@ def send(msg):
 
 
 def main():
-    today=datetime.now(TZ).strftime("%Y-%m-%d"); state=load_state(); state.setdefault("forced_top1_used_date",None); update_open_position(state)
-    state=load_state(); state.setdefault("forced_top1_used_date",None)
+    today=datetime.now(TZ).strftime("%Y-%m-%d"); state=load_state(); update_open_position(state)
+    state=load_state()
     if state.get("position"):
         save_state(state); return
     nikkei=make_nikkei(); model=load_model()
@@ -782,12 +789,10 @@ def main():
         else:ok=(c["down_probability"]>=NORMAL_UP_MIN*100 and c["down_probability"]>c["up_probability"] and c["score"]>=NORMAL_SCORE_MIN)
         if ok:normal.append(c)
     if normal:top=normal[0]; selection_mode="normal"
-    elif FORCED_TOP1_ENABLED and state.get("forced_top1_used_date")!=today:top=candidates[0]; selection_mode="forced_top1"
     else:
-        save_state(state); send(f"🟡 DAILY TOP1｜通常候補なし・forced_top1本日使用済み\n候補数: {len(candidates)}\n※ペーパートレード");return
+        save_state(state); send(f"🟡 DAILY TOP1｜通常候補なし\n候補数: {len(candidates)}\n※ペーパートレード（無理に建てず見送り）");return
     state["position"]={"entry_date":today,"entry_time":datetime.now(TZ).strftime("%H:%M"),"ticker":top["ticker"],"company":top["company"],"direction":top["direction"],"entry_price":top["price"],"tp":top["tp"],"sl":top["sl"],"score":top["score"],"up_probability":top["up_probability"],"down_probability":top["down_probability"],"selection_mode":selection_mode}
     state["trade_count_date"]=today; state["trades_today"]=int(state.get("trades_today",0))+1
-    if selection_mode=="forced_top1":state["forced_top1_used_date"]=today
     save_state(state)
     month=monthly_report(); month_text="確定取引なし" if not month else f"今月累計 {month['pnl']:+,.0f}円｜normal {int(month['normal_trades'])}件/{month['normal_pnl']:+,.0f}円｜forced {int(month['forced_trades'])}件/{month['forced_pnl']:+,.0f}円"
     send(f"🤖 DAILY TOP1｜方向選択ペーパートレード\n━━━━━━━━━━━━━━\n📅 {today}\n⚠️ 実注文なし\n選定区分: {selection_mode}\nTOP1: {top['direction']}｜{top['ticker']} {top['company']}\n総合方向スコア: {top['score']:.1f}\n買い側: {top['long_score']:.1f}｜空売り側: {top['short_score']:.1f}\n上昇確率: {top['up_probability']:.1f}%｜下落確率: {top['down_probability']:.1f}%\nエントリー: {top['price']:,.0f}\nTP: {top['tp']:,.0f}\nSL: {top['sl']:,.0f}\n保有: 最大{HOLD_DAYS}営業日\n\n💰 仮想資産: {state['capital']:,.0f}円\n{month_text}\n\n📊 全候補: {len(candidates)}｜通常候補: {len(normal)}\n📌 forced_top1は稼働率検証専用で、normalと分離集計します。")
