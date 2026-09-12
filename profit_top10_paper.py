@@ -192,7 +192,14 @@ def open_positions(s,policy,cands,today):
         # 1銘柄集中投資となる(最初に処理される最有力候補が残り現金のほぼ全額を
         # 使うため、同一スキャン内で複数銘柄に新規エントリーすることは通常ない)。
         # 1単元(100株)すら買えない銘柄は、残り資金があれば1単元だけ買う。
-        slot_budget=capital
+        # ★追加(2026-09): ピークからのドローダウンが深まるにつれて予算を段階的に
+        # 縮小する(paper_risk_policy.position_size_multiplier、1.0/0.5/0.25)。
+        # Fold3のような「どの戦略でも勝てない期間」でも、-30%(MAX_DRAWDOWN)の
+        # 完全停止に至る前に資金を大きく減らさず市場回復を待てるようにするため。
+        dd_mult=paper_risk_policy.position_size_multiplier(s)
+        slot_budget=capital*dd_mult
+        if dd_mult<1.0:
+            print(f'🛡️ ドローダウンによりポジションサイズを{dd_mult*100:.0f}%に縮小')
         shares=(int(slot_budget//price)//LOT_SIZE)*LOT_SIZE
         if shares<LOT_SIZE:
             shares=LOT_SIZE if remaining>=price*LOT_SIZE else 0

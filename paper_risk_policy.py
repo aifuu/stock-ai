@@ -14,6 +14,18 @@ MAX_DRAWDOWN = float(os.getenv("AI_MAX_DRAWDOWN", "0.30"))
 FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
 SLIPPAGE_RATE = float(os.getenv("AI_SLIPPAGE_RATE", "0.0005"))
 
+# ★追加(2026-09): 実運用は1トレードにつき資金を全額集中投資する設計(ユーザー
+# 承認済みのハイリスク運用)だが、これまでは-30%(MAX_DRAWDOWN)に達するまで
+# 常にフルサイズで、そこで初めて新規エントリを完全停止する「オールオア
+# ナッシング」だった。ドローダウンが深まるにつれ段階的にサイズを縮小し、
+# -30%到達を避けやすくすることで、Fold3のような「どの戦略でも勝てない期間」
+# でも資金を大きく減らさず市場回復を待てるようにする(ユーザー方針: 悪い期間は
+# サイズを縮小して継続)。
+DD_TIER1 = float(os.getenv("AI_DD_TIER1", "0.10"))
+DD_TIER2 = float(os.getenv("AI_DD_TIER2", "0.20"))
+DD_TIER2_SIZE = float(os.getenv("AI_DD_TIER2_SIZE", "0.50"))
+DD_TIER3_SIZE = float(os.getenv("AI_DD_TIER3_SIZE", "0.25"))
+
 
 def evaluate(state):
     """profit_top10_paperのstateだけを入力にして、共通リスク判定を返す。"""
@@ -44,3 +56,19 @@ def position_allowed(state, ticker):
     if count >= MAX_TRADES_PER_TICKER:
         return False, f"同一銘柄日次上限 {ticker} {count}/{MAX_TRADES_PER_TICKER}"
     return True, "OK"
+
+
+def position_size_multiplier(state):
+    """現在のピークからのドローダウンに応じて、新規エントリーの投資額を
+    段階的に縮小する倍率を返す(1.0/0.5/0.25)。MAX_DRAWDOWN(既定30%)到達後は
+    evaluate()側で新規エントリ自体が完全停止するため、ここでは考慮不要。
+    """
+    capital = float(state.get("capital", INITIAL_CAPITAL))
+    peak = float(state.get("peak", capital))
+    drawdown = (capital / peak - 1.0) if peak > 0 else 0.0
+    dd_pct = -drawdown
+    if dd_pct < DD_TIER1:
+        return 1.0
+    if dd_pct < DD_TIER2:
+        return DD_TIER2_SIZE
+    return DD_TIER3_SIZE
