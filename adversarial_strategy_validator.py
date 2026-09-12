@@ -72,7 +72,14 @@ RANDOM_SEED = 42
 
 UP_THRESHOLDS = [45, 50, 55, 60, 65]
 SCORE_THRESHOLDS = [50, 60, 70, 80]
-NIKKEI_FILTERS = [False, True]
+# ★修正(2026-09): select_for_phase()の247-257行目にある無条件レジームハードゲート
+# (「日経強気→BUYのみ/弱気→SHORTのみ」に絞る処理)がnikkei引数の値に関わらず
+# 常に適用されるため、NIKKEI_FILTERS=[False, True]は候補生成が常に完全一致する
+# 死んだグリッド次元だった(実測: 本番DEV結果3000行のうちTrue/False1500ペア×
+# 20指標=30000件を全比較し差異0件を確認)。単一値に統合してグリッドサーチの
+# 計算量を半分にする。これによりN_EFFECTIVE_STRATEGIES(多重検定補正)も
+# 重複テストの二重カウントが解消され、より正確な値になる。
+NIKKEI_FILTERS = [False]
 TP_MULTIPLIERS = [2.0, 2.5, 3.0, 3.5, 4.0]
 SL_MULTIPLIERS = [1.0, 1.25, 1.5, 1.75, 2.0]
 HOLD_DAYS_LIST = [1, 3, 5]
