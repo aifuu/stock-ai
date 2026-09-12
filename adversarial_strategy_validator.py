@@ -72,14 +72,15 @@ RANDOM_SEED = 42
 
 UP_THRESHOLDS = [45, 50, 55, 60, 65]
 SCORE_THRESHOLDS = [50, 60, 70, 80]
-# ★修正(2026-09): select_for_phase()の247-257行目にある無条件レジームハードゲート
-# (「日経強気→BUYのみ/弱気→SHORTのみ」に絞る処理)がnikkei引数の値に関わらず
-# 常に適用されるため、NIKKEI_FILTERS=[False, True]は候補生成が常に完全一致する
-# 死んだグリッド次元だった(実測: 本番DEV結果3000行のうちTrue/False1500ペア×
-# 20指標=30000件を全比較し差異0件を確認)。単一値に統合してグリッドサーチの
-# 計算量を半分にする。これによりN_EFFECTIVE_STRATEGIES(多重検定補正)も
-# 重複テストの二重カウントが解消され、より正確な値になる。
-NIKKEI_FILTERS = [False]
+# ★修正(2026-09、再修正): 直前の修正でNIKKEI_FILTERSを単一値[False]に統合していたが、
+# それはselect_for_phase()の最終ハードゲートが常に2値nikkei_uptrendだけで無条件に
+# 効いていたために、nikkei引数(早い段階のprefilter)がTrue/Falseで結果に差を
+# 生じさせなかったことが原因だった。今回、最終ハードゲートを本番と同じ3値レジーム
+# (kairi25/ret5ベース、neutral日は両方向自由)に是正したことで、この早い段階の
+# nikkei prefilter(profit_top10_paper.py実運用と対応)は再び意味のある次元になった
+# (neutral日でも2値nikkei_uptrend不一致の候補を事前に除外するかどうかで結果が
+# 変わる)ため、2値のグリッドサーチへ戻す。
+NIKKEI_FILTERS = [False, True]
 TP_MULTIPLIERS = [2.0, 2.5, 3.0, 3.5, 4.0]
 SL_MULTIPLIERS = [1.0, 1.25, 1.5, 1.75, 2.0]
 HOLD_DAYS_LIST = [1, 3, 5]
@@ -189,6 +190,27 @@ for ticker in candidates.ticker.drop_duplicates().tolist():
         price_data[ticker] = x
 
 
+# ★修正(2026-09): 本番run_profit_loop.pyの_market_regime()(bullish/bearish/neutral
+# の3値判定、日経のkairi25/ret5から算出)を検証にも正しく反映する。従来は
+# nikkei_uptrend(25日線>75日線の2値)だけで常時「BUY方向のみ/SHORT方向のみ」と
+# ハードゲートしており、本番が持つ「neutral(kairi25とret5の符号が食い違う日)は
+# 両方向自由」という重要な例外を一切再現できていなかった。daily_directional_top1.py
+# のmake_nikkei()と全く同じ計算式(^N225のkairi25=(close-MA25)/MA25*100、
+# ret5=5日騰落率)で1792日分をクロス検証し、既存candidate CSVのnikkei_uptrend列
+# (25日線>75日線)と100%一致することを確認済み。
+_nikkei_px = safe_download("^N225", (START_DATE - pd.Timedelta(days=120)).strftime("%Y-%m-%d"), (END_DATE + pd.Timedelta(days=20)).strftime("%Y-%m-%d"))
+if _nikkei_px is None or _nikkei_px.empty:
+    raise RuntimeError("^N225の取得に失敗しました(3値レジーム判定に必須)")
+_n_close = _nikkei_px["Close"].squeeze()
+_n_ma25 = _n_close.rolling(25).mean()
+_n_kairi25 = (_n_close - _n_ma25) / _n_ma25 * 100
+_n_ret5 = _n_close.pct_change(5) * 100
+_regime = pd.Series("neutral", index=_n_close.index)
+_regime[(_n_kairi25 > 0) & (_n_ret5 > 0)] = "bullish"
+_regime[(_n_kairi25 < 0) & (_n_ret5 < 0)] = "bearish"
+candidates["market_regime"] = candidates["date"].map(_regime.to_dict()).fillna("neutral")
+
+
 # ★修正(2026-09): 以前はBUY方向の候補しか評価しておらず、実運用
 # (profit_top10_paper.py/run_profit_loop.py、SHORT_ENABLED=1がデフォルト)が
 # 実際にSHORTもエントリーしていることを一切反映していなかった。承認済みpolicyの
@@ -251,22 +273,23 @@ def select_for_phase(phase_df, up, score, nikkei, tp, sl):
         x = x[((x.direction == "BUY") & x.nikkei_uptrend) | ((x.direction == "SHORT") & ~x.nikkei_uptrend)]
     if x.empty:
         return x
-    # ★修正(2026-09): 本番run_profit_loop.pyの_market_regime()+profit_priority()は
-    # 「日経強気→BUYのみ/弱気→SHORTのみ/中立→両方をスコア+EVで比較」という
-    # レジームのハードゲートを持つが、この検証が使う候補CSVにはkairi25/ret5の
-    # 生値が無くnikkei_uptrend(2値)しか保持していないため、3値判定の「中立」は
-    # 再現できない。nikkei_uptrend=True→強気(BUYのみ)/False→弱気(SHORTのみ)の
-    # 2値近似とする(将来的にkairi25/ret5を候補CSVへ追加できれば3値化が可能。
-    # なおこの近似の帰結として、このハードゲート適用後は残る候補が全て
-    # 「優先方向」になるため、本番のregime_bonus=10相当は全候補で定数となり
-    # 順位には影響しない)。
-    preferred = ((x.direction == "BUY") & x.nikkei_uptrend) | ((x.direction == "SHORT") & ~x.nikkei_uptrend)
-    x = x[preferred].copy()
+    # ★修正(2026-09): 本番run_profit_loop.pyのopen_top1_only()が実際に持つ、
+    # 日経のkairi25/ret5から算出する3値レジームハードゲート(bullish→BUYのみ/
+    # bearish→SHORTのみ/neutral→両方向自由)を正しく再現する。この
+    # ハードゲートはpolicyのnikkei_filterとは無関係に常時適用される(上のnikkei
+    # 引数は候補生成の早い段階のprofit_top10_paper.py側prefilterに対応する別物)。
+    regime = x["market_regime"]
+    keep = (
+        ((regime == "bullish") & (x.direction == "BUY"))
+        | ((regime == "bearish") & (x.direction == "SHORT"))
+        | (regime == "neutral")
+    )
+    x = x[keep].copy()
     if x.empty:
         return x
     # ★修正(2026-09): 本番profit_priority()と同じ 0.65×score + 0.35×EV(±10でクリップ)×10
-    # の優先順位式でTOP1を選ぶ(feedback_weightのみ、将来の実績データに依存し
-    # リークになり得るため意図的に除外)。
+    # + regime_bonus(順張り方向に+10) の優先順位式でTOP1を選ぶ(feedback_weightのみ、
+    # 将来の実績データに依存しリークになり得るため意図的に除外)。
     is_buy = (x["direction"] == "BUY").to_numpy()
     atr_ratio = x["atr_ratio"].to_numpy(dtype=float)
     reward_pct = atr_ratio * float(tp)
@@ -277,7 +300,10 @@ def select_for_phase(phase_df, up, score, nikkei, tp, sl):
     win_prob = np.where(is_buy, up_prob, down_prob) / 100.0
     loss_prob = np.where(is_buy, down_prob, up_prob) / 100.0
     ev = win_prob * reward_pct - loss_prob * risk_pct - (flat_prob / 100.0) * FEE_PCT
-    rank = 0.65 * x["score"].to_numpy(dtype=float) + 0.35 * np.clip(ev, -10.0, 10.0) * 10.0
+    regime_after = x["market_regime"]
+    preferred = ((x.direction == "BUY").to_numpy() & (regime_after == "bullish").to_numpy()) | ((x.direction == "SHORT").to_numpy() & (regime_after == "bearish").to_numpy())
+    regime_bonus = np.where(preferred, 10.0, 0.0)
+    rank = 0.65 * x["score"].to_numpy(dtype=float) + 0.35 * np.clip(ev, -10.0, 10.0) * 10.0 + regime_bonus
     x = x.assign(_rank=rank)
     return x.sort_values(["date", "_rank", "score", "up_prob"], ascending=[True, False, False, False]).groupby("date", group_keys=False).head(TOP_N).copy()
 
