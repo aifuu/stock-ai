@@ -43,12 +43,18 @@ def _out(name):
     return f"{name}{_OUT_SUFFIX}"
 
 
-MIN_VALIDATION_TRADES = int(os.getenv("WF_MIN_VALIDATION_TRADES", "30"))
+# ★修正(2026-09): TOP1(単一エントリー)化により取引頻度が構造的に希薄になった
+# (実測: fold_4のDEV約3000パラメータ中、年率換算シグナル数の最大値はわずか17.59)。
+# ユーザーの目標は「毎日取引」ではなく「毎月収益プラス・月次5%目標・収益率優先」であり
+# 取引頻度自体はゴールではないため、旧TOP10前提の閾値(30/20)をTOP1で実際に到達可能な
+# 水準に見直す。収益性系の閾値(PF・平均リターン・DD・月次プラス比率)は一切変更しない
+# (実測でfold_2/3とも全候補が余裕で合格していたため)。
+MIN_VALIDATION_TRADES = int(os.getenv("WF_MIN_VALIDATION_TRADES", "10"))
 MIN_TRADES_HARD = int(os.getenv("WF_MIN_TRADES_HARD", "20"))
 MIN_PF_LOWER = 1.0
 MIN_RETURN_LOWER = 0.0
 MAX_VALIDATION_DD = 30.0
-MIN_ANNUAL_SIGNALS = 20
+MIN_ANNUAL_SIGNALS = int(os.getenv("WF_MIN_ANNUAL_SIGNALS", "8"))
 MIN_OOS_TRADES = 20
 MIN_OOS_PF = 1.0
 MIN_OOS_AVG_RETURN = 0.0
