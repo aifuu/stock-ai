@@ -18,7 +18,7 @@ OOS_DAYS = int(os.getenv("WF_OOS_DAYS", "90"))
 # 候補群の中からTOP1(スコア・EV・レジームで最優先の1件)だけをエントリーするが、
 # この検証は従来 groupby("date").head(TOP_N) でTOP10全件を評価し、
 # stats()側でその日の複数銘柄リターンを単純平均していた。これは「TOP10に分散
-# 投資した場合の成績」であり、実際にTOP1だけを1点集中で建てる本番運用の成績とは
+# 投資した場合の成績」であり、実際にTOP1だけを一点集中で建てる本番運用の成績とは
 # 統計的性質(平均化によるブレの縮小)が異なる。承認済みpolicyの
 # validation_avg_month_return等は「TOP1本番と同条件」とは言えなかったため、
 # デフォルトをTOP1に合わせる(環境変数で上書きすれば従来の分散評価も可能)。
@@ -171,34 +171,97 @@ for ticker in candidates.ticker.drop_duplicates().tolist():
         price_data[ticker] = x
 
 
-def evaluate_trade(ticker, date, entry, atr_ratio, tp, sl, hold_days, slippage=0.001):
+# ★修正(2026-09): 以前はBUY方向の候補しか評価しておらず、実運用
+# (profit_top10_paper.py/run_profit_loop.py、SHORT_ENABLED=1がデフォルト)が
+# 実際にSHORTもエントリーしていることを一切反映していなかった。承認済みpolicyの
+# SHORT側の振る舞いには、この検証によるOOS裏付けが無い状態だった。
+SHORT_ENABLED = os.getenv("WF_SHORT_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+# profit_top10_paper.pyのFEE_RATE(片道)と同じデフォルト・同じ環境変数名。
+# 実運用は1トレードにつき往復(エントリー+決済の2回)分の手数料を資金から
+# 差し引くため、%換算では概ね FEE_RATE*2*100 に相当する(profit_priority()の
+# flat_cost計算と同じ近似)。
+FEE_PCT = float(os.getenv("INTRADAY_FEE_RATE", "0.00055")) * 2 * 100.0
+
+
+def evaluate_trade(ticker, date, entry, atr_ratio, tp, sl, hold_days, direction="BUY", slippage=0.001):
     if ticker not in price_data:
         return None
     future = price_data[ticker][price_data[ticker].index > date].head(hold_days)
     if future.empty:
         return None
-    take = entry * (1 + atr_ratio / 100 * tp)
-    stop = entry * (1 - atr_ratio / 100 * sl)
+    if direction == "BUY":
+        take = entry * (1 + atr_ratio / 100 * tp)
+        stop = entry * (1 - atr_ratio / 100 * sl)
+    else:
+        take = entry * (1 - atr_ratio / 100 * tp)
+        stop = entry * (1 + atr_ratio / 100 * sl)
     for day_no, (_, row) in enumerate(future.iterrows(), 1):
         high, low = float(row["High"]), float(row["Low"])
-        if low <= stop and high >= take:
-            return "LOSS", (stop / entry - 1) * 100 - slippage * 100, day_no
-        if high >= take:
-            return "WIN", (take / entry - 1) * 100 - slippage * 100, day_no
-        if low <= stop:
-            return "LOSS", (stop / entry - 1) * 100 - slippage * 100, day_no
+        if direction == "BUY":
+            if low <= stop and high >= take:
+                return "LOSS", (stop / entry - 1) * 100 - slippage * 100, day_no
+            if high >= take:
+                return "WIN", (take / entry - 1) * 100 - slippage * 100, day_no
+            if low <= stop:
+                return "LOSS", (stop / entry - 1) * 100 - slippage * 100, day_no
+        else:
+            if high >= stop and low <= take:
+                return "LOSS", (entry / stop - 1) * 100 - slippage * 100, day_no
+            if low <= take:
+                return "WIN", (entry / take - 1) * 100 - slippage * 100, day_no
+            if high >= stop:
+                return "LOSS", (entry / stop - 1) * 100 - slippage * 100, day_no
     close = float(future.iloc[-1]["Close"])
-    ret = (close / entry - 1) * 100 - slippage * 100
+    ret = ((close / entry - 1) * 100 - slippage * 100) if direction == "BUY" else ((entry / close - 1) * 100 - slippage * 100)
     return ("TIMEOUT_LOSS" if ret < 0 else "HOLD"), ret, len(future)
 
 
-def select_for_phase(phase_df, up, score, nikkei):
-    x = phase_df[(phase_df.up_prob >= up) & (phase_df.up_prob > phase_df.down_prob) & (phase_df.flat_prob < 50) & (phase_df.score >= score)].copy()
-    if nikkei:
-        x = x[x.nikkei_uptrend]
+def select_for_phase(phase_df, up, score, nikkei, tp, sl):
+    # ★修正(2026-09): BUY/SHORT両方向の候補を生成する(down_probも既に候補CSVの
+    # 必須列)。
+    buy = phase_df[(phase_df.up_prob >= up) & (phase_df.up_prob > phase_df.down_prob) & (phase_df.flat_prob < 50) & (phase_df.score >= score)].copy()
+    buy["direction"] = "BUY"
+    if SHORT_ENABLED:
+        short = phase_df[(phase_df.down_prob >= up) & (phase_df.down_prob > phase_df.up_prob) & (phase_df.flat_prob < 50) & (phase_df.score >= score)].copy()
+        short["direction"] = "SHORT"
+        x = pd.concat([buy, short], ignore_index=True) if not short.empty else buy
+    else:
+        x = buy
     if x.empty:
         return x
-    return x.sort_values(["date", "score", "up_prob"], ascending=[True, False, False]).groupby("date", group_keys=False).head(TOP_N).copy()
+    if nikkei:
+        x = x[((x.direction == "BUY") & x.nikkei_uptrend) | ((x.direction == "SHORT") & ~x.nikkei_uptrend)]
+    if x.empty:
+        return x
+    # ★修正(2026-09): 本番run_profit_loop.pyの_market_regime()+profit_priority()は
+    # 「日経強気→BUYのみ/弱気→SHORTのみ/中立→両方をスコア+EVで比較」という
+    # レジームのハードゲートを持つが、この検証が使う候補CSVにはkairi25/ret5の
+    # 生値が無くnikkei_uptrend(2値)しか保持していないため、3値判定の「中立」は
+    # 再現できない。nikkei_uptrend=True→強気(BUYのみ)/False→弱気(SHORTのみ)の
+    # 2値近似とする(将来的にkairi25/ret5を候補CSVへ追加できれば3値化が可能。
+    # なおこの近似の帰結として、このハードゲート適用後は残る候補が全て
+    # 「優先方向」になるため、本番のregime_bonus=10相当は全候補で定数となり
+    # 順位には影響しない)。
+    preferred = ((x.direction == "BUY") & x.nikkei_uptrend) | ((x.direction == "SHORT") & ~x.nikkei_uptrend)
+    x = x[preferred].copy()
+    if x.empty:
+        return x
+    # ★修正(2026-09): 本番profit_priority()と同じ 0.65×score + 0.35×EV(±10でクリップ)×10
+    # の優先順位式でTOP1を選ぶ(feedback_weightのみ、将来の実績データに依存し
+    # リークになり得るため意図的に除外)。
+    is_buy = (x["direction"] == "BUY").to_numpy()
+    atr_ratio = x["atr_ratio"].to_numpy(dtype=float)
+    reward_pct = atr_ratio * float(tp)
+    risk_pct = atr_ratio * float(sl)
+    up_prob = x["up_prob"].to_numpy(dtype=float)
+    down_prob = x["down_prob"].to_numpy(dtype=float)
+    flat_prob = x["flat_prob"].to_numpy(dtype=float)
+    win_prob = np.where(is_buy, up_prob, down_prob) / 100.0
+    loss_prob = np.where(is_buy, down_prob, up_prob) / 100.0
+    ev = win_prob * reward_pct - loss_prob * risk_pct - (flat_prob / 100.0) * FEE_PCT
+    rank = 0.65 * x["score"].to_numpy(dtype=float) + 0.35 * np.clip(ev, -10.0, 10.0) * 10.0
+    x = x.assign(_rank=rank)
+    return x.sort_values(["date", "_rank", "score", "up_prob"], ascending=[True, False, False, False]).groupby("date", group_keys=False).head(TOP_N).copy()
 
 
 # 診断用(VALIDATION/OOS専用): 「なぜこの候補が選ばれた/落ちたか」を後から
@@ -209,12 +272,12 @@ trade_diagnostics = []
 
 def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, phase_name=None, collect_diagnostics=False):
     rows = []
-    for _, r in select_for_phase(phase_df, up, score, nikkei).iterrows():
-        result = evaluate_trade(r.ticker, r.date, float(r.price), float(r.atr_ratio), tp, sl, hold)
+    for _, r in select_for_phase(phase_df, up, score, nikkei, tp, sl).iterrows():
+        result = evaluate_trade(r.ticker, r.date, float(r.price), float(r.atr_ratio), tp, sl, hold, direction=r.direction)
         if result is None:
             continue
         name, ret, days = result
-        rows.append({"date": r.date, "ticker": r.ticker, "score": r.score, "up_prob": r.up_prob, "result": name, "return": ret, "hold_days": days, "phase": r.phase, "risk_unit": max(1e-8, float(r.atr_ratio) / 100.0 * float(sl))})
+        rows.append({"date": r.date, "ticker": r.ticker, "score": r.score, "up_prob": r.up_prob, "direction": r.direction, "result": name, "return": ret, "hold_days": days, "phase": r.phase, "risk_unit": max(1e-8, float(r.atr_ratio) / 100.0 * float(sl))})
         if collect_diagnostics:
             diag = {"strategy": strategy_name, "phase": phase_name or r.phase, "date": r.date, "ticker": r.ticker, "result": name, "return": ret, "hold_days": days}
             for c in TRADE_DIAG_COLUMNS:
