@@ -13,7 +13,13 @@ MIN_OOS_TRADES = 20
 MIN_OOS_PF = 1.00
 MIN_OOS_AVG_RETURN = 0.00
 MAX_VALIDATION_DD = 30.0
-MIN_VALIDATION_TRADES = 50
+# ★修正(2026-09): この値は複数Fold集計方式(WF_MIN_POSITIVE_FOLDS、既定2)導入前の
+# 前提のまま50に固定されていた。現在はadversarial_strategy_validator.py側の
+# 1Fold当たりの下限(WF_MIN_VALIDATION_TRADES、既定10)を陽性Fold数分合算した値が
+# validation_signalsとして渡ってくるため、50という閾値は構造上到達困難だった
+# (実測: 陽性2Fold一致・収益性条件を全てクリアした最良候補ですら合算41件で不合格に
+# なっていた)。1Foldの下限×必要Fold数を踏まえた到達可能な水準へ引き下げる。
+MIN_VALIDATION_TRADES = int(os.getenv("BSP_MIN_VALIDATION_TRADES", "20"))
 MIN_VALIDATION_PF = 1.00
 MIN_VALIDATION_AVG_RETURN = 0.00
 MIN_MC_BANKRUPTCY_PROB = 5.0
