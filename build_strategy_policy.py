@@ -208,6 +208,29 @@ approved = approved[
 if approved.empty:
     keep_existing_policy("最終採用条件を満たす戦略なし")
 
+# ★追加(2026-09): 週次の自動再最適化がより良い候補を見つけるたびに即座に
+# strategy_policy.jsonを差し替えると、1つの戦略に十分な実績データが貯まる前に
+# 次々と別の戦略に切り替わり、「実績データを蓄積したい」というユーザー方針と衝突する。
+# 承認から一定期間(既定30日)は、現行戦略が今回も全ゲートを引き続き満たしている限り維持し、より良い
+# 候補が見つかっても差し替えない。現行戦略が今回はゲートを満たさなくなった場合
+# (=著しく劣化した場合)は、保持期間中でも例外的に差し替えを許可する。
+# load_existing_policy()はこれまで定義のみで一度も呼ばれていなかった(死んでいた)ため、
+# ここで初めて使用する。
+MIN_HOLD_DAYS = int(os.getenv("BSP_MIN_HOLD_DAYS", "30"))
+existing_policy = load_existing_policy()
+if existing_policy.get("status") == "APPROVED" and existing_policy.get("updated_at"):
+    try:
+        existing_age_days = (datetime.now() - datetime.fromisoformat(existing_policy["updated_at"])).days
+    except Exception:
+        existing_age_days = None
+    if existing_age_days is not None and existing_age_days < MIN_HOLD_DAYS:
+        still_qualifies = (approved["strategy"] == existing_policy.get("strategy_name")).any()
+        if still_qualifies:
+            keep_existing_policy(
+                f"最低保持期間中(経過{existing_age_days}日/{MIN_HOLD_DAYS}日)かつ現行戦略"
+                f"「{existing_policy.get('strategy_name')}」は今回も全ゲートを満たすため維持"
+            )
+
 # =========================================================
 # 最終選定基準を adversarial_strategy_validator.py と完全一致させる。
 # 優先順位: ①月間収益率30% ②月間+5%達成率20% ③OOS累積収益率25%
