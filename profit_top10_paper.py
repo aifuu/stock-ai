@@ -266,7 +266,9 @@ def mark_and_close(s,now,policy):
 def _run():
     now=datetime.now(TZ); today=now.strftime('%Y-%m-%d'); policy_file,trend_result=select_policy_file(); policy=load_policy(policy_file); s=load_state(); reset_daily(s,today)
     if not(now.weekday()<5 and dtime(9,0)<=now.time()<=dtime(15,30)):
-        discord_send(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし'); return
+        try: discord_progress.notify_progress(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし')
+        except Exception as e: print(f'⚠️ discord_progress notify_progress失敗: {e}')
+        return
     closed=mark_and_close(s,now,policy); cands,scanned=scan(policy)
     if cands:
         top1=cands[0]
@@ -293,7 +295,6 @@ def _run():
          f'📦 保有 {len(s["positions"])}件\n' + ('\n'.join(rows) if rows else 'なし'))
     for m in closed: discord_send(m)
     for m in entry_msgs: discord_send(m)
-    discord_send(msg)
     try: discord_progress.notify_progress(msg)
     except Exception as e: print(f'⚠️ discord_progress notify_progress失敗: {e}')
 

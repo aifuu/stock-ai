@@ -19,7 +19,7 @@ import requests
 TZ = ZoneInfo("Asia/Tokyo")
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "").strip()
 STATE_FILE = "discord_progress_state.json"
-PROGRESS_INTERVAL_SECONDS = int(os.getenv("DISCORD_PROGRESS_INTERVAL_SECONDS", "7200"))
+PROGRESS_INTERVAL_SECONDS = int(os.getenv("DISCORD_PROGRESS_INTERVAL_SECONDS", "3600"))
 
 
 def now_jst():
