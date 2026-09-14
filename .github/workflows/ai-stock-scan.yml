@@ -2,7 +2,11 @@ name: AI Stock Scan - Profit Loop TOP10 Paper Trade
 
 on:
   schedule:
-    - cron: '20 0 * * 1-5'
+    # 寄り付き前分析を08:30 JSTから開始するため、単一cronをUTC 23:30(日〜木)に設定。
+    # UTC 0-4(日〜木)+9h = JST 月〜金 08:30。以前の'30 23 * * 1-5'は
+    # UTCの曜日指定をそのままJSTに流用したバグで、UTC金曜23:30(JST土曜08:30)に
+    # 誤発火し、UTC日曜23:30(JST月曜08:30に必要)は含まれず発火しなかった。
+    - cron: '30 23 * * 0-4'
   workflow_dispatch: {}
 
 permissions:
@@ -16,7 +20,10 @@ concurrency:
 jobs:
   session_am:
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    # 開始が08:30 JSTに早まった分(旧09:20比で約50分増)、セッションループの終了判定
+    # (SESSION_END_MIN=755→12:35 JST、絶対時刻)までの実経過時間が長くなるため、
+    # ジョブのtimeout-minutesもあわせて延長(GitHub Actionsの1ジョブ上限360分以内)。
+    timeout-minutes: 280
     env:
       SESSION: AM
     steps:
