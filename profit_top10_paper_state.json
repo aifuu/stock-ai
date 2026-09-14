@@ -3,12 +3,9 @@
   "peak": 1000000.0,
   "max_dd": 0.0,
   "positions": [],
-  "trade_count_date": "2026-09-07",
-  "trades_today": 2,
-  "trades_by_ticker_today": {
-    "6098.T": 1,
-    "4062.T": 1
-  },
-  "daily_start_capital": 1000000.0,
+  "trade_count_date": "2026-09-14",
+  "trades_today": 0,
+  "trades_by_ticker_today": {},
+  "daily_start_capital": 993326.8895,
   "last_exit_by_ticker": {}
 }
