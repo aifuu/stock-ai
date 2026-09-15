@@ -1,0 +1,40 @@
+name: Single Indicator Backtest (Research)
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: stock-ai-single-indicator-backtest
+  cancel-in-progress: false
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run single indicator backtest
+        run: |
+          python single_indicator_backtest.py 2>&1 | tee indicator_backtest_result.txt
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: indicator-backtest-result
+          if-no-files-found: warn
+          path: indicator_backtest_result.txt
