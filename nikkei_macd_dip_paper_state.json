@@ -1,0 +1,22 @@
+{
+  "capital": 1000000.0,
+  "peak": 1000000.0,
+  "max_dd": 0.0,
+  "position": {
+    "ticker": "5301.T",
+    "company": "東海カーボン",
+    "entry_date": "2026-09-15",
+    "entry_price": 1977.0,
+    "shares": 500,
+    "invested_amount": 988500.0,
+    "tp": 2284.7945273202504,
+    "sl": 1801.1174129598571,
+    "atr": 87.94129352007147,
+    "score": 83.4503037326572,
+    "up_probability": 31.397379000970055,
+    "down_probability": 37.65537571041495,
+    "nikkei_macd_at_entry": -583.5088514203089,
+    "nikkei_macd_percentile_at_entry": 8.73015873015873
+  },
+  "trades_total": 1
+}
