@@ -70,8 +70,8 @@ MAX_OOS_DD = float(os.getenv("WF_MAX_OOS_DD", "35.0"))
 BOOTSTRAP_ITERATIONS = int(os.getenv("WF_BOOTSTRAP_ITERATIONS", "3000"))
 RANDOM_SEED = 42
 
-UP_THRESHOLDS = [45, 50, 55, 60, 65]
-SCORE_THRESHOLDS = [50, 60, 70, 80]
+UP_THRESHOLDS = [20, 25, 30, 35, 40, 45, 50, 55, 60, 65]
+SCORE_THRESHOLDS = [20, 30, 40, 50, 60, 70, 80]
 # ★修正(2026-09、再修正): 直前の修正でNIKKEI_FILTERSを単一値[False]に統合していたが、
 # それはselect_for_phase()の最終ハードゲートが常に2値nikkei_uptrendだけで無条件に
 # 効いていたために、nikkei引数(早い段階のprefilter)がTrue/Falseで結果に差を
