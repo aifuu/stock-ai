@@ -18,19 +18,30 @@ profit_top10_paper.py の scan()/open_positions()/mark_and_close() など)を
   「他の指標と組み合わせず単体で使った場合」の実際の取引成績を検証する
   (今後も使い回せる再現可能な検証ツールとして残す)。
 
-  対象14指標: ゴールデンクロス/デッドクロス、ma25_slope5, rsi, adx, macd,
-  signal, momentum_score, bb_position, bb_width, atr_ratio, volatility20,
-  upper_wick_pct, lower_wick_pct, breakout20
+  対象指標(2026-09拡張): ゴールデンクロス/デッドクロス、および
+  daily_directional_top1.pyのfeatures()が計算する数値系列のほぼ全て
+  (初回検証済みのma25_slope5, rsi, adx, macd, signal, momentum_score,
+  bb_position, bb_width, atr_ratio, volatility20, upper_wick_pct,
+  lower_wick_pct, breakout20の13指標に加え、ret1/ret5/ret20/ma5_slope3/
+  vol_ratio/from_high/from_low/trend_alignment/volume_surge/obv_change/
+  avg_volume_ratio/relative_strength/nikkei_kairi25/nikkei_rsi/
+  nikkei_macd/nikkei_return_5d/body_pct/dist_from_20d_high_pct/
+  failed_breakout/volume_accel_3v10/down_day_volume_bias/
+  vs_nikkei_1d_pt/vs_topix_1d_pt/future_return/future_ma5/future_rsi/
+  future_gap/ma5/ma25/ma75を追加検証)。
 
 設計上の注記:
   - 特徴量計算はdaily_directional_top1.pyのdownload()/make_nikkei()/
     features()/atr()をそのまま流用し、二重実装しない。
   - エントリーはBUY方向のみ(SHORTは今回のスコープ外)。
-  - 連続値指標13個については、「直近1年(252営業日)の分布で上位20%」と
-    「下位20%」の両方を候補として実際にバックテストし、どちら側に
+  - 連続値指標については、「直近1年(252営業日)の分布で上位/下位20%」に加え、
+    より極端な上位/下位10%・上位/下位5%も候補としてバックテストする
+    (エッジが強く出るのは分布の端の可能性があるため)。どちら側に
     エッジがあるかは過去のアドホックな分析結果を決め打ちで埋め込むのではなく、
     本スクリプト自身のTP/SLシミュレーション結果から判定する(そのほうが
-    再現性・検証可能性が高いため)。
+    再現性・検証可能性が高いため)。取引回数が極端に少ない場合は結果が
+    不安定になりうるため、trades列(取引回数)を必ず出力し、信頼性判断に
+    使えるようにする。
   - ゴールデンクロス/デッドクロスはイベント発生日(ma25とma75の差の符号が
     前日から変化した日)にBUYエントリー。
   - 累積複利%は、同一銘柄内では決済まで重複エントリーしないが、
@@ -50,8 +61,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from daily_directional_top1 import TICKERS, atr, download, features, make_nikkei  # noqa: E402
 
 PERIOD = "2y"
-LOOKBACK_WINDOW = 252  # 直近1年(営業日)の分布で上位/下位20%を判定する窓
-PERCENTILE = 0.20
+LOOKBACK_WINDOW = 252  # 直近1年(営業日)の分布で上位/下位を判定する窓
+PERCENTILES = [0.20, 0.10, 0.05]  # 上位/下位 20%・10%・5% を検証
 MIN_ROWS = LOOKBACK_WINDOW + 30  # 判定窓+シグナル発生後の余裕
 
 # 本番承認済みpolicy(strategy_policy.json想定)と同じATR倍率・保有日数
@@ -60,18 +71,36 @@ SL_MULT = 2.0
 HOLD_DAYS = 3
 FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
 
+# 初回検証済み(single_indicator_backtest.py 初版, commit cb70cc6)の13指標
 CONTINUOUS_INDICATORS = [
     "ma25_slope5", "rsi", "adx", "macd", "signal", "momentum_score",
     "bb_position", "bb_width", "atr_ratio", "volatility20",
     "upper_wick_pct", "lower_wick_pct", "breakout20",
 ]
 
+# 2026-09拡張: daily_directional_top1.py の features() が計算する数値系列のうち
+# 上記で未検証だったものを追加(features()の実際の出力列を確認して洗い出した)。
+# Open/High/Low/Close/Volumeなどfeatures()に入力としてそのまま素通りする
+# 生の価格・出来高列や、内部専用列(先頭が"_"の列)、targetラベル生成用の
+# future_return等の「未来の値そのもの」ではなく特徴量として使う列を対象とする。
+NEW_CONTINUOUS_INDICATORS = [
+    "ret1", "ret5", "ret20", "ma5_slope3", "vol_ratio", "from_high", "from_low",
+    "trend_alignment", "volume_surge", "obv_change", "avg_volume_ratio",
+    "relative_strength", "nikkei_kairi25", "nikkei_rsi", "nikkei_macd",
+    "nikkei_return_5d", "body_pct", "dist_from_20d_high_pct", "failed_breakout",
+    "volume_accel_3v10", "down_day_volume_bias", "vs_nikkei_1d_pt", "vs_topix_1d_pt",
+    "future_return", "future_ma5", "future_rsi", "future_gap",
+    "ma5", "ma25", "ma75",
+]
 
-def continuous_entry_signals(x, col):
+ALL_CONTINUOUS_INDICATORS = CONTINUOUS_INDICATORS + NEW_CONTINUOUS_INDICATORS
+
+
+def continuous_entry_signals(x, col, percentile):
     s = x[col]
     roll = s.rolling(LOOKBACK_WINDOW, min_periods=LOOKBACK_WINDOW)
-    hi_thr = roll.quantile(1 - PERCENTILE)
-    lo_thr = roll.quantile(PERCENTILE)
+    hi_thr = roll.quantile(1 - percentile)
+    lo_thr = roll.quantile(percentile)
     high_signal = (s >= hi_thr).fillna(False)
     low_signal = (s <= lo_thr).fillna(False)
     return high_signal, low_signal
@@ -143,10 +172,15 @@ def simulate_trades(x, entry_signal, ticker):
 
 
 def build_strategies():
-    strategies = [("golden_cross_buy", None, "golden"), ("dead_cross_buy", None, "dead")]
-    for col in CONTINUOUS_INDICATORS:
-        strategies.append((f"{col}_top20pct", col, "high"))
-        strategies.append((f"{col}_bottom20pct", col, "low"))
+    strategies = [
+        ("golden_cross_buy", None, "golden", None),
+        ("dead_cross_buy", None, "dead", None),
+    ]
+    for col in ALL_CONTINUOUS_INDICATORS:
+        for pct in PERCENTILES:
+            label = f"{round(pct * 100)}pct"
+            strategies.append((f"{col}_top{label}", col, "high", pct))
+            strategies.append((f"{col}_bottom{label}", col, "low", pct))
     return strategies
 
 
@@ -199,7 +233,7 @@ def main(tickers=None):
         return None
 
     strategies = build_strategies()
-    all_trades = {name: [] for name, _, _ in strategies}
+    all_trades = {name: [] for name, _, _, _ in strategies}
 
     processed = 0
     for n_idx, ticker in enumerate(tickers, 1):
@@ -210,13 +244,13 @@ def main(tickers=None):
         x["_atr"] = atr(x)
         processed += 1
         golden_sig, dead_sig = cross_entry_signals(x)
-        for name, col, kind in strategies:
+        for name, col, kind, pct in strategies:
             if kind == "golden":
                 sig = golden_sig
             elif kind == "dead":
                 sig = dead_sig
             else:
-                high_sig, low_sig = continuous_entry_signals(x, col)
+                high_sig, low_sig = continuous_entry_signals(x, col, pct)
                 sig = high_sig if kind == "high" else low_sig
             all_trades[name].extend(simulate_trades(x, sig, ticker))
         if n_idx % 20 == 0 or n_idx == len(tickers):
@@ -226,13 +260,14 @@ def main(tickers=None):
         print("⚠ 有効なデータを取得できた銘柄が0件でした。終了します。")
         return None
 
-    rows = [aggregate(name, all_trades[name]) for name, _, _ in strategies]
+    rows = [aggregate(name, all_trades[name]) for name, _, _, _ in strategies]
     result_df = pd.DataFrame(rows).sort_values(
-        "annualized_pct", ascending=False, na_position="last"
+        "avg_return_pct", ascending=False, na_position="last"
     ).reset_index(drop=True)
 
     print(f"\n対象銘柄数: {len(tickers)}｜有効データ取得: {processed}件｜"
-          f"期間: 直近{PERIOD}｜TP×{TP_MULT}/SL×{SL_MULT}(ATR)｜最大保有{HOLD_DAYS}営業日\n")
+          f"期間: 直近{PERIOD}｜TP×{TP_MULT}/SL×{SL_MULT}(ATR)｜最大保有{HOLD_DAYS}営業日｜"
+          f"検証指標数: {len(ALL_CONTINUOUS_INDICATORS)}｜分位: {[f'{int(p*100)}%' for p in PERCENTILES]}\n")
     print(to_markdown(result_df))
     return result_df
 
