@@ -334,7 +334,7 @@ def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, 
 MONTHLY_TARGET_PCT = float(os.getenv("WF_MONTHLY_TARGET_PCT", "5.0"))
 
 
-def stats(x):
+def stats(x, period_start=None, period_end=None):
     # 注意: 「勝率(win_rate)」「勝ちトレード数(wins)」は選定・ランキング・合否判定に一切使わないため、
     # ここでは計算・保持しない(方針: 利益・収益率基準への統一)。
     empty = {"signals": 0, "losses": 0, "holds": 0, "avg_return": 0.0, "pf": 0.0, "dd": 0.0, "annual_signals": 0.0, "positive_months": 0, "months": 0, "monthly_positive_ratio": 0.0, "monthly_plus5_ratio": 0.0, "avg_month_return": 0.0, "avg_month_profit_jpy": 0.0, "worst_month_return": 0.0, "oos_cumulative_return": 0.0, "compound_return": 0.0, "compound_final_capital": INITIAL_CAPITAL, "expected_value": 0.0, "avg_win": 0.0, "avg_loss": 0.0}
@@ -351,6 +351,13 @@ def stats(x):
     compound = float((equity.iloc[-1] - 1) * 100)
     dd = float((equity / equity.cummax() - 1).min() * 100)
     monthly = daily.groupby(daily.index.to_period("M")).apply(lambda s: float(((1 + s / 100).prod() - 1) * 100))
+    # ★修正(2026-09、月次成績の過大表示バグ): 従来はmonthlyが「取引があった月」のみで
+    # 構成され、取引ゼロの月が分母(months)から丸ごと除外されていた。period_start/period_end
+    # (フェーズの実際の期間)が渡された場合は完全な暦月レンジにreindexし、無取引月を0%として
+    # 正しくカウントする。渡されない場合は従来通りの挙動(後方互換)。
+    if period_start is not None and period_end is not None:
+        full_months = pd.period_range(period_start, period_end, freq="M")
+        monthly = monthly.reindex(full_months, fill_value=0.0)
     months = len(monthly)
     years = max((x.date.max() - x.date.min()).days / 365.25, 0.5)
     avg_month_return = float(monthly.mean()) if months else 0.0
@@ -418,6 +425,11 @@ validation_df = candidates[candidates.phase == "VALIDATION"].copy()
 oos_df = candidates[candidates.phase == "OOS"].copy()
 param_space = list(product(UP_THRESHOLDS, SCORE_THRESHOLDS, NIKKEI_FILTERS, TP_MULTIPLIERS, SL_MULTIPLIERS, HOLD_DAYS_LIST))
 
+# stats()の完全暦月reindex用に、各フェーズの実際の期間(purge/embargo後)を保持しておく。
+dev_period_start, dev_period_end = min(dev_dates), max(dev_dates)
+validation_period_start, validation_period_end = min(validation_dates), max(validation_dates)
+oos_period_start, oos_period_end = min(oos_dates), max(oos_dates)
+
 # ★修正(2026-09、安定性導入): DEV全体を1つの期間として最適化すると、たまたまその期間だけ
 # 突出して良かった(=過学習した)パラメータが選ばれ、Foldごとに「勝ち戦略」が毎回入れ替わる
 # 問題が実測で確認された。DEV期間を前半/後半の2分割に分け、両方の半期でそこそこ良い候補を
@@ -428,14 +440,16 @@ mid_date = dev_dates_sorted[len(dev_dates_sorted) // 2] if len(dev_dates_sorted)
 dev_half1_df = dev_df[dev_df.date <= mid_date].copy()
 dev_half2_df = dev_df[dev_df.date > mid_date].copy()
 print(f"DEV安定性検証用分割: half1={dev_half1_df.date.min()}~{dev_half1_df.date.max()} / half2={dev_half2_df.date.min()}~{dev_half2_df.date.max()}")
+dev_half1_period_start, dev_half1_period_end = dev_half1_df.date.min(), dev_half1_df.date.max()
+dev_half2_period_start, dev_half2_period_end = dev_half2_df.date.min(), dev_half2_df.date.max()
 
 all_dev_rows = []
 for i, (up, score, nikkei, tp, sl, hold) in enumerate(param_space, 1):
     if i % 100 == 0:
         print(f"DEV探索 {i}/{len(param_space)}")
-    st = stats(run_strategy(dev_df, up, score, nikkei, tp, sl, hold))
-    st_h1 = stats(run_strategy(dev_half1_df, up, score, nikkei, tp, sl, hold))
-    st_h2 = stats(run_strategy(dev_half2_df, up, score, nikkei, tp, sl, hold))
+    st = stats(run_strategy(dev_df, up, score, nikkei, tp, sl, hold), period_start=dev_period_start, period_end=dev_period_end)
+    st_h1 = stats(run_strategy(dev_half1_df, up, score, nikkei, tp, sl, hold), period_start=dev_half1_period_start, period_end=dev_half1_period_end)
+    st_h2 = stats(run_strategy(dev_half2_df, up, score, nikkei, tp, sl, hold), period_start=dev_half2_period_start, period_end=dev_half2_period_end)
     all_dev_rows.append({
         "strategy": f"UP{up}_SCORE{score}_NIKKEI{'ON' if nikkei else 'OFF'}_TP{tp}_SL{sl}_H{hold}",
         "up": up, "score": score, "nikkei": nikkei, "tp": tp, "sl": sl, "hold": hold,
@@ -472,7 +486,7 @@ dev_candidates.to_csv(_out("adversarial_dev_selected_candidates.csv"), index=Fal
 validation_results = []
 for _, row in dev_candidates.iterrows():
     rd = run_strategy(validation_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), strategy_name=row.strategy, phase_name="VALIDATION", collect_diagnostics=True)
-    st = stats(rd)
+    st = stats(rd, period_start=validation_period_start, period_end=validation_period_end)
     lower_avg = block_bootstrap_lower(rd["return"].values, alpha=MULTIPLE_TEST_ALPHA) if not rd.empty else np.nan
     validation_results.append({**row.to_dict(), **{f"validation_{k}": v for k, v in st.items()}, "validation_avg_lower": lower_avg})
 validation_summary = pd.DataFrame(validation_results)
@@ -487,7 +501,7 @@ passed_validation = validation_summary[validation_summary.validation_pass].copy(
 oos_results = []
 for _, row in passed_validation.iterrows():
     rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), strategy_name=row.strategy, phase_name="OOS", collect_diagnostics=True)
-    oos_results.append({**row.to_dict(), **{f"oos_{k}": v for k, v in stats(rd).items()}})
+    oos_results.append({**row.to_dict(), **{f"oos_{k}": v for k, v in stats(rd, period_start=oos_period_start, period_end=oos_period_end).items()}})
 oos_summary = pd.DataFrame(oos_results)
 if not oos_summary.empty:
     oos_summary["oos_pf_ratio"] = oos_summary.oos_pf / oos_summary.validation_pf.replace(0, np.nan)
