@@ -1,0 +1,44 @@
+name: Nikkei MACD Dip TP/SL Compare (Research)
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: stock-ai-nikkei-macd-dip-tpsl-compare
+  cancel-in-progress: false
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run nikkei MACD dip TP/SL compare backtest
+        run: |
+          python nikkei_macd_dip_backtest_compare.py 2>&1 | tee nikkei_macd_dip_tpsl_compare_result.txt
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nikkei-macd-dip-tpsl-compare-result
+          if-no-files-found: warn
+          path: |
+            nikkei_macd_dip_tpsl_compare_result.txt
+            nikkei_macd_dip_compare_summary.csv
+            nikkei_macd_dip_compare_trades_old.csv
+            nikkei_macd_dip_compare_trades_new.csv
