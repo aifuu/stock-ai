@@ -16,9 +16,26 @@ strategy_policy.json 等)も一切読み書きしない、完全に独立した�
   個別銘柄をBUY)が単体で最も強いエッジ(平均リターン+1.62%、取引1,685件、
   勝率65.22%)だった。このシグナルだけを使い、本番と同じAIモデルで
   225銘柄中スコア最高の1銘柄(TOP1)に集中投資するペーパートレードを、
-  本番とは別枠の仮想資金100万円で回す。
+  本番とは別枠の仮想資金で回す。
+
+3パターン並列トラック(nikkei_macd_dip_backtest_compare.py のTP_MULTグリッド
+検証結果を受け、TP_MULT=[0.22, 0.5, 0.88, 1.25, 1.75, 2.5, 3.5]の7段階のうち
+一番上(top)・中間(mid)・一番下(bottom)の3パターンを、それぞれ独立した
+仮想資金100万円(合計300万円)で同時に走らせる):
+  - top    : TP_MULT=0.22 / SL_MULT=0.1257(現行と同じ、旧来からの継続ポジションを引き継ぐ)
+  - mid    : TP_MULT=1.25 / SL_MULT=1.25/1.75(RR比1.75:1)
+  - bottom : TP_MULT=3.5  / SL_MULT=2.0(旧設定)
 
 設計:
+  - シグナル判定(日経225指数のMACD分位点)とAIモデルによるTOP1銘柄選定は
+    1日1回だけ共通で行う(3パターンともAIスコアは同一のため、同じ日に
+    エントリーする場合の銘柄自体は3パターンとも同じになるのが自然)。
+    エントリー価格・TP価格・SL価格はTP_MULT/SL_MULTがパターンごとに異なる
+    ため、パターンごとに計算する。
+  - ポジションの保有有無・決済判定・資金(capital/peak/max_dd)は
+    パターンごとに完全に独立して管理する(state/historyファイルもパターン
+    ごとに分離)。保有期間やTP/SL到達タイミングはパターンごとに異なり得る
+    ため、決済判定(check_exit)もパターンごとに個別に行う。
   - シグナル判定は single_indicator_backtest.py の continuous_entry_signals()
     と完全に同一の計算式(直近252営業日ローリングウィンドウの10%分位点
     以下かどうか)を、日経225指数自身のmacd列(daily_directional_top1.py の
@@ -28,11 +45,10 @@ strategy_policy.json 等)も一切読み書きしない、完全に独立した�
     (long_score)が最高の銘柄を選ぶ(up_threshold/min_scoreの下限は設けない。
     バックテストのエッジは日経条件のみで発生していたため)。
   - 決済シミュレーションは single_indicator_backtest.py の
-    simulate_trades() と同じロジック(TP×3.5/SL×2.0のATR倍率、
-    最大保有3営業日、日次High/LowでTP/SL判定)を、実際に日をまたいで
-    ポジションを保有し続ける形で再実装している(状態ファイルに
-    position を保持し、実行のたびにエントリー日からの日次バーを
-    遡ってTP/SL/保有期限到達を判定する)。
+    simulate_trades() と同じロジック(TP/SLのATR倍率、最大保有3営業日、
+    日次High/LowでTP/SL判定)を、実際に日をまたいでポジションを保有し
+    続ける形で再実装している(状態ファイルに position を保持し、実行の
+    たびにエントリー日からの日次バーを遡ってTP/SL/保有期限到達を判定する)。
 """
 
 import json
@@ -61,13 +77,11 @@ from daily_directional_top1 import (  # noqa: E402
 
 TZ = ZoneInfo("Asia/Tokyo")
 
-STATE_FILE = "nikkei_macd_dip_paper_state.json"
-HISTORY_FILE = "nikkei_macd_dip_paper_history.csv"
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 
 # 本番(AI_INITIAL_CAPITAL)とは別枠の新規資金。あえて別のenv変数名にして
-# 本番の資金設定と混ざらないようにする。
-INITIAL_CAPITAL = float(os.getenv("NIKKEI_MACD_DIP_INITIAL_CAPITAL", "1000000"))
+# 本番の資金設定と混ざらないようにする。3パターンとも同額(デフォルト100万円)。
+BASE_INITIAL_CAPITAL = float(os.getenv("NIKKEI_MACD_DIP_INITIAL_CAPITAL", "1000000"))
 LOT_SIZE = 100
 FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
 
@@ -75,13 +89,44 @@ FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
 LOOKBACK_WINDOW = 252
 PERCENTILE = 0.10
 
-# single_indicator_backtest.py / 検証で使ったATR倍率・保有日数(本番のdaily_directional_top1.py
-# の3.0/1.5/5営業日とは異なる。エッジが検証されたのはこちらの数値のため、こちらを使う)。
-TP_MULT = 0.22
-SL_MULT = 0.1257
+# 3パターンとも共通(検証時と同じ最大保有日数)
 HOLD_DAYS = 3
 
-LABEL = "🔬 日経MACD逆張(別トラック)"
+BASE_LABEL = "🔬 日経MACD逆張(別トラック)"
+
+
+def _fmt(x):
+    return f"{round(float(x), 4):g}"
+
+
+CONFIGS = [
+    {
+        "name": "top",
+        "tp_mult": 0.22,
+        "sl_mult": 0.1257,
+        "state_file": "nikkei_macd_dip_paper_state_top.json",
+        "history_file": "nikkei_macd_dip_paper_history_top.csv",
+        "initial_capital": BASE_INITIAL_CAPITAL,
+    },
+    {
+        "name": "mid",
+        "tp_mult": 1.25,
+        "sl_mult": 1.25 / 1.75,
+        "state_file": "nikkei_macd_dip_paper_state_mid.json",
+        "history_file": "nikkei_macd_dip_paper_history_mid.csv",
+        "initial_capital": BASE_INITIAL_CAPITAL,
+    },
+    {
+        "name": "bottom",
+        "tp_mult": 3.5,
+        "sl_mult": 2.0,
+        "state_file": "nikkei_macd_dip_paper_state_bottom.json",
+        "history_file": "nikkei_macd_dip_paper_history_bottom.csv",
+        "initial_capital": BASE_INITIAL_CAPITAL,
+    },
+]
+for _cfg in CONFIGS:
+    _cfg["label"] = f"{BASE_LABEL}[{_cfg['name']} TP{_fmt(_cfg['tp_mult'])}/SL{_fmt(_cfg['sl_mult'])}]"
 
 
 def send(msg):
@@ -99,44 +144,44 @@ def send(msg):
         return False
 
 
-def default_state():
+def default_state(cfg):
     return {
-        "capital": INITIAL_CAPITAL,
-        "peak": INITIAL_CAPITAL,
+        "capital": cfg["initial_capital"],
+        "peak": cfg["initial_capital"],
         "max_dd": 0.0,
         "position": None,
         "trades_total": 0,
     }
 
 
-def load_state():
-    s = default_state()
-    if os.path.exists(STATE_FILE):
+def load_state(cfg):
+    s = default_state(cfg)
+    if os.path.exists(cfg["state_file"]):
         try:
-            with open(STATE_FILE, encoding="utf-8") as f:
+            with open(cfg["state_file"], encoding="utf-8") as f:
                 s.update(json.load(f))
         except Exception:
             pass
     return s
 
 
-def save_state(s):
-    tmp = STATE_FILE + ".tmp"
+def save_state(cfg, s):
+    tmp = cfg["state_file"] + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(s, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, STATE_FILE)
+    os.replace(tmp, cfg["state_file"])
 
 
-def append_history(row):
+def append_history(cfg, row):
     df = pd.DataFrame([row])
-    if os.path.exists(HISTORY_FILE):
+    if os.path.exists(cfg["history_file"]):
         try:
-            df = pd.concat([pd.read_csv(HISTORY_FILE), df], ignore_index=True)
+            df = pd.concat([pd.read_csv(cfg["history_file"]), df], ignore_index=True)
         except Exception:
             pass
-    df.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+    df.to_csv(cfg["history_file"], index=False, encoding="utf-8-sig")
 
 
 def nikkei_macd_signal(nikkei):
@@ -164,7 +209,9 @@ def nikkei_macd_signal(nikkei):
 
 def check_exit(position, today):
     """simulate_trades()のTP/SL判定ロジック(SL優先の同日判定、最大保有日数到達で
-    HOLD_LIMIT決済)を、実際にエントリー日から今日までの日次バーを遡って適用する。"""
+    HOLD_LIMIT決済)を、実際にエントリー日から今日までの日次バーを遡って適用する。
+    TP/SL価格はエントリー時にconfigごとのTP_MULT/SL_MULTで計算済みのものを
+    positionに保持しているため、ここではconfig非依存。"""
     df = download(position["ticker"], period="6mo")
     if df is None or df.empty:
         return None
@@ -196,7 +243,7 @@ def check_exit(position, today):
     return exit_price, reason, exit_dt
 
 
-def close_position(state):
+def close_position(cfg, state):
     p = state["position"]
     result = check_exit(p, datetime.now(TZ).strftime("%Y-%m-%d"))
     if result is None:
@@ -215,7 +262,7 @@ def close_position(state):
     )
     exit_date_str = str(pd.Timestamp(exit_dt).date())
     hold_days_actual = len(pd.bdate_range(pd.Timestamp(p["entry_date"]), pd.Timestamp(exit_dt)))
-    append_history({
+    append_history(cfg, {
         "entry_date": p["entry_date"],
         "exit_date": exit_date_str,
         "ticker": p["ticker"],
@@ -241,7 +288,7 @@ def close_position(state):
     result_label = {"TP": "利確(TP)", "SL": "損切(SL)", "HOLD_LIMIT": "期限到達"}.get(reason, reason)
     emoji = "✅" if pnl >= 0 else "❌"
     return (
-        f"{emoji} {LABEL}｜決済\n"
+        f"{emoji} {cfg['label']}｜決済\n"
         f"📅 {exit_date_str}\n"
         f"{p['ticker']} {p['company']}\n"
         f"エントリー {entry_price:,.1f} → 決済 {exit_price:,.1f}\n"
@@ -252,11 +299,12 @@ def close_position(state):
     )
 
 
-def try_entry(state, nikkei, today, sig):
+def find_best_candidate(nikkei):
+    """AIモデルによるTOP1銘柄選定。3パターンともAIスコアは共通のため1日1回だけ
+    実行し、結果を各configのエントリー計算に使い回す。"""
     model = load_model()
     if model is None:
-        send(f"❌ {LABEL}｜シグナル成立もAIモデル読込失敗のためエントリー見送り")
-        return None
+        return None, 0, "model_load_failed"
     cols = list(getattr(model, "feature_names_in_", [])) or list(FEATURES)
     best = None
     scanned = 0
@@ -296,19 +344,28 @@ def try_entry(state, nikkei, today, sig):
         except Exception as exc:
             print(ticker, "score error", exc)
     if best is None:
-        send(f"⚠️ {LABEL}｜シグナル成立({sig['pct_rank']:.1f}%タイル)もスコアリング可能な銘柄なし(対象{scanned}銘柄)")
+        return None, scanned, "no_candidates"
+    return best, scanned, None
+
+
+def try_entry(cfg, state, today, sig, best, scanned, fail_reason):
+    if best is None:
+        if fail_reason == "model_load_failed":
+            send(f"❌ {cfg['label']}｜シグナル成立もAIモデル読込失敗のためエントリー見送り")
+        else:
+            send(f"⚠️ {cfg['label']}｜シグナル成立({sig['pct_rank']:.1f}%タイル)もスコアリング可能な銘柄なし(対象{scanned}銘柄)")
         return None
 
     price, a = best["price"], best["atr"]
-    tp = price + a * TP_MULT
-    sl = max(0.01, price - a * SL_MULT)
+    tp = price + a * cfg["tp_mult"]
+    sl = max(0.01, price - a * cfg["sl_mult"])
     capital = float(state["capital"])
     shares = (int(capital // price) // LOT_SIZE) * LOT_SIZE
     if shares < LOT_SIZE:
         if capital >= price * LOT_SIZE:
             shares = LOT_SIZE
         else:
-            send(f"⚠️ {LABEL}｜シグナル成立もエントリー資金不足(必要 {price*LOT_SIZE:,.0f}円 > 残高 {capital:,.0f}円)")
+            send(f"⚠️ {cfg['label']}｜シグナル成立もエントリー資金不足(必要 {price*LOT_SIZE:,.0f}円 > 残高 {capital:,.0f}円)")
             return None
     invested = shares * price
     state["position"] = {
@@ -329,7 +386,7 @@ def try_entry(state, nikkei, today, sig):
     }
     state["trades_total"] = int(state.get("trades_total", 0)) + 1
     return (
-        f"🆕 {LABEL}｜新規エントリー\n"
+        f"🆕 {cfg['label']}｜新規エントリー\n"
         f"📅 {today}\n"
         f"日経MACD: {sig['today_macd']:.3f}(直近1年{sig['pct_rank']:.1f}%タイル、下位{int(PERCENTILE*100)}%到達)\n"
         f"BUY｜{best['ticker']} {best['company']}\n"
@@ -342,61 +399,84 @@ def try_entry(state, nikkei, today, sig):
 
 def _run():
     today = datetime.now(TZ).strftime("%Y-%m-%d")
-    state = load_state()
 
     nikkei = make_nikkei()
     if nikkei is None:
-        send(f"❌ {LABEL}｜日経225データ取得失敗(ネットワーク不通の可能性)")
+        send(f"❌ {BASE_LABEL}｜日経225データ取得失敗(ネットワーク不通の可能性)")
         return
 
     sig = nikkei_macd_signal(nikkei)
     if sig is None:
-        send(f"⚠️ {LABEL}｜日経データ不足({len(nikkei)}件<{LOOKBACK_WINDOW})、シグナル判定不可")
+        send(f"⚠️ {BASE_LABEL}｜日経データ不足({len(nikkei)}件<{LOOKBACK_WINDOW})、シグナル判定不可")
         return
 
     thr_log = f"{sig['today_thr']:.4f}" if sig["today_thr"] is not None else "N/A"
     print(f"日経MACD: {sig['today_macd']:.4f}｜下位{int(PERCENTILE*100)}%しきい値: {thr_log}")
     print(f"直近1年パーセンタイル: {sig['pct_rank']:.2f}%｜シグナル成立: {sig['signal']}")
 
-    closed_msg = None
-    if state.get("position"):
-        closed_msg = close_position(state)
+    states = {cfg["name"]: load_state(cfg) for cfg in CONFIGS}
 
-    entry_msg = None
-    if not state.get("position") and sig["signal"]:
-        entry_msg = try_entry(state, nikkei, today, sig)
+    closed_msgs = {}
+    for cfg in CONFIGS:
+        state = states[cfg["name"]]
+        if state.get("position"):
+            closed_msgs[cfg["name"]] = close_position(cfg, state)
 
-    save_state(state)
+    need_entry = [cfg for cfg in CONFIGS if not states[cfg["name"]].get("position") and sig["signal"]]
 
-    position = state.get("position")
-    if position:
-        pos_desc = (
-            f"保有中: {position['ticker']} {position['company']}｜"
-            f"エントリー {position['entry_price']:,.1f}(={position['entry_date']})｜"
-            f"TP {position['tp']:,.1f}｜SL {position['sl']:,.1f}"
-        )
-    else:
-        pos_desc = "保有ポジションなし"
+    best = scanned = fail_reason = None
+    if need_entry:
+        best, scanned, fail_reason = find_best_candidate(nikkei)
+
+    entry_msgs = {}
+    for cfg in need_entry:
+        entry_msgs[cfg["name"]] = try_entry(cfg, states[cfg["name"]], today, sig, best, scanned, fail_reason)
+
+    for cfg in CONFIGS:
+        save_state(cfg, states[cfg["name"]])
+
+    for cfg in CONFIGS:
+        name = cfg["name"]
+        if closed_msgs.get(name):
+            send(closed_msgs[name])
+        if entry_msgs.get(name):
+            send(entry_msgs[name])
 
     thr_str = f"{sig['today_thr']:.3f}" if sig["today_thr"] is not None else "N/A"
-    summary = (
-        f"{LABEL}｜日次判定\n"
+    lines = [
+        f"{BASE_LABEL}｜日次判定(3パターン並列)\n"
         f"📅 {today}(日経データ日付: {sig['nikkei_date']})\n"
         f"日経MACD: {sig['today_macd']:.3f}｜直近1年{sig['pct_rank']:.1f}%タイル｜"
         f"下位{int(PERCENTILE*100)}%しきい値: {thr_str}\n"
-        f"シグナル: {'成立(下位' + str(int(PERCENTILE*100)) + '%)' if sig['signal'] else '不成立'}\n"
-        f"{pos_desc}\n"
-        f"💰 仮想資産(別枠・本番非依存): {state['capital']:,.0f}円｜"
-        f"開始{INITIAL_CAPITAL:,.0f}円から {state['capital']-INITIAL_CAPITAL:+,.0f}円｜"
-        f"最大DD {state.get('max_dd',0):.2f}%｜累計取引 {state.get('trades_total',0)}件\n"
+        f"シグナル: {'成立(下位' + str(int(PERCENTILE*100)) + '%)' if sig['signal'] else '不成立'}"
+    ]
+    total_capital = 0.0
+    total_initial = 0.0
+    for cfg in CONFIGS:
+        state = states[cfg["name"]]
+        position = state.get("position")
+        if position:
+            pos_desc = (
+                f"保有中: {position['ticker']} {position['company']}｜"
+                f"エントリー {position['entry_price']:,.1f}(={position['entry_date']})｜"
+                f"TP {position['tp']:,.1f}｜SL {position['sl']:,.1f}"
+            )
+        else:
+            pos_desc = "保有ポジションなし"
+        total_capital += float(state["capital"])
+        total_initial += float(cfg["initial_capital"])
+        lines.append(
+            f"\n[{cfg['name']} TP{_fmt(cfg['tp_mult'])}/SL{_fmt(cfg['sl_mult'])}] {pos_desc}\n"
+            f"💰 {state['capital']:,.0f}円(開始{cfg['initial_capital']:,.0f}円から "
+            f"{state['capital']-cfg['initial_capital']:+,.0f}円)｜"
+            f"最大DD {state.get('max_dd',0):.2f}%｜累計取引 {state.get('trades_total',0)}件"
+        )
+    lines.append(
+        f"\n💰 3パターン合計: {total_capital:,.0f}円(開始{total_initial:,.0f}円から "
+        f"{total_capital-total_initial:+,.0f}円)\n"
         f"⚠️ 実注文なし・本番システム(profit_top10_paper.py等)とは完全に独立した実験トラック"
     )
-
-    if closed_msg:
-        send(closed_msg)
-    if entry_msg:
-        send(entry_msg)
-    send(summary)
+    send("\n".join(lines))
 
 
 def main():
@@ -404,7 +484,7 @@ def main():
         _run()
     except Exception as exc:
         try:
-            send(f"❌ {LABEL}｜実行エラー: {exc}")
+            send(f"❌ {BASE_LABEL}｜実行エラー: {exc}")
         except Exception:
             pass
         raise
