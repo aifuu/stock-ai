@@ -77,8 +77,8 @@ PERCENTILE = 0.10
 
 # single_indicator_backtest.py / 検証で使ったATR倍率・保有日数(本番のdaily_directional_top1.py
 # の3.0/1.5/5営業日とは異なる。エッジが検証されたのはこちらの数値のため、こちらを使う)。
-TP_MULT = 3.5
-SL_MULT = 2.0
+TP_MULT = 0.22
+SL_MULT = 0.1257
 HOLD_DAYS = 3
 
 LABEL = "🔬 日経MACD逆張(別トラック)"
