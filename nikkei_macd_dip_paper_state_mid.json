@@ -1,6 +1,22 @@
 {
-    "capital": 1000000.0,
-    "peak": 1000000.0,
-    "max_dd": 0.0,
-    "position": null
+  "capital": 1000000.0,
+  "peak": 1000000.0,
+  "max_dd": 0.0,
+  "position": {
+    "ticker": "8601.T",
+    "company": "大和証券グループ本社",
+    "entry_date": "2026-09-16",
+    "entry_price": 1831.0,
+    "shares": 500,
+    "invested_amount": 915500.0,
+    "tp": 1882.5555727232115,
+    "sl": 1801.5396727295933,
+    "atr": 41.24445817856919,
+    "score": 72.96314450309379,
+    "up_probability": 39.04549875752803,
+    "down_probability": 24.58040260891429,
+    "nikkei_macd_at_entry": -608.8557455939954,
+    "nikkei_macd_percentile_at_entry": 7.936507936507936
+  },
+  "trades_total": 1
 }
