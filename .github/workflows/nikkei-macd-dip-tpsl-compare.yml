@@ -9,7 +9,7 @@ concurrency:
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - name: Checkout latest main
         uses: actions/checkout@v4
@@ -40,5 +40,10 @@ jobs:
           path: |
             nikkei_macd_dip_tpsl_compare_result.txt
             nikkei_macd_dip_compare_summary.csv
-            nikkei_macd_dip_compare_trades_old.csv
-            nikkei_macd_dip_compare_trades_new.csv
+            nikkei_macd_dip_compare_trades_tp022.csv
+            nikkei_macd_dip_compare_trades_tp050.csv
+            nikkei_macd_dip_compare_trades_tp088.csv
+            nikkei_macd_dip_compare_trades_tp125.csv
+            nikkei_macd_dip_compare_trades_tp175.csv
+            nikkei_macd_dip_compare_trades_tp250.csv
+            nikkei_macd_dip_compare_trades_tp350.csv

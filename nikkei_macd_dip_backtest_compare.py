@@ -19,8 +19,11 @@ nikkei_macd_dip_paper_state.json 等)も一切読み書きしない、完全に�
   (日経225自身のMACDが直近252営業日ローリング分位点で下位10%以下)・
   TOP1選定ロジック(daily_directional_top1.py の directional_score() を
   そのまま流用)を使い、過去全期間(データが取得できる範囲)を日次で
-  ウォークフォワード・シミュレーションし、旧TP/SL(3.5/2.0)と
-  新TP/SL(0.22/0.1257)の実績を比較する。
+  ウォークフォワード・シミュレーションする。旧TP/SL(3.5/2.0)と新TP/SL
+  (0.22/0.1257)を比較した結果、新TP/SLは明確にマイナス期待値だったため、
+  「間くらいならどうか」という検証として、旧新の間のTP_MULTグリッド
+  (0.22, 0.5, 0.88, 1.25, 1.75, 2.5, 3.5; SL_MULTは3.5のケースのみ2.0固定、
+  それ以外はRR比1.75:1を維持してTP_MULT/1.75で自動計算)で実績を比較する。
 
 設計上の注記:
   - シグナル判定・TOP1選定・決済(SL優先の同日判定、最大保有3営業日)ロジックは
@@ -76,9 +79,31 @@ PERCENTILE = 0.10
 HOLD_DAYS = 3
 FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
 
+
+def _grid_config(tp_mult, sl_mult=None, key_suffix=None):
+    """SL_MULT省略時はRR比1.75:1を維持して TP_MULT/1.75 で自動計算する。"""
+    if sl_mult is None:
+        sl_mult = round(tp_mult / 1.75, 4)
+    key = key_suffix or f"tp{tp_mult}".replace(".", "")
+    return {
+        "key": key,
+        "name": f"TP/SL (ATR×{tp_mult} / ATR×{sl_mult})",
+        "tp_mult": tp_mult,
+        "sl_mult": sl_mult,
+    }
+
+
+# TP_MULTのグリッド(旧0.22〜新3.5の間を検証)。SL_MULTは現行と同じRR比1.75:1を
+# 維持してSL_MULT = TP_MULT/1.75で自動計算する。ただしTP_MULT=3.5(旧)のみ
+# 以前の実測(SL_MULT=2.0固定、RR比1.75:1ではない)と一致させるため固定値を使う。
 CONFIGS = [
-    {"key": "old", "name": "旧TP/SL (ATR×3.5 / ATR×2.0)", "tp_mult": 3.5, "sl_mult": 2.0},
-    {"key": "new", "name": "新TP/SL (ATR×0.22 / ATR×0.1257)", "tp_mult": 0.22, "sl_mult": 0.1257},
+    _grid_config(0.22, key_suffix="tp022"),  # 現行(基準再掲)
+    _grid_config(0.5, key_suffix="tp050"),
+    _grid_config(0.88, key_suffix="tp088"),  # 旧新の幾何平均 sqrt(0.22*3.5)
+    _grid_config(1.25, key_suffix="tp125"),
+    _grid_config(1.75, key_suffix="tp175"),
+    _grid_config(2.5, key_suffix="tp250"),
+    _grid_config(3.5, sl_mult=2.0, key_suffix="tp350"),  # 旧(基準再掲、SL_MULT=2.0固定)
 ]
 
 
@@ -288,6 +313,8 @@ def simulate(config, sig_dates, sig_bool, frames, pos_maps, model, cols):
 def aggregate_config(config, trades):
     base = {
         "config": config["name"],
+        "tp_mult": config["tp_mult"],
+        "sl_mult": config["sl_mult"],
         "trades": len(trades),
         "years": np.nan,
         "win_rate_pct": np.nan,
@@ -351,6 +378,29 @@ def aggregate_config(config, trades):
         }
     )
     return base
+
+
+def find_breakeven(results):
+    """TP_MULT順に並んだresultsから、年率(annualized_pct)がマイナス→プラスに
+    転じる境界(損益分岐点)を探して説明文を返す。"""
+    valid = [r for r in results if r["trades"] > 0 and pd.notna(r["annualized_pct"])]
+    if not valid:
+        return "取引が発生した設定が無く、損益分岐点を判定できませんでした。"
+    if all(r["annualized_pct"] > 0 for r in valid):
+        return "検証したTP_MULT全域(0.22〜3.5)で年率がプラスでした。損益分岐点はグリッド範囲より下(TP_MULT<0.22)にある可能性があります。"
+    if all(r["annualized_pct"] <= 0 for r in valid):
+        return "検証したTP_MULT全域(0.22〜3.5)で年率がプラスに転じませんでした。損益分岐点はグリッド範囲より上(TP_MULT>3.5)にある可能性があります。"
+
+    lines = []
+    for prev, cur in zip(valid, valid[1:]):
+        if prev["annualized_pct"] <= 0 < cur["annualized_pct"]:
+            lines.append(
+                f"TP_MULT={prev['tp_mult']}(年率{prev['annualized_pct']:.2f}%)"
+                f"〜TP_MULT={cur['tp_mult']}(年率{cur['annualized_pct']:.2f}%)の間"
+            )
+    if not lines:
+        return "年率の符号が複数回反転しており、単純な境界を特定できませんでした(詳細は表を参照)。"
+    return "損益分岐点(年率がマイナス→プラスに転じる境界): " + " および ".join(lines)
 
 
 def to_markdown(rows, cols_order, headers=None):
@@ -423,19 +473,22 @@ def main():
         )
         log(f"  経過時間: {(time.time()-t0)/60:.1f}分")
 
-    log("\n=== 比較結果サマリー ===")
+    log("\n=== 比較結果サマリー(TP_MULT順) ===")
     cols_order = [
-        "config", "trades", "period_start", "period_end", "years",
+        "tp_mult", "sl_mult", "config", "trades", "period_start", "period_end", "years",
         "win_rate_pct", "avg_return_pct", "cumulative_compound_pct", "annualized_pct",
         "max_drawdown_pct", "profit_factor", "tp_count", "sl_count", "hold_limit_count",
     ]
     headers = [
-        "設定", "取引数", "開始", "終了", "年数",
+        "TP_MULT", "SL_MULT", "設定", "取引数", "開始", "終了", "年数",
         "勝率%(TP比率)", "平均リターン%", "累積複利%", "年率%",
         "最大DD%", "PF", "TP件数", "SL件数", "期限到達件数",
     ]
     table = to_markdown(results, cols_order, headers)
     log(table)
+
+    log("\n=== 損益分岐点分析 ===")
+    log(find_breakeven(results))
 
     for key, trades in all_trades.items():
         out_csv = f"nikkei_macd_dip_compare_trades_{key}.csv"
