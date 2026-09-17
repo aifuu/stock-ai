@@ -30,7 +30,7 @@ MAX_MC_DD90 = 30.0
 
 DEFAULT_POLICY = {
     "status": "DEFAULT", "updated_at": None,
-    "up_threshold": 50, "min_score_for_buy": 60,
+    "up_threshold": 50, "min_score_for_buy": 40,
     "nikkei_filter": False, "atr_tp_multiplier": 3.0,
     "atr_sl_multiplier": 1.5, "hold_days": 5,
     "validation_signals": 0, "validation_avg_month_return": 0.0,
