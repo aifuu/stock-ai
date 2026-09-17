@@ -2,7 +2,7 @@
   "status": "APPROVED",
   "updated_at": "2026-09-16T06:39:35",
   "up_threshold": 20,
-  "min_score_for_buy": 80,
+  "min_score_for_buy": 40,
   "nikkei_filter": true,
   "atr_tp_multiplier": 4.0,
   "atr_sl_multiplier": 1.0,
