@@ -7,7 +7,8 @@ profit_top10_paper.py の scan()/open_positions()/mark_and_close() など)を
 一切呼び出さず、本番の状態ファイル(profit_top10_paper_state.json,
 strategy_policy.json 等)も一切読み書きしない、完全に独立した実験用の
 セカンドトラック(研究用のsingle_indicator_backtest.pyと同じ位置付けだが、
-こちらは毎営業日1回自動実行してポジションを実際に持ち越すペーパートレード)。
+こちらは毎営業日場中に複数回自動実行してポジションを実際に持ち越すペーパー
+トレード)。
 
 背景:
   single_indicator_backtest.py の拡張検証(run #2)で、
@@ -17,6 +18,11 @@ strategy_policy.json 等)も一切読み書きしない、完全に独立した�
   勝率65.22%)だった。このシグナルだけを使い、本番と同じAIモデルで
   225銘柄中スコア最高の1銘柄(TOP1)に集中投資するペーパートレードを、
   本番とは別枠の仮想資金で回す。
+
+  ★変更(2026-09): 当初は取引終了後(JST 15:35)の1回のみ実行し、その日の
+  終値をエントリー価格に使っていたが、取引終了後は実際には約定できない
+  価格であるため、場中(JST 9:00〜15:20)に1日5回チェックする方式に変更した。
+  シグナル判定・エントリー・決済判定のすべてを場中実行時のみ行う。
 
 3パターン並列トラック(nikkei_macd_dip_backtest_compare.py のTP_MULTグリッド
 検証結果を受け、TP_MULT=[0.22, 0.5, 0.88, 1.25, 1.75, 2.5, 3.5]の7段階のうち
@@ -44,23 +50,28 @@ strategy_policy.json 等)も一切読み書きしない、完全に独立した�
     directional_score() を流用し、二重実装しない。BUY方向のスコア
     (long_score)が最高の銘柄を選ぶ(up_threshold/min_scoreの下限は設けない。
     バックテストのエッジは日経条件のみで発生していたため)。
-  - 決済シミュレーションは single_indicator_backtest.py の
-    simulate_trades() と同じロジック(TP/SLのATR倍率、最大保有3営業日、
-    日次High/LowでTP/SL判定)を、実際に日をまたいでポジションを保有し
-    続ける形で再実装している(状態ファイルに position を保持し、実行の
-    たびにエントリー日からの日次バーを遡ってTP/SL/保有期限到達を判定する)。
+  - 決済判定は、1日5回の場中実行のたびにその時点の現在価格をTP/SL価格と
+    直接比較する方式(TP/SLのATR倍率ロジック自体はsingle_indicator_backtest.py
+    の simulate_trades() と同じ)。最大保有3営業日への到達は日付ベース
+    (エントリー日からの経過営業日数)で判定し、これも場中実行時にのみ行う。
+    状態ファイルに position を保持し、実行のたびに現在価格で判定するため
+    日次High/Lowを遡る必要はない。
+  - 1日に最大5回実行されるため、既にその日決済済み(state["last_exit_date"]
+    が当日)の場合は同日中の再エントリーを行わない。
 """
 
 import json
 import os
 import sys
 from datetime import datetime
+from datetime import time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import requests
+import yfinance as yf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from daily_directional_top1 import (  # noqa: E402
@@ -92,7 +103,67 @@ PERCENTILE = 0.10
 # 3パターンとも共通(検証時と同じ最大保有日数)
 HOLD_DAYS = 3
 
+# 場中判定ウィンドウ(JST)。ユーザー指示により売買判定は必ずこの時間帯のみで行う。
+MARKET_OPEN = dtime(9, 0)
+MARKET_CLOSE = dtime(15, 20)
+
 BASE_LABEL = "🔬 日経MACD逆張(別トラック)"
+
+
+def is_trading_window(now):
+    """場中(JST 9:00〜15:20、平日)かどうか。cronは場中のみ発火するよう組んで
+    あるが、workflow_dispatchでの手動実行や実行遅延に備えた二重の安全策として
+    スクリプト側でも判定する。"""
+    return now.weekday() < 5 and MARKET_OPEN <= now.time() <= MARKET_CLOSE
+
+
+def get_current_price(ticker, fallback_close=None):
+    """実行時点(場中)で入手可能な最新価格を取得する。
+    優先順位: fast_info.last_price → 直近1分足の終値 → 当日の日次Open →
+    直近日次Close(fallback_close)。"""
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        try:
+            p = float(fi.last_price)
+        except Exception:
+            p = float(fi["lastPrice"])
+        if p and p > 0:
+            return p
+    except Exception:
+        pass
+    try:
+        d = yf.download(ticker, period="1d", interval="1m", auto_adjust=True, progress=False, threads=False)
+        if d is not None and not d.empty:
+            if isinstance(d.columns, pd.MultiIndex):
+                d.columns = d.columns.get_level_values(0)
+            p = float(d["Close"].dropna().iloc[-1])
+            if p > 0:
+                return p
+    except Exception:
+        pass
+    try:
+        d = yf.download(ticker, period="5d", interval="1d", auto_adjust=True, progress=False, threads=False)
+        if d is not None and not d.empty:
+            if isinstance(d.columns, pd.MultiIndex):
+                d.columns = d.columns.get_level_values(0)
+            today_str = datetime.now(TZ).strftime("%Y-%m-%d")
+            if str(pd.Timestamp(d.index[-1]).date()) == today_str:
+                p = float(d["Open"].iloc[-1])
+                if p > 0:
+                    return p
+            p = float(d["Close"].iloc[-1])
+            if p > 0:
+                return p
+    except Exception:
+        pass
+    if fallback_close is not None:
+        try:
+            p = float(fallback_close)
+            if p > 0:
+                return p
+        except Exception:
+            pass
+    return None
 
 
 def _fmt(x):
@@ -151,6 +222,9 @@ def default_state(cfg):
         "max_dd": 0.0,
         "position": None,
         "trades_total": 0,
+        # 当日中の同日再エントリー防止用(この日付==今日ならその日はもう
+        # 新規エントリーしない)。
+        "last_exit_date": None,
     }
 
 
@@ -207,48 +281,30 @@ def nikkei_macd_signal(nikkei):
     }
 
 
-def check_exit(position, today):
-    """simulate_trades()のTP/SL判定ロジック(SL優先の同日判定、最大保有日数到達で
-    HOLD_LIMIT決済)を、実際にエントリー日から今日までの日次バーを遡って適用する。
+def check_exit_intraday(position, current_price, today):
+    """場中実行時、その時点の現在価格をTP/SL価格と直接比較して判定する
+    (1日5回の実行ごとに都度チェックする単一価格比較)。TP到達を優先し、次に
+    SL、どちらも未到達なら最大保有日数(HOLD_DAYS、日付ベース)への到達を見る。
     TP/SL価格はエントリー時にconfigごとのTP_MULT/SL_MULTで計算済みのものを
     positionに保持しているため、ここではconfig非依存。"""
-    df = download(position["ticker"], period="6mo")
-    if df is None or df.empty:
-        return None
-    entry_date = pd.Timestamp(position["entry_date"])
-    bdays = pd.bdate_range(entry_date + pd.Timedelta(days=1), pd.Timestamp(today))
-    if len(bdays) == 0:
-        return None
-    bars = df[df.index.normalize().isin(bdays)].sort_index()
-    if bars.empty:
-        return None
     tp, sl = float(position["tp"]), float(position["sl"])
-    exit_price = reason = exit_dt = None
-    for day_idx, (ts, bar) in enumerate(bars.iterrows(), start=1):
-        hi, lo = float(bar["High"]), float(bar["Low"])
-        if lo <= sl and hi >= tp:
-            exit_price, reason = sl, "SL"
-        elif hi >= tp:
-            exit_price, reason = tp, "TP"
-        elif lo <= sl:
-            exit_price, reason = sl, "SL"
-        if reason:
-            exit_dt = ts
-            break
-        if day_idx >= HOLD_DAYS:
-            exit_price, reason, exit_dt = float(bar["Close"]), "HOLD_LIMIT", ts
-            break
-    if reason is None:
-        return None
-    return exit_price, reason, exit_dt
+    if current_price >= tp:
+        return current_price, "TP"
+    if current_price <= sl:
+        return current_price, "SL"
+    entry_date = pd.Timestamp(position["entry_date"])
+    held_bdays = len(pd.bdate_range(entry_date + pd.Timedelta(days=1), pd.Timestamp(today)))
+    if held_bdays >= HOLD_DAYS:
+        return current_price, "HOLD_LIMIT"
+    return None
 
 
-def close_position(cfg, state):
+def close_position(cfg, state, current_price, today):
     p = state["position"]
-    result = check_exit(p, datetime.now(TZ).strftime("%Y-%m-%d"))
+    result = check_exit_intraday(p, current_price, today)
     if result is None:
         return None
-    exit_price, reason, exit_dt = result
+    exit_price, reason = result
     entry_price = float(p["entry_price"])
     shares = int(p["shares"])
     gross = (exit_price - entry_price) * shares
@@ -260,8 +316,9 @@ def close_position(cfg, state):
         float(state.get("max_dd", 0.0)),
         (state["peak"] - state["capital"]) / state["peak"] * 100 if state["peak"] else 0.0,
     )
-    exit_date_str = str(pd.Timestamp(exit_dt).date())
-    hold_days_actual = len(pd.bdate_range(pd.Timestamp(p["entry_date"]), pd.Timestamp(exit_dt)))
+    exit_date_str = today
+    state["last_exit_date"] = today
+    hold_days_actual = len(pd.bdate_range(pd.Timestamp(p["entry_date"]), pd.Timestamp(today)))
     append_history(cfg, {
         "entry_date": p["entry_date"],
         "exit_date": exit_date_str,
@@ -348,7 +405,7 @@ def find_best_candidate(nikkei):
     return best, scanned, None
 
 
-def try_entry(cfg, state, today, sig, best, scanned, fail_reason):
+def try_entry(cfg, state, today, sig, best, scanned, fail_reason, current_price):
     if best is None:
         if fail_reason == "model_load_failed":
             send(f"❌ {cfg['label']}｜シグナル成立もAIモデル読込失敗のためエントリー見送り")
@@ -356,7 +413,13 @@ def try_entry(cfg, state, today, sig, best, scanned, fail_reason):
             send(f"⚠️ {cfg['label']}｜シグナル成立({sig['pct_rank']:.1f}%タイル)もスコアリング可能な銘柄なし(対象{scanned}銘柄)")
         return None
 
-    price, a = best["price"], best["atr"]
+    if current_price is None or current_price <= 0:
+        send(f"⚠️ {cfg['label']}｜シグナル成立も現在価格取得失敗のためエントリー見送り({best['ticker']})")
+        return None
+
+    # ★変更: エントリー価格は「その日の終値」ではなく実行時点(場中)の現在価格を
+    # 使う。TP/SLのATR倍率計算ロジック自体は変えない。
+    price, a = current_price, best["atr"]
     tp = price + a * cfg["tp_mult"]
     sl = max(0.01, price - a * cfg["sl_mult"])
     capital = float(state["capital"])
@@ -398,16 +461,32 @@ def try_entry(cfg, state, today, sig, best, scanned, fail_reason):
 
 
 def _run():
-    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    now = datetime.now(TZ)
+    today = now.strftime("%Y-%m-%d")
+
+    if not is_trading_window(now):
+        print(
+            f"⏰ 場中(平日 {MARKET_OPEN.strftime('%H:%M')}〜{MARKET_CLOSE.strftime('%H:%M')} JST)"
+            f"以外のため判定スキップ: {now.strftime('%Y-%m-%d %H:%M:%S')} JST"
+        )
+        return
 
     nikkei = make_nikkei()
     if nikkei is None:
         send(f"❌ {BASE_LABEL}｜日経225データ取得失敗(ネットワーク不通の可能性)")
         return
 
-    sig = nikkei_macd_signal(nikkei)
+    # ★重要: 場中はyfinanceの日次データの最終行が「本日の未確定バー」の場合が
+    # あるため、その行が実行日と同一日付なら除外してからシグナル判定に使う
+    # (ルックアヘッド防止。前日以前の確定済み日次バーのみでMACDを判定する)。
+    nikkei_for_signal = nikkei
+    last_nikkei_date = pd.Timestamp(nikkei.index[-1]).normalize()
+    if last_nikkei_date == pd.Timestamp(today).normalize():
+        nikkei_for_signal = nikkei.iloc[:-1]
+
+    sig = nikkei_macd_signal(nikkei_for_signal)
     if sig is None:
-        send(f"⚠️ {BASE_LABEL}｜日経データ不足({len(nikkei)}件<{LOOKBACK_WINDOW})、シグナル判定不可")
+        send(f"⚠️ {BASE_LABEL}｜日経データ不足({len(nikkei_for_signal)}件<{LOOKBACK_WINDOW})、シグナル判定不可")
         return
 
     thr_log = f"{sig['today_thr']:.4f}" if sig["today_thr"] is not None else "N/A"
@@ -416,24 +495,56 @@ def _run():
 
     states = {cfg["name"]: load_state(cfg) for cfg in CONFIGS}
 
+    # 同一銘柄への重複ネットワーク呼び出しを避けるための現在価格キャッシュ。
+    price_cache = {}
+
+    def price_for(ticker, fallback=None):
+        if ticker not in price_cache:
+            price_cache[ticker] = get_current_price(ticker, fallback_close=fallback)
+        return price_cache[ticker]
+
     closed_msgs = {}
     for cfg in CONFIGS:
         state = states[cfg["name"]]
-        if state.get("position"):
-            closed_msgs[cfg["name"]] = close_position(cfg, state)
+        pos = state.get("position")
+        if pos:
+            cp = price_for(pos["ticker"], fallback=pos.get("entry_price"))
+            if cp is None:
+                print(f"⚠️ {cfg['label']}: 現在価格取得失敗のため決済判定をスキップ({pos['ticker']})")
+            else:
+                closed_msgs[cfg["name"]] = close_position(cfg, state, cp, today)
 
-    need_entry = [cfg for cfg in CONFIGS if not states[cfg["name"]].get("position") and sig["signal"]]
+    # 同一日内の重複制御: 既にポジションあり、またはその日に既に決済済み
+    # (last_exit_date==today)なら、その日はもう新規エントリーしない。
+    need_entry = [
+        cfg for cfg in CONFIGS
+        if not states[cfg["name"]].get("position")
+        and sig["signal"]
+        and states[cfg["name"]].get("last_exit_date") != today
+    ]
 
     best = scanned = fail_reason = None
+    entry_price = None
     if need_entry:
         best, scanned, fail_reason = find_best_candidate(nikkei)
+        if best is not None:
+            entry_price = price_for(best["ticker"], fallback=best["price"])
 
     entry_msgs = {}
     for cfg in need_entry:
-        entry_msgs[cfg["name"]] = try_entry(cfg, states[cfg["name"]], today, sig, best, scanned, fail_reason)
+        entry_msgs[cfg["name"]] = try_entry(
+            cfg, states[cfg["name"]], today, sig, best, scanned, fail_reason, entry_price
+        )
 
     for cfg in CONFIGS:
         save_state(cfg, states[cfg["name"]])
+
+    any_change = any(closed_msgs.get(cfg["name"]) for cfg in CONFIGS) or any(
+        entry_msgs.get(cfg["name"]) for cfg in CONFIGS
+    )
+    if not any_change:
+        print("ℹ️ シグナル/ポジションに変化なし(エントリー・決済なし)。Discord通知はスキップします。")
+        return
 
     for cfg in CONFIGS:
         name = cfg["name"]
@@ -444,8 +555,8 @@ def _run():
 
     thr_str = f"{sig['today_thr']:.3f}" if sig["today_thr"] is not None else "N/A"
     lines = [
-        f"{BASE_LABEL}｜日次判定(3パターン並列)\n"
-        f"📅 {today}(日経データ日付: {sig['nikkei_date']})\n"
+        f"{BASE_LABEL}｜場中判定(3パターン並列)\n"
+        f"📅 {today} {now.strftime('%H:%M')}(日経データ日付: {sig['nikkei_date']})\n"
         f"日経MACD: {sig['today_macd']:.3f}｜直近1年{sig['pct_rank']:.1f}%タイル｜"
         f"下位{int(PERCENTILE*100)}%しきい値: {thr_str}\n"
         f"シグナル: {'成立(下位' + str(int(PERCENTILE*100)) + '%)' if sig['signal'] else '不成立'}"

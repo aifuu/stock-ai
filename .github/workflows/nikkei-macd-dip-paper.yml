@@ -2,8 +2,14 @@ name: Nikkei MACD Dip Paper Trade (Experimental, Separate Track)
 
 on:
   schedule:
-    # 15:35 JST(市場終了後)にJST平日1回判定。UTC 6:35 = JST 15:35。
-    - cron: '35 6 * * 1-5'
+    # 場中(JST 9:00〜15:20、昼休み11:30〜12:30は除く)に1日5回判定。
+    # 終値ベースのエントリーは実際には約定できない価格だったため、場中の
+    # 現在価格で売買判定するよう変更(UTC・JSTは同日内のため日またぎなし)。
+    - cron: '35 0 * * 1-5'  # JST 09:35
+    - cron: '15 2 * * 1-5'  # JST 11:15
+    - cron: '40 3 * * 1-5'  # JST 12:40
+    - cron: '0 5 * * 1-5'   # JST 14:00
+    - cron: '15 6 * * 1-5'  # JST 15:15
   workflow_dispatch: {}
 
 permissions:
