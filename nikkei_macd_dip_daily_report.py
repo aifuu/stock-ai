@@ -17,16 +17,28 @@ nikkei_macd_dip_paper.py 本体は一切呼び出さない・編集しない。
 
 送信内容:
   - 朝(実行時刻のJST時が12時より前): 3パターンそれぞれの現在の保有状況
-    (銘柄・株数・エントリー価格・エントリー日・TP/SL価格、ノーポジションなら
-    その旨)。
+    (銘柄・株数・エントリー価格・エントリー日・TP/SL価格・保有上限日、
+    ノーポジションならその旨)。
   - 場中終了後(実行時刻のJST時が12時以降): 上記の保有状況に加え、本日の
     約定履歴(各トラックの history csv から exit_date が本日の行、および
     state.json 上で entry_date が本日の保有中ポジションを抽出して一覧表示)。
+
+保有上限日について:
+  nikkei_macd_dip_paper.py の check_exit_intraday() は、TP/SLどちらも
+  未到達の場合、エントリー日からの経過営業日数(pd.bdate_range、土日のみ
+  除外・祝日は考慮しない)がHOLD_DAYS(3)に達した日の場中判定で強制決済
+  (HOLD_LIMIT)する。本スクリプトはこのCI(pandas未インストール・requests
+  のみ)でも動くよう、pd.bdate_rangeと完全に同一の結果になる純Python版の
+  営業日カウント(add_business_days、土日のみ除外・祝日は考慮しない)を
+  再実装し(pandas/pd.bdate_rangeとの一致は実装時に検証済み。
+  nikkei_macd_dip_paper.py 本体はyfinance等の重い依存を持つため
+  importしない方針を踏襲し、あえてimportしない)、保有中ポジションの
+  entry_dateから強制決済予定日(保有上限日)を算出して表示する。
 """
 
 import csv
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -37,6 +49,12 @@ WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 BASE_DIR = Path(__file__).resolve().parent
 
 BASE_LABEL = "🔬 日経MACD逆張(別トラック)"
+
+# nikkei_macd_dip_paper.py の HOLD_DAYS(最大保有営業日数)と同一の値。
+# 変更する場合は両方のファイルを合わせて直すこと。
+HOLD_DAYS = 3
+
+WEEKDAY_LABELS_JA = ["月", "火", "水", "木", "金", "土", "日"]
 
 # nikkei_macd_dip_paper.py の CONFIGS と同じファイル名・表示ラベルを、
 # 依存を増やさないためここで読み取り専用の定数として再定義する
@@ -121,7 +139,47 @@ def fmt_price(x):
         return "N/A"
 
 
-def position_block(cfg, state):
+def add_business_days(start_date, n):
+    """start_date(date)から土日のみを除いてn営業日目(start_date自身が平日
+    ならそれを1営業日目として含む)にあたる日付を返す。
+    pd.bdate_range(pd.Timestamp(start_date), periods=n)[-1].date() と
+    完全に同一の結果になる(祝日は考慮しない、純Python実装)。"""
+    d = start_date
+    counted = 0
+    while True:
+        if d.weekday() < 5:
+            counted += 1
+            if counted == n:
+                return d
+        d += timedelta(days=1)
+
+
+def hold_limit_date(entry_date_str):
+    """nikkei_macd_dip_paper.py の check_exit_intraday() と完全に同一の
+    計算式(エントリー翌日からの営業日カウント、土日のみ除外・祝日は
+    考慮しない)で、保有上限日(その日の場中判定で経過営業日数が
+    HOLD_DAYSに達しHOLD_LIMIT決済となる日)を求める。"""
+    entry_date = datetime.strptime(entry_date_str, "%Y-%m-%d").date()
+    return add_business_days(entry_date + timedelta(days=1), HOLD_DAYS)
+
+
+def hold_limit_line(entry_date_str, today):
+    """保有上限日の表示行を組み立てる。today(date)が保有上限日に達している
+    場合は本日中に強制決済される旨を強調する。"""
+    try:
+        limit_date = hold_limit_date(entry_date_str)
+    except (TypeError, ValueError):
+        return "保有上限: 算出不可(entry_date不正)"
+
+    weekday_ja = WEEKDAY_LABELS_JA[limit_date.weekday()]
+    limit_str = f"{limit_date.year}年{limit_date.month}月{limit_date.day}日({weekday_ja})"
+
+    if limit_date <= today:
+        return f"⚠️ 保有上限: {limit_str} ── 本日保有上限、場中判定で強制決済されます"
+    return f"保有上限: {limit_str}まで(最大{HOLD_DAYS}営業日、この日の場中判定で強制決済)"
+
+
+def position_block(cfg, state, today):
     """1トラック分の現在の保有状況ブロックを組み立てる。"""
     header = f"[{cfg['label']}]"
     if state is None:
@@ -150,6 +208,7 @@ def position_block(cfg, state):
         f"保有中: {ticker} {company}\n"
         f"エントリー {fmt_price(entry_price)}円｜{shares}株｜投資額 {fmt_money(invested)}円｜{entry_date}\n"
         f"TP {fmt_price(tp)}｜SL {fmt_price(sl)}\n"
+        f"{hold_limit_line(entry_date, today)}\n"
         f"💰 仮想資産(別枠): {fmt_money(capital)}円"
     )
 
@@ -226,9 +285,10 @@ def build_message(now):
         "",
         "■ 現在の保有状況",
     ]
+    today = now.date()
     for cfg in CONFIGS:
         lines.append("")
-        lines.append(position_block(cfg, states[cfg["name"]]))
+        lines.append(position_block(cfg, states[cfg["name"]], today))
 
     if not is_morning:
         lines.append("")
