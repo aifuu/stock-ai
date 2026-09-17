@@ -1,0 +1,47 @@
+name: Nikkei MACD Dip Daily Report (Experimental, Read-Only)
+
+on:
+  schedule:
+    # JST 09:05(朝の保有状況) / JST 15:40(場中終了後の取引まとめ)
+    # UTC・JSTは同日内のため日またぎなし。
+    - cron: '5 0 * * 1-5'   # JST 09:05
+    - cron: '40 6 * * 1-5'  # JST 15:40
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# 他の全ワークフロー(取引ロジック本体を含む)とはconcurrencyグループを共有しない
+# 完全に独立した読み取り専用レポート。
+concurrency:
+  group: stock-ai-nikkei-macd-dip-daily-report
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Syntax check
+        run: python -m py_compile nikkei_macd_dip_daily_report.py
+
+      - name: Run Nikkei MACD dip daily report (read-only)
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python nikkei_macd_dip_daily_report.py
