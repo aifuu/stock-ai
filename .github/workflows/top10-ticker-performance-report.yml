@@ -2,8 +2,11 @@ name: TOP10 Ticker Performance Report
 
 on:
   # JST 07:45（UTC 22:45、月〜金）: daily-model-retrain.yml(JST 07:30)の直後に実行。
+  # UTC 22:45+9h=JST翌日07:45のため、UTC曜日は月〜金(1-5)ではなく日〜木(0-4)を
+  # 指定する必要がある。1-5のままだとJST火〜土に発火し、月曜は発火せず土曜に
+  # 不要発火する(daily-model-retrain.ymlと同種のバグ、同じ形で修正)。
   schedule:
-    - cron: '45 22 * * 1-5'
+    - cron: '45 22 * * 0-4'
   workflow_dispatch: {}
 
 permissions:
