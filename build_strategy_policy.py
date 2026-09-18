@@ -302,9 +302,12 @@ new_policy = {
 }
 new_policy["approval_signature"] = policy_signature(new_policy, POLICY_SIGNING_SECRET)
 
+tmp = POLICY_FILE + ".tmp"
 try:
-    with open(POLICY_FILE, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(new_policy, f, ensure_ascii=False, indent=2)
+        f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, POLICY_FILE)
 except Exception as e:
     print(f"❌ {POLICY_FILE}保存失敗:", e)
     raise SystemExit(1)
