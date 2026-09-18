@@ -8,6 +8,7 @@ from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_m
 import paper_risk_policy
 import futures_trend
 import discord_progress
+from common import is_tse_trading_day
 
 TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; POLICY_FILE_UP='strategy_policy_up.json'; POLICY_FILE_DOWN='strategy_policy_down.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
 
@@ -261,7 +262,7 @@ def mark_and_close(s,now,policy):
 
 def _run():
     now=datetime.now(TZ); today=now.strftime('%Y-%m-%d'); policy_file,trend_result=select_policy_file(); policy=load_policy(policy_file); s=load_state(); reset_daily(s,today)
-    if not(now.weekday()<5 and dtime(9,0)<=now.time()<=dtime(15,30)):
+    if not(now.weekday()<5 and is_tse_trading_day(now.date()) and dtime(9,0)<=now.time()<=dtime(15,30)):
         try: discord_progress.notify_progress(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし')
         except Exception as e: print(f'⚠️ discord_progress notify_progress失敗: {e}')
         return

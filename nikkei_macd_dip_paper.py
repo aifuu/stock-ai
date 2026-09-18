@@ -85,6 +85,7 @@ from daily_directional_top1 import (  # noqa: E402
     load_model,
     make_nikkei,
 )
+from common import is_tse_trading_day  # noqa: E402
 
 TZ = ZoneInfo("Asia/Tokyo")
 
@@ -111,10 +112,15 @@ BASE_LABEL = "🔬 日経MACD逆張(別トラック)"
 
 
 def is_trading_window(now):
-    """場中(JST 9:00〜15:20、平日)かどうか。cronは場中のみ発火するよう組んで
-    あるが、workflow_dispatchでの手動実行や実行遅延に備えた二重の安全策として
-    スクリプト側でも判定する。"""
-    return now.weekday() < 5 and MARKET_OPEN <= now.time() <= MARKET_CLOSE
+    """場中(JST 9:00〜15:20、平日かつ祝日でない東証営業日)かどうか。cronは
+    場中のみ発火するよう組んであるが、workflow_dispatchでの手動実行や実行遅延、
+    および祝日を考慮しないcron/曜日判定だけでは休場日に誤発火しうることに備えた
+    二重の安全策としてスクリプト側でも判定する。"""
+    return (
+        now.weekday() < 5
+        and is_tse_trading_day(now.date())
+        and MARKET_OPEN <= now.time() <= MARKET_CLOSE
+    )
 
 
 def get_current_price(ticker, fallback_close=None):
