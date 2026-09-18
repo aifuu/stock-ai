@@ -3,7 +3,11 @@ name: Daily Model Retrain
 on:
   schedule:
     # JST 07:30（UTC 22:30、月〜金）
-    - cron: '30 22 * * 1-5'
+    # UTC 22:30+9h=JST翌日07:30のため、UTC曜日は月〜金(1-5)ではなく日〜木(0-4)を
+    # 指定する必要がある。1-5のままだとJST火〜土に発火し、月曜(UTC日曜が対象)は
+    # 発火せず、土曜(UTC金曜が対象)に不要発火する。ai-stock-scan.ymlの
+    # '30 23 * * 0-4'と同じ既知の修正パターン(2026-08判明・修正済み)。
+    - cron: '30 22 * * 0-4'
   workflow_dispatch: {}
 
 permissions:
