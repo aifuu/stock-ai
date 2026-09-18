@@ -1,0 +1,2 @@
+﻿entry_date,exit_date,ticker,company,entry_price,exit_price,shares,invested_amount,tp,sl,score,up_probability,down_probability,nikkei_macd_at_entry,nikkei_macd_percentile_at_entry,return_pct,pnl,result,hold_days,capital_after
+2026-09-15,2026-09-18,5301.T,東海カーボン,1977.0,2130.0,500,988500.0,2284.7945273202504,1801.1174129598571,83.4503037326572,31.397379000970055,37.65537571041495,-583.5088514203089,8.73015873015873,7.625,75370.57,HOLD_LIMIT,4,1075370.57
