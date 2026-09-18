@@ -63,7 +63,7 @@ jobs:
               print('✅ policy署名は既に一致しています。修正不要')
           else:
               policy['approval_signature'] = expected
-              p.write_text(json.dumps(policy, ensure_ascii=False, indent=2) + '\\n', encoding='utf-8')
+              p.write_text(json.dumps(policy, ensure_ascii=False, indent=2), encoding='utf-8')
               print('🔧 policy署名を現在のAI_POLICY_SIGNING_SECRETで修復しました')
           PY
 
