@@ -216,20 +216,116 @@ if approved.empty:
 # (=著しく劣化した場合)は、保持期間中でも例外的に差し替えを許可する。
 # load_existing_policy()はこれまで定義のみで一度も呼ばれていなかった(死んでいた)ため、
 # ここで初めて使用する。
-MIN_HOLD_DAYS = int(os.getenv("BSP_MIN_HOLD_DAYS", "30"))
-existing_policy = load_existing_policy()
-if existing_policy.get("status") == "APPROVED" and existing_policy.get("updated_at"):
+
+
+def build_effective_strategy_name(policy):
+    """policyの実際のフィールド値から、adversarial_strategy_validator.pyが
+    approved["strategy"]列に書き込むのと同じ書式(f"UP{up}_SCORE{score}_"
+    f"NIKKEI{{ON|OFF}}_TP{tp}_SL{sl}_H{hold}")で実効の戦略名を組み立てる。
+    strategy_nameは表示用ラベルに過ぎず、手動上書き等で実際の値と食い違い
+    得るため、候補との照合はこの実効名で行う。フィールド欠損/型不正なら
+    Noneを返す(呼び出し側でstrategy_nameへフォールバックする)。
+    """
     try:
-        existing_age_days = (datetime.now() - datetime.fromisoformat(existing_policy["updated_at"])).days
+        up = int(round(float(policy["up_threshold"])))
+        score = int(round(float(policy["min_score_for_buy"])))
+        nikkei = bool(policy["nikkei_filter"])
+        tp = float(policy["atr_tp_multiplier"])
+        sl = float(policy["atr_sl_multiplier"])
+        hold = int(round(float(policy["hold_days"])))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return f"UP{up}_SCORE{score}_NIKKEI{'ON' if nikkei else 'OFF'}_TP{tp}_SL{sl}_H{hold}"
+
+
+def _load_manual_overrides_for_logging():
+    """policy_manual_overrides.jsonの読み取り専用ベストエフォート読み込み。
+    ログ表示のためだけに使い、判定ロジックには影響しない。失敗時は[]。"""
+    path = os.getenv("BSP_MANUAL_OVERRIDES_FILE", "policy_manual_overrides.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        entries = data.get("overrides") if isinstance(data, dict) else None
+        return entries if isinstance(entries, list) else []
+    except Exception:
+        return []
+
+
+def evaluate_min_hold_retention(
+    approved_strategy_names, existing_policy, now, min_hold_days,
+    policy_file_name=None, manual_overrides=None,
+):
+    """最低保持期間ルールの純粋な判定。approvedのstrategy列(pandas.Series
+    またはlist)、existing_policy(dict)、現在時刻、最低保持日数を受け取り、
+    {"keep": bool, "reason": str|None, "log_lines": list[str]}を返す。
+    例外を投げない。keep_existing_policy()の呼び出しや保持期間の計算式など
+    元のロジックは変更しない。
+    """
+    log_lines = []
+    if existing_policy.get("status") != "APPROVED" or not existing_policy.get("updated_at"):
+        return {"keep": False, "reason": None, "log_lines": log_lines}
+
+    try:
+        existing_age_days = (now - datetime.fromisoformat(existing_policy["updated_at"])).days
     except Exception:
         existing_age_days = None
-    if existing_age_days is not None and existing_age_days < MIN_HOLD_DAYS:
-        still_qualifies = (approved["strategy"] == existing_policy.get("strategy_name")).any()
-        if still_qualifies:
-            keep_existing_policy(
-                f"最低保持期間中(経過{existing_age_days}日/{MIN_HOLD_DAYS}日)かつ現行戦略"
-                f"「{existing_policy.get('strategy_name')}」は今回も全ゲートを満たすため維持"
+
+    if existing_age_days is None or existing_age_days >= min_hold_days:
+        return {"keep": False, "reason": None, "log_lines": log_lines}
+
+    recorded_name = existing_policy.get("strategy_name")
+    effective_name = build_effective_strategy_name(existing_policy)
+
+    if effective_name is not None:
+        match_name = effective_name
+        if recorded_name is not None and effective_name != recorded_name:
+            note = "policy_manual_overrides.jsonに対応する記録はありません"
+            for entry in (manual_overrides or []):
+                if entry.get("policy_file") == policy_file_name:
+                    note = (
+                        "policy_manual_overrides.jsonに記録あり"
+                        f"(field={entry.get('field')}, "
+                        f"validated_value={entry.get('validated_value')}, "
+                        f"live_value={entry.get('live_value')})"
+                    )
+                    break
+            log_lines.append(
+                f"ℹ 現行policyの実効戦略名「{effective_name}」が記録上のstrategy_name"
+                f"「{recorded_name}」と食い違っています。保持判定には実効戦略名を"
+                f"使用します。{note}"
             )
+    else:
+        match_name = recorded_name
+        log_lines.append(
+            "⚠ 現行policyの実効戦略名を組み立てられなかったため、記録上のstrategy_name"
+            f"「{recorded_name}」で照合します。"
+        )
+
+    try:
+        still_qualifies = bool((approved_strategy_names == match_name).any())
+    except AttributeError:
+        still_qualifies = match_name in set(approved_strategy_names)
+
+    if not still_qualifies:
+        return {"keep": False, "reason": None, "log_lines": log_lines}
+
+    reason = (
+        f"最低保持期間中(経過{existing_age_days}日/{min_hold_days}日)かつ現行戦略"
+        f"「{match_name}」は今回も全ゲートを満たすため維持"
+    )
+    return {"keep": True, "reason": reason, "log_lines": log_lines}
+
+
+MIN_HOLD_DAYS = int(os.getenv("BSP_MIN_HOLD_DAYS", "30"))
+existing_policy = load_existing_policy()
+retention_decision = evaluate_min_hold_retention(
+    approved["strategy"], existing_policy, datetime.now(), MIN_HOLD_DAYS,
+    policy_file_name=POLICY_FILE, manual_overrides=_load_manual_overrides_for_logging(),
+)
+for _log_line in retention_decision["log_lines"]:
+    print(_log_line)
+if retention_decision["keep"]:
+    keep_existing_policy(retention_decision["reason"])
 
 # =========================================================
 # 最終選定基準を adversarial_strategy_validator.py と完全一致させる。
