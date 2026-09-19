@@ -2,7 +2,18 @@ name: Refresh Walk-Forward Candidates
 
 on:
   workflow_dispatch:
+  # ★修正(2026-09): branchesフィルタが無く、checkoutステップはref: mainに
+  # 固定されている(このpushトリガー自体もこのファイルを変更した任意のブランチの
+  # pushで発火する)。そのため任意のブランチでこのymlを編集してpushするだけで、
+  # 本番main相手にrm -f→再生成→commit→push(main直push)まで実際に走ってしまう
+  # (実測: verify/train-data-csv-gz上のcommit 1fd7f0aのpushでrun 35424820890が
+  # このパスで発火し、mainをcheckoutしてローカルcommitまで作成、git rebase時に
+  # 未追跡のtrain_data.csv(git rm --cachedで追跡除外した直後の作業ツリー残留物)が
+  # 衝突して5回とも失敗しただけで、たまたまmainへのpushには至らなかった)。
+  # mainへの実際のマージ後にワークフロー編集の疎通確認をする、という本来の意図に
+  # 合わせ、mainへのpush時のみ発火するよう限定する。
   push:
+    branches: [main]
     paths:
       - '.github/workflows/refresh-walk-forward-candidates.yml'
   schedule:
