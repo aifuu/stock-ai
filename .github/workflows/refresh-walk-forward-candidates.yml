@@ -178,22 +178,63 @@ jobs:
       # プレーンCSVをそのまま読むため、フォーマット変更は一切不要)。
       - name: Compress candidates CSV for git storage
         run: |
+          WF_SKIP=0
           gzip -k -9 -f walk_forward_all_candidates.csv
           ls -la walk_forward_all_candidates.csv walk_forward_all_candidates.csv.gz
           GZ_BYTES=$(stat -c%s walk_forward_all_candidates.csv.gz)
           GZ_MB=$((GZ_BYTES / 1000000))
           echo "walk_forward_all_candidates.csv.gz size: ${GZ_MB} MB"
-          if [ "$GZ_BYTES" -ge 90000000 ]; then
+          if [ "$GZ_BYTES" -ge 97000000 ]; then
+            echo "❌ walk_forward_all_candidates.csv.gzが97MBを超えました。GitHubのpush上限" \
+                 "(100MB)に抵触する恐れがあるため、今回のgit addはスキップし、直前に" \
+                 "コミット済みの内容を維持します(要調査)。"
+            WF_SKIP=1
+          elif [ "$GZ_BYTES" -ge 90000000 ]; then
             echo "⚠️ 圧縮後も90MBに接近/超過しています。GitHubのpush上限(100MB)に" \
                  "将来再度抵触する可能性があるため、履歴保持方針の見直しを検討してください。"
           fi
+          echo "WF_SKIP=${WF_SKIP}" >> "$GITHUB_ENV"
+
+          # ★追加(2026-09): このジョブはdaily_model_retrain.py(69行目)を経由して
+          # train_data.csvも副次的に再生成する。walk_forward_all_candidates.csv.gzと
+          # 同じ理由(100MB上限)・同じ設計(gzip化+上限ガード)をtrain_data.csvにも
+          # 適用する(daily-model-retrain.yml側の同名ステップと同じロジック)。
+          TRAIN_DATA_SKIP=0
+          if [ -s train_data.csv ]; then
+            gzip -k -9 -f train_data.csv
+            ls -la train_data.csv train_data.csv.gz
+            TD_GZ_BYTES=$(stat -c%s train_data.csv.gz)
+            TD_GZ_MB=$((TD_GZ_BYTES / 1000000))
+            echo "train_data.csv.gz size: ${TD_GZ_MB} MB"
+            if [ "$TD_GZ_BYTES" -ge 97000000 ]; then
+              echo "❌ train_data.csv.gzが97MBを超えました。今回のtrain_data.csv.gz更新は" \
+                   "スキップし、直前にコミット済みの内容を維持します(要調査)。"
+              TRAIN_DATA_SKIP=1
+            elif [ "$TD_GZ_BYTES" -ge 90000000 ]; then
+              echo "⚠️ train_data.csv.gzが90MBに接近しています。保持方針の見直しを検討してください。"
+            fi
+          else
+            echo 'ℹ️ train_data.csvが無い/空のため圧縮をスキップします'
+          fi
+          echo "TRAIN_DATA_SKIP=${TRAIN_DATA_SKIP}" >> "$GITHUB_ENV"
 
       - name: Commit refreshed candidates
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm --cached --ignore-unmatch walk_forward_all_candidates.csv >/dev/null 2>&1 || true
-          git add walk_forward_all_candidates.csv.gz model.pkl train_data.csv 2>/dev/null || true
+          git rm --cached --ignore-unmatch train_data.csv >/dev/null 2>&1 || true
+          if [ "${WF_SKIP:-0}" = "1" ]; then
+            echo '⏭ walk_forward_all_candidates.csv.gzのサイズガードによりgit addをスキップします'
+          else
+            git add walk_forward_all_candidates.csv.gz 2>/dev/null || true
+          fi
+          if [ "${TRAIN_DATA_SKIP:-0}" = "1" ]; then
+            echo '⏭ train_data.csv.gzのサイズガードによりgit addをスキップします'
+          else
+            git add train_data.csv.gz 2>/dev/null || true
+          fi
+          git add model.pkl 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
             echo '変更なし'
