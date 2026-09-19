@@ -15,7 +15,7 @@ permissions:
 
 # Research/retraining must not block the independent paper-trading workflow.
 concurrency:
-  group: stock-ai-research-VERIFY-DRYRUN
+  group: stock-ai-research
   cancel-in-progress: false
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
       - name: Checkout latest main
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: main
           fetch-depth: 0
 
       - name: Setup Python
@@ -174,11 +174,17 @@ jobs:
           fi
           git diff --cached --quiet && exit 0
           git commit -m 'chore: daily model retrain and feedback [skip ci]'
-          echo '🧪 VERIFY-DRYRUN: mainへのpushは行いません。ローカルcommitの内容のみ確認します。'
-          git show --stat HEAD
-          echo '--- diff origin/main vs HEAD (この検証runのcommitのみが差分であることを確認) ---'
-          git fetch origin main
-          git diff --stat origin/main HEAD
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
+              echo '✅ daily model retrain/feedback push成功'
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((i * 3))
+          done
+          echo '❌ daily model retrain/feedback push失敗'
+          exit 1
 
       - name: Upload retrain artifacts
         uses: actions/upload-artifact@v4
