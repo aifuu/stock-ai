@@ -340,7 +340,26 @@ TRADE_DIAG_COLUMNS = ["gc_gap", "gc_approach", "gc_slope", "adx", "breakout20", 
 trade_diagnostics = []
 
 
-def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, phase_name=None, collect_diagnostics=False, legacy_overlap=None, max_concurrent=None):
+def _apply_phase_boundary_purge(rows, phase_end, legacy_overlap):
+    """フェーズ終端(phase_end)を越えて決済される取引をpurgeする。
+
+    entry_dateがフェーズ内でも、保有期間(hold_days)の途中でフェーズの区切りを
+    越えてしまい、決済日(exit_date)がphase_endより後になる取引が存在し得る。
+    従来はstats()のperiod_start/period_endが月次reindexにしか使われておらず、
+    signals/pf/dd/複利等はこうした境界超過の取引を無条件に含んでいた(=OOS会計の
+    境界の緩さ)。ここでは切り詰め(擬似的な途中決済を捏造すること)ではなく、
+    既存のpurge/embargo設計(該当区間の観測を丸ごと除外する考え方)に合わせて
+    除外(purge)する。legacy_overlap=True(WF_LEGACY_OVERLAP=1)の挙動は
+    変更しない(settle_dateが常にentry_dateであり、この会計自体が新旧比較・
+    後方互換のために意図的に据え置かれているため)。phase_end未指定(None)の
+    場合も何もしない(後方互換)。
+    """
+    if legacy_overlap or phase_end is None:
+        return rows
+    return [r for r in rows if r["exit_date"] <= phase_end]
+
+
+def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, phase_name=None, collect_diagnostics=False, legacy_overlap=None, max_concurrent=None, phase_end=None):
     """VALIDATION/OOSの取引シミュレーション。
 
     既定(legacy_overlap=False)は本番の単一集中ポジション運用(モジュール冒頭の
@@ -353,6 +372,8 @@ def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, 
     legacy_overlap=True(または環境変数WF_LEGACY_OVERLAP=1)では、保有中でも
     日ごとに独立した取引として全件カウントする旧来の(重複を許す)会計に戻り、
     "date"列はエントリー日のままになる。新旧比較・後方互換のために残す。
+    phase_endを指定すると、決済日(exit_date)がそれより後になる取引を
+    _apply_phase_boundary_purge()でpurgeする(legacy_overlap時は適用しない)。
     """
     legacy_overlap = LEGACY_OVERLAP if legacy_overlap is None else legacy_overlap
     max_concurrent = MAX_CONCURRENT_POSITIONS if max_concurrent is None else max(1, int(max_concurrent))
@@ -386,6 +407,7 @@ def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, 
             for c in TRADE_DIAG_COLUMNS:
                 diag[c] = getattr(r, c, np.nan)
             trade_diagnostics.append(diag)
+    rows = _apply_phase_boundary_purge(rows, phase_end, legacy_overlap)
     return pd.DataFrame(rows)
 
 
@@ -511,7 +533,7 @@ all_dev_rows = []
 for i, (up, score, nikkei, tp, sl, hold) in enumerate(param_space, 1):
     if i % 100 == 0:
         print(f"DEV探索 {i}/{len(param_space)}")
-    st = stats(run_strategy(dev_df, up, score, nikkei, tp, sl, hold), period_start=dev_period_start, period_end=dev_period_end)
+    st = stats(run_strategy(dev_df, up, score, nikkei, tp, sl, hold, phase_end=dev_period_end), period_start=dev_period_start, period_end=dev_period_end)
     st_h1 = stats(run_strategy(dev_half1_df, up, score, nikkei, tp, sl, hold), period_start=dev_half1_period_start, period_end=dev_half1_period_end)
     st_h2 = stats(run_strategy(dev_half2_df, up, score, nikkei, tp, sl, hold), period_start=dev_half2_period_start, period_end=dev_half2_period_end)
     all_dev_rows.append({
@@ -549,7 +571,7 @@ dev_candidates.to_csv(_out("adversarial_dev_selected_candidates.csv"), index=Fal
 # Validation
 validation_results = []
 for _, row in dev_candidates.iterrows():
-    rd = run_strategy(validation_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), strategy_name=row.strategy, phase_name="VALIDATION", collect_diagnostics=True)
+    rd = run_strategy(validation_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), strategy_name=row.strategy, phase_name="VALIDATION", collect_diagnostics=True, phase_end=validation_period_end)
     st = stats(rd, period_start=validation_period_start, period_end=validation_period_end)
     lower_avg = block_bootstrap_lower(rd["return"].values, alpha=MULTIPLE_TEST_ALPHA) if not rd.empty else np.nan
     validation_results.append({**row.to_dict(), **{f"validation_{k}": v for k, v in st.items()}, "validation_avg_lower": lower_avg})
@@ -564,7 +586,7 @@ validation_summary.to_csv(_out("adversarial_validation_results.csv"), index=Fals
 passed_validation = validation_summary[validation_summary.validation_pass].copy() if not validation_summary.empty else pd.DataFrame()
 oos_results = []
 for _, row in passed_validation.iterrows():
-    rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), strategy_name=row.strategy, phase_name="OOS", collect_diagnostics=True)
+    rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), strategy_name=row.strategy, phase_name="OOS", collect_diagnostics=True, phase_end=oos_period_end)
     oos_results.append({**row.to_dict(), **{f"oos_{k}": v for k, v in stats(rd, period_start=oos_period_start, period_end=oos_period_end).items()}})
 oos_summary = pd.DataFrame(oos_results)
 if not oos_summary.empty:
@@ -594,7 +616,7 @@ if not final_pass.empty:
     mc_limit = int(os.getenv("WF_MC_CANDIDATES", "20"))
     mc_records = []
     for _, row in final_pass.head(mc_limit).iterrows():
-        rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold))
+        rd = run_strategy(oos_df, int(row.up), int(row.score), bool(row.nikkei), float(row.tp), float(row.sl), int(row.hold), phase_end=oos_period_end)
         mc = monte_carlo_risk_gate(rd)
         if mc is not None:
             mc_records.append({"strategy": row.strategy, **mc})
