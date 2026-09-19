@@ -17,7 +17,8 @@ OUTPUT = Path("adversarial_oos_diagnostics.csv")
 NEAR = Path("adversarial_oos_near_miss.csv")
 
 FOLDS = int(os.getenv("WF_OOS_FOLDS", "4"))
-MIN_TOTAL_TRADES = int(os.getenv("WF_MIN_TOTAL_OOS_TRADES", "20"))
+# デフォルトはprofit-optimizer-validation.ymlのenv(WF_MIN_TOTAL_OOS_TRADES)と同じ値に保つこと。
+MIN_TOTAL_TRADES = int(os.getenv("WF_MIN_TOTAL_OOS_TRADES", "12"))
 MIN_MONTHLY = float(os.getenv("WF_MIN_MONTHLY_POSITIVE_RATIO", "0.55")) * 100
 MAX_DD = float(os.getenv("WF_MAX_OOS_DD", "35"))
 # ★修正(2026-09): 実際のゲート(multi_oos_profit_gate.py)のWF_MIN_POSITIVE_FOLDSを

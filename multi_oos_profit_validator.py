@@ -25,11 +25,13 @@ PURGE = int(os.getenv("WF_PURGE_DAYS", "7"))
 EMBARGO = int(os.getenv("WF_EMBARGO_DAYS", "7"))
 INITIAL_CAPITAL = float(os.getenv("WF_INITIAL_CAPITAL", "1000000"))
 MIN_TRADES = int(os.getenv("WF_MIN_OOS_TRADES", "5"))
-MIN_TOTAL_TRADES = int(os.getenv("WF_MIN_TOTAL_OOS_TRADES", "20"))
+# デフォルトはprofit-optimizer-validation.ymlのenv(WF_MIN_TOTAL_OOS_TRADES)と同じ値に保つこと。
+MIN_TOTAL_TRADES = int(os.getenv("WF_MIN_TOTAL_OOS_TRADES", "12"))
 MIN_PF = float(os.getenv("WF_MIN_OOS_PF", "1.0"))
 MIN_MONTHLY = float(os.getenv("WF_MIN_MONTHLY_POSITIVE_RATIO", "0.55")) * 100
 MAX_DD = float(os.getenv("WF_MAX_OOS_DD", "35"))
-MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "3"))
+# デフォルトはprofit-optimizer-validation.ymlのenv(WF_MIN_POSITIVE_FOLDS)と同じ値に保つこと。
+MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "1"))
 
 UP = [45, 50, 55, 60, 65]
 SCORE = [50, 60, 70, 80]

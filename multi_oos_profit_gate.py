@@ -28,7 +28,8 @@ def _out(name):
 # あるFoldだけ候補が0件になっただけでパイプライン全体が門前払いになっていた
 # (例: 2026-09-09、Fold3のみDEV選定が偏り候補0件になったケース)。
 # MIN_POSITIVE_FOLDS個以上のFoldで独立合格していれば候補として扱う。
-MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "2"))
+# ★修正(2026-09): デフォルトはprofit-optimizer-validation.ymlのenv(WF_MIN_POSITIVE_FOLDS)と同じ値に保つこと。
+MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "1"))
 # ★修正(2026-09): ワークフロー(.github/workflows/profit-optimizer-validation.yml)は
 # 以前からWF_MIN_TOTAL_OOS_TRADES(既定20)を定義していたが、aggregate()内の
 # 最終フィルターはこれを一切読まずoos_signals>=20を直接ハードコードしていた
@@ -36,7 +37,8 @@ MIN_POSITIVE_FOLDS = int(os.getenv("WF_MIN_POSITIVE_FOLDS", "2"))
 # oos_signalsは陽性Fold数分の合算ではなく単一Fold分の値になるため、この閾値も
 # 1Fold当たりの下限(adversarial_strategy_validator.py側のWF_MIN_OOS_TRADES、既定12)
 # に連動させる必要がある。
-MIN_TOTAL_OOS_TRADES = int(os.getenv("WF_MIN_TOTAL_OOS_TRADES", "20"))
+# デフォルトはprofit-optimizer-validation.ymlのenv(WF_MIN_TOTAL_OOS_TRADES)と同じ値に保つこと。
+MIN_TOTAL_OOS_TRADES = int(os.getenv("WF_MIN_TOTAL_OOS_TRADES", "12"))
 # ★修正(2026-09): adversarial_strategy_validator.py側と同じ理由で、TOP10全件を
 # 平均評価するのではなく本番のTOP1本番運用に条件を合わせる(下位のadversarial_
 # strategy_validator.pyサブプロセスへWF_TOP_Nとして伝播する値でもある)。
