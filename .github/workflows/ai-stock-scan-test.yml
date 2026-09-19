@@ -1,29 +1,41 @@
-name: AI Stock Scan - Profit Loop TOP10 Paper Trade
+name: AI Stock Scan TEST - loop guard validation (fix/scan-loop-guard, DO NOT MERGE)
+
+# このワークフローは fix/scan-loop-guard ブランチの検証専用。
+# - schedule無し(workflow_dispatchのみ)
+# - concurrency groupを本番(stock-ai-paper-trading)と分離
+# - Discord通知を無効化(DISCORD_WEBHOOKを渡さない→discord_progressが自動でno-op)
+# - state commit/pushを無効化(本番のpaper trading stateを一切変更しない)
+# 検証完了後はこのファイルとブランチを削除する。
 
 on:
-  schedule:
-    # 寄り付き前分析を08:30 JSTから開始するため、単一cronをUTC 23:30(日〜木)に設定。
-    # UTC 0-4(日〜木)+9h = JST 月〜金 08:30。以前の'30 23 * * 1-5'は
-    # UTCの曜日指定をそのままJSTに流用したバグで、UTC金曜23:30(JST土曜08:30)に
-    # 誤発火し、UTC日曜23:30(JST月曜08:30に必要)は含まれず発火しなかった。
-    - cron: '30 23 * * 0-4'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_date:
+        description: 'テスト用: 営業日判定に使うJST日付を上書き (YYYY-MM-DD)。空なら実際の日付を使用。'
+        required: false
+        type: string
+      hard_wall_minutes:
+        description: 'テスト用: ループを強制終了させるまでの分数上限(本番は320分固定)。'
+        required: false
+        default: '8'
+        type: string
+      force_am_fail:
+        description: 'テスト用: trueだとAMセッションループを営業日ガード通過直後にexit 1で失敗させる(if:!cancelled()でPMが起動するかの検証用)。'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
-# ペーパートレードのstateはAM/PMセッション間・pushの間で維持する必要がある。
 concurrency:
-  group: stock-ai-paper-trading
+  group: stock-ai-paper-trading-test
   cancel-in-progress: false
 
 jobs:
   session_am:
     runs-on: ubuntu-latest
-    # 開始が08:30 JSTに早まった分(旧09:20比で約50分増)、セッションループの終了判定
-    # (SESSION_END_MIN=755→12:35 JST、絶対時刻)までの実経過時間が長くなるため、
-    # ジョブのtimeout-minutesもあわせて延長(GitHub Actionsの1ジョブ上限360分以内)。
-    timeout-minutes: 280
+    timeout-minutes: 20
     env:
       SESSION: AM
     steps:
@@ -42,15 +54,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
-
-      # ★変更(2026-09): 以前はこの通知がユニバース検証・構文チェック・policy検証の
-      # 後段にあったため、これらいずれかが失敗するとジョブ起動通知自体が届かず、
-      # 「何時何分に起動したか」の監視目的を果たせなかった。checkout+依存インストール
-      # 直後の最も早いタイミングに移動し、後続チェックの成否に関わらず必ず送信する。
-      - name: Notify AM session start (Discord)
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python -c "import discord_progress; discord_progress.notify_start('AM')"
 
       - name: Apply Nikkei 225 stock universe
         run: |
@@ -106,9 +109,8 @@ jobs:
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
 
-      - name: AM session loop (09:20-12:35 JST, 5分おきtick)
+      - name: AM session loop [TEST] (休場日ガード/キャンセル応答性の検証用)
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
@@ -119,22 +121,27 @@ jobs:
           MAX_TRADES_PER_TICKER_PER_DAY: '10'
           SAME_TICKER_COOLDOWN_MINUTES: '30'
           PAPER_TRADE_MODE: '1'
+          TEST_FORCE_DATE: ${{ inputs.force_date }}
+          TEST_HARD_WALL_MIN: ${{ inputs.hard_wall_minutes }}
+          TEST_FORCE_AM_FAIL: ${{ inputs.force_am_fail }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          # 東証休場日(土日・祝日・年末年始)はループに入らず正常終了する。
-          # 判定不能(import失敗等)な場合は安全側(取引日扱い)に倒す。
+          # [TEST] TEST_FORCE_DATEが設定されていればそれを営業日判定に使う。
+          # 本番ファイル(ai-stock-scan.yml)にはこの上書きロジックは存在しない。
           TRADING_DAY=1
           if ! python - <<'PY'
+          import os
           import sys
-          from datetime import datetime
+          from datetime import datetime, date
           from zoneinfo import ZoneInfo
           try:
               from common import is_tse_trading_day
-              today = datetime.now(ZoneInfo('Asia/Tokyo')).date()
+              force = os.environ.get('TEST_FORCE_DATE', '').strip()
+              today = date.fromisoformat(force) if force else datetime.now(ZoneInfo('Asia/Tokyo')).date()
               trading = is_tse_trading_day(today)
-              print(f'ℹ️ 営業日判定: {today} (JST) trading_day={trading}')
+              print(f'ℹ️ [TEST] 営業日判定: {today} (force_date={force!r}) trading_day={trading}')
           except Exception as e:
               print(f'⚠️ 営業日判定に失敗、安全側(取引日扱い)で継続します: {e}')
               trading = True
@@ -145,8 +152,13 @@ jobs:
           fi
 
           if [ "$TRADING_DAY" -eq 0 ]; then
-            echo "🏖 本日は東証休場日のためセッションをスキップします(git commit/pushも行いません)"
+            echo "🏖 [TEST] 本日は東証休場日のためセッションをスキップします(git commit/pushも行いません)"
             exit 0
+          fi
+
+          if [ "${TEST_FORCE_AM_FAIL:-false}" = "true" ]; then
+            echo "💥 [TEST] force_am_fail=trueのため、営業日ガード通過直後にAMセッションを失敗させます"
+            exit 1
           fi
 
           case "$SESSION" in
@@ -155,13 +167,12 @@ jobs:
             *) echo "❌ SESSION未設定"; exit 1 ;;
           esac
 
+          HARD_WALL_MIN=${TEST_HARD_WALL_MIN:-320}
           START_EPOCH=$(date +%s)
-          HARD_WALL_EPOCH=$((START_EPOCH + 320*60))
+          HARD_WALL_EPOCH=$((START_EPOCH + HARD_WALL_MIN*60))
           FAIL_STREAK=0
           ITER=0
           STOP=0
-          # キャンセル(SIGINT/SIGTERM)を受けたらフラグを立ててループを抜ける。
-          # 進行中tickの失敗カウント(FAIL_STREAK)の挙動は変更しない。
           trap 'echo "🛑 中断シグナル受信、次のチェックポイントでループを終了します"; STOP=1' INT TERM
 
           while true; do
@@ -179,7 +190,7 @@ jobs:
               break
             fi
             if [ "$NOW_EPOCH" -ge "$HARD_WALL_EPOCH" ]; then
-              echo "🏁 320分の上限に到達、セッションを終了します"
+              echo "🏁 [TEST] ${HARD_WALL_MIN}分の上限に到達、セッションを終了します"
               break
             fi
 
@@ -239,30 +250,7 @@ jobs:
 
             python profit_top10_monthly_performance.py
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json; do
-              if [ -f "$f" ]; then git add "$f"; fi
-            done
-
-            if ! git diff --cached --quiet; then
-              git commit -m 'chore: persist intraday paper trading state [skip ci]'
-              PUSH_OK=0
-              for i in 1 2 3 4 5; do
-                git fetch origin main
-                if git rebase --autostash origin/main && git push origin HEAD:main; then
-                  echo '✅ paper ledger push成功'
-                  PUSH_OK=1
-                  break
-                fi
-                git rebase --abort || true
-                sleep $((i*3))
-              done
-              if [ "$PUSH_OK" -ne 1 ]; then
-                echo '❌ paper ledger push失敗'
-                exit 1
-              fi
-            else
-              echo 'ℹ️ 変更なし、pushスキップ'
-            fi
+            echo "🧪 [TEST] git add/commit/pushはスキップします(本番stateを保護するため)"
             ); then
               ITER_EXIT=0
             else
@@ -290,37 +278,16 @@ jobs:
             SLEEP_SEC=$((300 - REMAINDER))
             if [ "$SLEEP_SEC" -ge 300 ]; then SLEEP_SEC=300; fi
             echo "💤 次のtickまで${SLEEP_SEC}秒sleep"
-            # バックグラウンドsleep+waitにして、キャンセルシグナルを即座に
-            # trapで拾えるようにする(フォアグラウンドsleepだとシグナル配送が
-            # 遅延する可能性があるため)。
             sleep "$SLEEP_SEC" &
             SLEEP_PID=$!
             wait "$SLEEP_PID" || true
           done
 
-      - name: Upload paper artifacts (AM)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: profit-loop-top10-am-${{ github.run_id }}
-          if-no-files-found: warn
-          path: |
-            strategy_policy.json
-            profit_top10_paper_state.json
-            profit_top10_paper_history.csv
-            profit_top10_monthly_performance.csv
-            intraday_scheduler_state.json
-            daily_retrain_report.csv
-            trade_feedback_report.csv
-
   session_pm:
     needs: [session_am]
-    # AMがキャンセルされた場合はPMも起動しない(旧always()だとAMキャンセル後も
-    # PMが自動起動し、キャンセルが効かなくなっていた)。AMの失敗/スキップでは
-    # 従来どおりPMを起動する。
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 20
     env:
       SESSION: PM
     steps:
@@ -339,13 +306,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
-
-      # ★変更(2026-09): AM側と同じ理由で、ユニバース検証・構文チェック・policy検証
-      # より前の最も早いタイミングに移動(理由の詳細はAM側の同コメント参照)。
-      - name: Notify PM session start (Discord)
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python -c "import discord_progress; discord_progress.notify_start('PM')"
 
       - name: Apply Nikkei 225 stock universe
         run: |
@@ -398,9 +358,8 @@ jobs:
           if status == 'PENDING': print('⚠️ PENDINGでも紙取引は継続。実注文には使用しません。')
           PY
 
-      - name: PM session loop (12:25-15:35 JST, 5分おきtick、15:25強制決済を含む)
+      - name: PM session loop [TEST] (休場日ガード/キャンセル応答性の検証用)
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           AI_POLICY_SIGNING_SECRET: ${{ secrets.AI_POLICY_SIGNING_SECRET }}
           AI_INITIAL_CAPITAL: '1000000'
           INTRADAY_FEE_RATE: '0.00055'
@@ -411,22 +370,24 @@ jobs:
           MAX_TRADES_PER_TICKER_PER_DAY: '10'
           SAME_TICKER_COOLDOWN_MINUTES: '30'
           PAPER_TRADE_MODE: '1'
+          TEST_FORCE_DATE: ${{ inputs.force_date }}
+          TEST_HARD_WALL_MIN: ${{ inputs.hard_wall_minutes }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          # 東証休場日(土日・祝日・年末年始)はループに入らず正常終了する。
-          # 判定不能(import失敗等)な場合は安全側(取引日扱い)に倒す。
           TRADING_DAY=1
           if ! python - <<'PY'
+          import os
           import sys
-          from datetime import datetime
+          from datetime import datetime, date
           from zoneinfo import ZoneInfo
           try:
               from common import is_tse_trading_day
-              today = datetime.now(ZoneInfo('Asia/Tokyo')).date()
+              force = os.environ.get('TEST_FORCE_DATE', '').strip()
+              today = date.fromisoformat(force) if force else datetime.now(ZoneInfo('Asia/Tokyo')).date()
               trading = is_tse_trading_day(today)
-              print(f'ℹ️ 営業日判定: {today} (JST) trading_day={trading}')
+              print(f'ℹ️ [TEST] 営業日判定: {today} (force_date={force!r}) trading_day={trading}')
           except Exception as e:
               print(f'⚠️ 営業日判定に失敗、安全側(取引日扱い)で継続します: {e}')
               trading = True
@@ -437,7 +398,7 @@ jobs:
           fi
 
           if [ "$TRADING_DAY" -eq 0 ]; then
-            echo "🏖 本日は東証休場日のためセッションをスキップします(git commit/pushも行いません)"
+            echo "🏖 [TEST] 本日は東証休場日のためセッションをスキップします(git commit/pushも行いません)"
             exit 0
           fi
 
@@ -447,13 +408,12 @@ jobs:
             *) echo "❌ SESSION未設定"; exit 1 ;;
           esac
 
+          HARD_WALL_MIN=${TEST_HARD_WALL_MIN:-320}
           START_EPOCH=$(date +%s)
-          HARD_WALL_EPOCH=$((START_EPOCH + 320*60))
+          HARD_WALL_EPOCH=$((START_EPOCH + HARD_WALL_MIN*60))
           FAIL_STREAK=0
           ITER=0
           STOP=0
-          # キャンセル(SIGINT/SIGTERM)を受けたらフラグを立ててループを抜ける。
-          # 進行中tickの失敗カウント(FAIL_STREAK)の挙動は変更しない。
           trap 'echo "🛑 中断シグナル受信、次のチェックポイントでループを終了します"; STOP=1' INT TERM
 
           while true; do
@@ -471,7 +431,7 @@ jobs:
               break
             fi
             if [ "$NOW_EPOCH" -ge "$HARD_WALL_EPOCH" ]; then
-              echo "🏁 320分の上限に到達、セッションを終了します"
+              echo "🏁 [TEST] ${HARD_WALL_MIN}分の上限に到達、セッションを終了します"
               break
             fi
 
@@ -531,30 +491,7 @@ jobs:
 
             python profit_top10_monthly_performance.py
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json; do
-              if [ -f "$f" ]; then git add "$f"; fi
-            done
-
-            if ! git diff --cached --quiet; then
-              git commit -m 'chore: persist intraday paper trading state [skip ci]'
-              PUSH_OK=0
-              for i in 1 2 3 4 5; do
-                git fetch origin main
-                if git rebase --autostash origin/main && git push origin HEAD:main; then
-                  echo '✅ paper ledger push成功'
-                  PUSH_OK=1
-                  break
-                fi
-                git rebase --abort || true
-                sleep $((i*3))
-              done
-              if [ "$PUSH_OK" -ne 1 ]; then
-                echo '❌ paper ledger push失敗'
-                exit 1
-              fi
-            else
-              echo 'ℹ️ 変更なし、pushスキップ'
-            fi
+            echo "🧪 [TEST] git add/commit/pushはスキップします(本番stateを保護するため)"
             ); then
               ITER_EXIT=0
             else
@@ -582,25 +519,7 @@ jobs:
             SLEEP_SEC=$((300 - REMAINDER))
             if [ "$SLEEP_SEC" -ge 300 ]; then SLEEP_SEC=300; fi
             echo "💤 次のtickまで${SLEEP_SEC}秒sleep"
-            # バックグラウンドsleep+waitにして、キャンセルシグナルを即座に
-            # trapで拾えるようにする(フォアグラウンドsleepだとシグナル配送が
-            # 遅延する可能性があるため)。
             sleep "$SLEEP_SEC" &
             SLEEP_PID=$!
             wait "$SLEEP_PID" || true
           done
-
-      - name: Upload paper artifacts (PM)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: profit-loop-top10-pm-${{ github.run_id }}
-          if-no-files-found: warn
-          path: |
-            strategy_policy.json
-            profit_top10_paper_state.json
-            profit_top10_paper_history.csv
-            profit_top10_monthly_performance.csv
-            intraday_scheduler_state.json
-            daily_retrain_report.csv
-            trade_feedback_report.csv
