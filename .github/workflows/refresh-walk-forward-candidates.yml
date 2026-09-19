@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: stock-ai-refresh-candidates
+  group: stock-ai-refresh-candidates-verify-DO-NOT-MERGE
   cancel-in-progress: false
 
 env:
@@ -24,10 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Checkout latest main
+      # ★検証専用/DO-NOT-MERGE: mainの内容ではなく、このブランチ自身の変更を
+      # テストするためのcheckout。本番ではref: mainのまま。
+      - name: "[VERIFY-ONLY] Checkout this branch (not main)"
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: Setup Python
@@ -188,7 +190,9 @@ jobs:
                  "将来再度抵触する可能性があるため、履歴保持方針の見直しを検討してください。"
           fi
 
-      - name: Commit refreshed candidates
+      # ★検証専用/DO-NOT-MERGE: mainへは絶対にpushしないdry-run版。
+      # ローカルでcommitまで行い、サイズと内容だけ検証してexitする。
+      - name: "[VERIFY-ONLY] Dry-run commit (never pushes to main)"
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -199,15 +203,11 @@ jobs:
             echo '変更なし'
             exit 0
           fi
-          git commit -m 'refresh: rebuild walk-forward candidates and diagnose OOS density [skip ci]'
-          for i in 1 2 3 4 5; do
-            git fetch origin main
-            if git rebase origin/main && git push origin HEAD:main; then
-              echo '✅ refreshed candidates pushed'
-              exit 0
-            fi
-            git rebase --abort || true
-            sleep $((i * 3))
-          done
-          echo '❌ push failed'
-          exit 1
+          git commit -m 'verify-only: dry-run refresh commit [never pushed]'
+          echo '============================================================'
+          echo '🔍 DRY-RUN RESULT (this commit is local-only, never pushed)'
+          echo '============================================================'
+          git show --stat HEAD
+          echo '--- tracked file sizes in this commit ---'
+          git ls-tree -r -l HEAD -- walk_forward_all_candidates.csv.gz train_data.csv model.pkl walk_forward_all_candidates.csv 2>/dev/null || true
+          echo '✅ dry-run commit created locally; no push to origin was attempted'
