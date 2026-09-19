@@ -51,6 +51,16 @@ jobs:
       - name: Syntax check
         run: python -m py_compile fold4_oos_filter_trace.py
 
+      # ★修正(2026-09): walk_forward_all_candidates.csvはGitHubのpushサイズ上限を
+      # 避けるため、git管理はgzip圧縮版(walk_forward_all_candidates.csv.gz)のみに
+      # 切り替えた(refresh-walk-forward-candidates.yml参照)。checkout直後にここで
+      # 展開しておけば、fold4_oos_filter_trace.pyは従来通りプレーンCSVを読める。
+      - name: Materialize candidates CSV from compressed git storage
+        run: |
+          if [ ! -s walk_forward_all_candidates.csv ] && [ -f walk_forward_all_candidates.csv.gz ]; then
+            gunzip -k walk_forward_all_candidates.csv.gz
+          fi
+
       - name: Run exact Fold 4 funnel trace
         run: |
           echo '============================================================'

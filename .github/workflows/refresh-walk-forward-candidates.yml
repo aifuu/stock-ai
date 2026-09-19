@@ -168,11 +168,32 @@ jobs:
               print('⚠️ fewer than 90 unique candidate dates; no OOS-window estimate')
           PY
 
+      # ★修正(2026-09): walk_forward_all_candidates.csvは毎回全期間(WF_START_DATE
+      # 〜当日)から作り直され、履歴を切り詰めない設計のため増え続ける一方で、
+      # プレーンCSVのままgit管理するとGitHubのpush時ファイルサイズ上限(100MB)を
+      # いつか必ず超えて "pre-receive hook declined" で永久に失敗する
+      # (実測: 2026-09-18 run 35407517293で133.47MBとなり実際に拒否された)。
+      # gzip圧縮した.gzのみをgit管理対象にし、プレーンCSV自体はコミットしない
+      # ようにする(読む側の全スクリプトはこの実行内でrm -f直後に作り直された
+      # プレーンCSVをそのまま読むため、フォーマット変更は一切不要)。
+      - name: Compress candidates CSV for git storage
+        run: |
+          gzip -k -9 -f walk_forward_all_candidates.csv
+          ls -la walk_forward_all_candidates.csv walk_forward_all_candidates.csv.gz
+          GZ_BYTES=$(stat -c%s walk_forward_all_candidates.csv.gz)
+          GZ_MB=$((GZ_BYTES / 1000000))
+          echo "walk_forward_all_candidates.csv.gz size: ${GZ_MB} MB"
+          if [ "$GZ_BYTES" -ge 90000000 ]; then
+            echo "⚠️ 圧縮後も90MBに接近/超過しています。GitHubのpush上限(100MB)に" \
+                 "将来再度抵触する可能性があるため、履歴保持方針の見直しを検討してください。"
+          fi
+
       - name: Commit refreshed candidates
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add walk_forward_all_candidates.csv model.pkl train_data.csv 2>/dev/null || true
+          git rm --cached --ignore-unmatch walk_forward_all_candidates.csv >/dev/null 2>&1 || true
+          git add walk_forward_all_candidates.csv.gz model.pkl train_data.csv 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
             echo '変更なし'

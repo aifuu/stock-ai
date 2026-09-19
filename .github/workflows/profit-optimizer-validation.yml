@@ -57,6 +57,18 @@ jobs:
           python -m py_compile adversarial_oos_diagnostic.py
           python -m py_compile build_strategy_policy.py
 
+      # ★修正(2026-09): walk_forward_all_candidates.csvはGitHubのpushサイズ上限を
+      # 避けるため、git管理はgzip圧縮版(walk_forward_all_candidates.csv.gz)のみに
+      # 切り替えた(refresh-walk-forward-candidates.yml参照)。checkout直後にここで
+      # 展開しておかないと、次の"Build candidates when needed"が誤って
+      # (実際には最新候補があるのに)再生成フォールバックに入ってしまう。
+      # ゲート条件・探索範囲・検証ロジックは変更していない。
+      - name: Materialize candidates CSV from compressed git storage
+        run: |
+          if [ ! -s walk_forward_all_candidates.csv ] && [ -f walk_forward_all_candidates.csv.gz ]; then
+            gunzip -k walk_forward_all_candidates.csv.gz
+          fi
+
       - name: Build candidates when needed
         run: |
           if [ ! -s walk_forward_all_candidates.csv ]; then
@@ -279,6 +291,18 @@ jobs:
           python -m py_compile adversarial_strategy_validator.py
           python -m py_compile multi_oos_profit_gate.py
           python -m py_compile build_strategy_policy.py
+
+      # ★修正(2026-09): walk_forward_all_candidates.csvはGitHubのpushサイズ上限を
+      # 避けるため、git管理はgzip圧縮版(walk_forward_all_candidates.csv.gz)のみに
+      # 切り替えた(refresh-walk-forward-candidates.yml参照)。checkout直後にここで
+      # 展開しておかないと、次の"Build candidates when needed"が誤って
+      # (実際には最新候補があるのに)再生成フォールバックに入ってしまう。
+      # ゲート条件・探索範囲・検証ロジックは変更していない。
+      - name: Materialize candidates CSV from compressed git storage
+        run: |
+          if [ ! -s walk_forward_all_candidates.csv ] && [ -f walk_forward_all_candidates.csv.gz ]; then
+            gunzip -k walk_forward_all_candidates.csv.gz
+          fi
 
       - name: Build candidates when needed
         run: |
