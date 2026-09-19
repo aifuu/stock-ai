@@ -26,7 +26,7 @@
   "mc_20y_probability": 100.0,
   "mc_bankruptcy_probability": 0.0,
   "mc_p90_max_dd": 0.0,
-  "strategy_name": "UP20_SCORE40_NIKKEION_TP4.0_SL1.0_H1",
+  "strategy_name": "UP20_SCORE80_NIKKEION_TP4.0_SL1.0_H1",
   "source": "adversarial_strategy_validator",
   "approval_signature_version": 1,
   "approval_signature": "815ff6286bebc29b3c4bce136a2f1bfed8fe7f42c56ecd7b39a8c522b9523132"
