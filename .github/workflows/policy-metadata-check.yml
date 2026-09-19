@@ -1,0 +1,40 @@
+name: Policy metadata consistency check (read-only)
+
+# strategy_policy*.json の strategy_name (表示用の名前) と、同じファイル内の
+# 実際のフィールド値が食い違っていないかを検出するだけの読み取り専用チェック。
+# - policyファイルやapproval_signatureは一切書き換えない。
+# - 署名の計算・再計算・secretの参照は行わない。
+# - 取引実行ロジック(profit_top10_paper.py 等)には組み込まれておらず、
+#   このワークフロー自体も常に exit 0 (警告のみ)。
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - strategy_policy.json
+      - strategy_policy_up.json
+      - strategy_policy_down.json
+      - check_policy_metadata.py
+      - .github/workflows/policy-metadata-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run policy metadata consistency check
+        run: python check_policy_metadata.py
