@@ -222,6 +222,32 @@ SHORT_ENABLED = os.getenv("WF_SHORT_ENABLED", "1").strip().lower() in ("1", "tru
 # flat_cost計算と同じ近似)。
 FEE_PCT = float(os.getenv("INTRADAY_FEE_RATE", "0.00055")) * 2 * 100.0
 
+# ★修正(2026-09、ポジション重複の是正): 本番(profit_top10_paper.py/run_profit_loop.py)は
+# 1トレードにつきその時点の資産をほぼ全額使う集中投資設計(profit_top10_paper.py:191-211の
+# コメント、slot_budget=capital*dd_mult)であり、open_top1_only()(run_profit_loop.py:182-209)は
+# 既に保有中の銘柄をactiveとして除外しつつ(188行目)、_run()内でmark_and_close()による決済
+# (profit_top10_paper.py:269、決済で資金が解放されるのは決済当日)の後にしかopen_positions()を
+# 呼ばない(269行目の呼び出し順)。さらにopen_positions()のremaining(179行目)は
+# 「capital - 保有中ポジションのinvested_amount合計」であり、通常運用(dd_mult=1.0、
+# paper_risk_policy.py:70-74でドローダウン10%未満の間は1.0)では1件目のエントリーがほぼ全額を
+# 使い切るため、2件目の異なる銘柄への新規エントリーはremaining不足(profit_top10_paper.py:209の
+# invested>remaining判定)で事実上不可能になる。同時保有数の形式上の上限は
+# paper_risk_policy.py:9,43のAI_MAX_POSITIONS(既定10)だが、これは資金を分割せず全額集中投資する
+# 設計のもとでは通常到達しない上限であり、実運用は実質的に「1トレード決済まで次のTOP1に
+# 入れない」という単一集中ポジション運用になっている(ドローダウン時のサイズ縮小
+# 0.5倍/0.25倍(paper_risk_policy.py:61-74)で余剰資金が生じた場合に限り、理論上は複数同時保有も
+# あり得るが、これは本修正のスコープ外の副次的な資金管理であり、このバリデータでは
+# モデル化しない。詳細は最終報告に記載)。
+# 従来のOOS/VALIDATIONシミュレーションはこの制約を一切反映せず、日ごとに独立した
+# TOP1候補(select_for_phase、258行目付近)をすべて個別取引としてカウントし(旧run_strategy)、
+# stats()もエントリー日ベースでgroupby(date).mean()して複利計算していたため、
+# hold_days(H3/H5)で保有期間が重なる取引が全て積み上がり、本番より収益・DDが良く見えていた。
+# 以下、決済(状態管理された銘柄保有)ベースのポートフォリオ会計に是正する。
+# WF_LEGACY_OVERLAP=1で旧来の(重複を許す)会計に戻せる(新旧比較・後方互換用、既定は新会計)。
+LEGACY_OVERLAP = os.getenv("WF_LEGACY_OVERLAP", "0").strip().lower() in ("1", "true", "yes", "on")
+# 本番は実質的に同時1ポジションだが、将来の検証や感度分析のために上限を変更できるようにする。
+MAX_CONCURRENT_POSITIONS = max(1, int(os.getenv("WF_MAX_CONCURRENT_POSITIONS", "1")))
+
 
 def evaluate_trade(ticker, date, entry, atr_ratio, tp, sl, hold_days, direction="BUY", slippage=0.001):
     if ticker not in price_data:
@@ -235,25 +261,25 @@ def evaluate_trade(ticker, date, entry, atr_ratio, tp, sl, hold_days, direction=
     else:
         take = entry * (1 - atr_ratio / 100 * tp)
         stop = entry * (1 + atr_ratio / 100 * sl)
-    for day_no, (_, row) in enumerate(future.iterrows(), 1):
+    for day_no, (ts, row) in enumerate(future.iterrows(), 1):
         high, low = float(row["High"]), float(row["Low"])
         if direction == "BUY":
             if low <= stop and high >= take:
-                return "LOSS", (stop / entry - 1) * 100 - slippage * 100, day_no
+                return "LOSS", (stop / entry - 1) * 100 - slippage * 100, day_no, ts
             if high >= take:
-                return "WIN", (take / entry - 1) * 100 - slippage * 100, day_no
+                return "WIN", (take / entry - 1) * 100 - slippage * 100, day_no, ts
             if low <= stop:
-                return "LOSS", (stop / entry - 1) * 100 - slippage * 100, day_no
+                return "LOSS", (stop / entry - 1) * 100 - slippage * 100, day_no, ts
         else:
             if high >= stop and low <= take:
-                return "LOSS", (entry / stop - 1) * 100 - slippage * 100, day_no
+                return "LOSS", (entry / stop - 1) * 100 - slippage * 100, day_no, ts
             if low <= take:
-                return "WIN", (entry / take - 1) * 100 - slippage * 100, day_no
+                return "WIN", (entry / take - 1) * 100 - slippage * 100, day_no, ts
             if high >= stop:
-                return "LOSS", (entry / stop - 1) * 100 - slippage * 100, day_no
+                return "LOSS", (entry / stop - 1) * 100 - slippage * 100, day_no, ts
     close = float(future.iloc[-1]["Close"])
     ret = ((close / entry - 1) * 100 - slippage * 100) if direction == "BUY" else ((entry / close - 1) * 100 - slippage * 100)
-    return ("TIMEOUT_LOSS" if ret < 0 else "HOLD"), ret, len(future)
+    return ("TIMEOUT_LOSS" if ret < 0 else "HOLD"), ret, len(future), future.index[-1]
 
 
 def select_for_phase(phase_df, up, score, nikkei, tp, sl):
@@ -314,20 +340,58 @@ TRADE_DIAG_COLUMNS = ["gc_gap", "gc_approach", "gc_slope", "adx", "breakout20", 
 trade_diagnostics = []
 
 
-def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, phase_name=None, collect_diagnostics=False):
+def run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, phase_name=None, collect_diagnostics=False, legacy_overlap=None, max_concurrent=None):
+    """VALIDATION/OOSの取引シミュレーション。
+
+    既定(legacy_overlap=False)は本番の単一集中ポジション運用(モジュール冒頭の
+    LEGACY_OVERLAP/MAX_CONCURRENT_POSITIONSのコメント参照)を再現する時系列
+    ポートフォリオ会計: ある銘柄の保有が(price_dataの営業日カレンダー上で)決済日を
+    過ぎるまで、次の新規シグナルは見送る(本番のTOP1が決済されるまで次のTOP1に
+    入れないのと同じ)。損益は決済日(evaluate_tradeが返すexit_ts)に資金へ反映する
+    ("date"列を決済日にすることで、stats()側のgroupby(date).mean()/cumprod()による
+    複利計算をそのまま決済日ベースの逐次資金推移として使える)。
+    legacy_overlap=True(または環境変数WF_LEGACY_OVERLAP=1)では、保有中でも
+    日ごとに独立した取引として全件カウントする旧来の(重複を許す)会計に戻り、
+    "date"列はエントリー日のままになる。新旧比較・後方互換のために残す。
+    """
+    legacy_overlap = LEGACY_OVERLAP if legacy_overlap is None else legacy_overlap
+    max_concurrent = MAX_CONCURRENT_POSITIONS if max_concurrent is None else max(1, int(max_concurrent))
     rows = []
-    for _, r in select_for_phase(phase_df, up, score, nikkei, tp, sl).iterrows():
-        result = evaluate_trade(r.ticker, r.date, float(r.price), float(r.atr_ratio), tp, sl, hold, direction=r.direction)
+    picks = select_for_phase(phase_df, up, score, nikkei, tp, sl)
+    if not picks.empty:
+        picks = picks.sort_values("date")
+    # 決済(exit_ts)がまだ来ていない=保有中とみなす取引の決済日一覧。
+    # 新会計でのみ使う(旧会計は保有状態を一切追跡しない)。
+    open_exits = []
+    for _, r in picks.iterrows():
+        entry_date = r.date
+        if not legacy_overlap:
+            open_exits = [ts for ts in open_exits if ts > entry_date]
+            if len(open_exits) >= max_concurrent:
+                # 本番のopen_top1_only()は保有中の銘柄以外にも新規エントリーを試みるが、
+                # 資金が(通常運用では)ほぼ全額拘束されているため約定できない
+                # (profit_top10_paper.py:179,209のremaining/invested判定)。
+                # ここではその結果だけを「新規シグナルの見送り」として反映する。
+                continue
+        result = evaluate_trade(r.ticker, entry_date, float(r.price), float(r.atr_ratio), tp, sl, hold, direction=r.direction)
         if result is None:
             continue
-        name, ret, days = result
-        rows.append({"date": r.date, "ticker": r.ticker, "score": r.score, "up_prob": r.up_prob, "direction": r.direction, "result": name, "return": ret, "hold_days": days, "phase": r.phase, "risk_unit": max(1e-8, float(r.atr_ratio) / 100.0 * float(sl))})
+        name, ret, days, exit_ts = result
+        settle_date = entry_date if legacy_overlap else exit_ts
+        if not legacy_overlap:
+            open_exits.append(exit_ts)
+        rows.append({"date": settle_date, "entry_date": entry_date, "exit_date": exit_ts, "ticker": r.ticker, "score": r.score, "up_prob": r.up_prob, "direction": r.direction, "result": name, "return": ret, "hold_days": days, "phase": r.phase, "risk_unit": max(1e-8, float(r.atr_ratio) / 100.0 * float(sl))})
         if collect_diagnostics:
-            diag = {"strategy": strategy_name, "phase": phase_name or r.phase, "date": r.date, "ticker": r.ticker, "result": name, "return": ret, "hold_days": days}
+            diag = {"strategy": strategy_name, "phase": phase_name or r.phase, "date": entry_date, "ticker": r.ticker, "result": name, "return": ret, "hold_days": days}
             for c in TRADE_DIAG_COLUMNS:
                 diag[c] = getattr(r, c, np.nan)
             trade_diagnostics.append(diag)
     return pd.DataFrame(rows)
+
+
+def run_strategy_legacy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=None, phase_name=None, collect_diagnostics=False):
+    """比較専用: 常に旧来の(重複を許す)会計でrun_strategyを呼ぶショートカット。"""
+    return run_strategy(phase_df, up, score, nikkei, tp, sl, hold, strategy_name=strategy_name, phase_name=phase_name, collect_diagnostics=collect_diagnostics, legacy_overlap=True)
 
 
 # 月間+5%目標(元本100万円なら+5万円/月)の達成率を判定する閾値。勝率ではなく月次収益率で戦略を評価する。
@@ -587,6 +651,7 @@ print("TREND_FILTER:", TREND_FILTER)
 print("期間:", START_DATE.date(), "～", END_DATE.date())
 print("探索数:", len(param_space), "N_eff:", N_EFFECTIVE_STRATEGIES)
 print("Purge/Embargo:", PURGE_DAYS, EMBARGO_DAYS, "TOP_N:", TOP_N)
+print("LEGACY_OVERLAP:", LEGACY_OVERLAP, "MAX_CONCURRENT_POSITIONS:", MAX_CONCURRENT_POSITIONS)
 print("DEV候補:", len(dev_candidates), "Validation PASS:", validation_n, "OOS PASS:", oos_n)
 print(f"OOS 判定不能(シグナル数<{MIN_OOS_TRADES}):", oos_insufficient_n, "/", len(oos_summary))
 print("Final PASS:", len(final_pass))
