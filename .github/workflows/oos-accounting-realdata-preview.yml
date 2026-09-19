@@ -1,0 +1,146 @@
+name: OOS Accounting Real-Data Preview (read-only, no policy)
+
+# 検証専用・一時ワークフロー。DO NOT MERGE の運用ルールで main には置かない。
+# 目的: commit 9c35dc9 (adversarial_strategy_validator.py の新会計/単一集中ポジション
+# 修正) を、単体テストではなく実データ(Yahoo Finance)・本番パイプライン経路
+# (multi_oos_profit_gate.py -> adversarial_strategy_validator.py)で、
+# 新会計(既定)と旧会計(WF_LEGACY_OVERLAP=1)の両方を実行して比較する。
+#
+# 安全設計:
+# - workflow_dispatch のみ(schedule無し)。
+# - concurrency group は本番(stock-ai-profit-optimizer)と別名。
+# - permissions: contents: read のみ(pushしない)。
+# - AI_POLICY_SIGNING_SECRET / DISCORD_WEBHOOK 等のsecretを一切渡さない。
+# - build_strategy_policy.py 等、policyを書くステップを含めない。
+# - strategy_policy*.json / policy_manual_overrides.json は読みも書きもしない。
+# - 実行結果はartifactとしてのみ保存し、リポジトリへは一切書き込まない。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stock-ai-oos-accounting-preview
+  cancel-in-progress: false
+
+env:
+  WF_START_DATE: '2018-01-01'
+  WF_TOP_N: '1'
+  WF_MULTI_OOS_FOLDS: '4'
+  WF_MULTI_OOS_DAYS: '239'
+  WF_INITIAL_CAPITAL: '1000000'
+  WF_MIN_MONTHLY_POSITIVE_RATIO: '0.55'
+  WF_MAX_OOS_DD: '35'
+  WF_MIN_POSITIVE_FOLDS: '1'
+  WF_MIN_TOTAL_OOS_TRADES: '12'
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        accounting: [new, legacy]
+    env:
+      WF_LEGACY_OVERLAP: ${{ matrix.accounting == 'legacy' && '1' || '0' }}
+      PREVIEW_ACCOUNTING: ${{ matrix.accounting }}
+    steps:
+      - name: Checkout preview branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Syntax check (validator + gate only, no policy scripts)
+        run: |
+          python -m py_compile adversarial_strategy_validator.py
+          python -m py_compile multi_oos_profit_gate.py
+          python -m py_compile ci_preview/summarize_oos_accounting.py
+          python -m py_compile ci_preview/compare_oos_accounting.py
+
+      - name: Materialize candidates CSV from compressed git storage
+        run: |
+          if [ ! -s walk_forward_all_candidates.csv ] && [ -f walk_forward_all_candidates.csv.gz ]; then
+            gunzip -k walk_forward_all_candidates.csv.gz
+          fi
+          if [ ! -s walk_forward_all_candidates.csv ]; then
+            echo '::error::walk_forward_all_candidates.csv(.gz) が無い/空。このpreviewはpolicyを書かないため再生成しません。不具合として報告します。'
+            exit 1
+          fi
+
+      - name: Show accounting mode
+        run: |
+          echo "accounting=${PREVIEW_ACCOUNTING} WF_LEGACY_OVERLAP=${WF_LEGACY_OVERLAP}"
+
+      - name: Run 4 independent OOS profit gate (real data, ${{ matrix.accounting }} accounting)
+        run: python multi_oos_profit_gate.py
+
+      - name: Summarize fold funnel + H1/H3 combo comparison (read-only)
+        run: python ci_preview/summarize_oos_accounting.py
+
+      - name: Upload preview artifacts (no repo writes)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oos-preview-${{ matrix.accounting }}-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            multi_oos_results/**
+            multi_oos_folds.csv
+            multi_oos_fold_funnel.csv
+            adversarial_final_candidates.csv
+            preview_summary_${{ matrix.accounting }}.json
+            preview_summary_${{ matrix.accounting }}.md
+
+  compare:
+    needs: preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout preview branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download new-accounting summary
+        uses: actions/download-artifact@v4
+        with:
+          name: oos-preview-new-${{ github.run_id }}
+          path: new
+
+      - name: Download legacy-accounting summary
+        uses: actions/download-artifact@v4
+        with:
+          name: oos-preview-legacy-${{ github.run_id }}
+          path: legacy
+
+      - name: Build comparison report (read-only)
+        run: |
+          cp new/preview_summary_new.json .
+          cp legacy/preview_summary_legacy.json .
+          python ci_preview/compare_oos_accounting.py
+
+      - name: Upload comparison artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oos-preview-comparison-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            comparison.md
+            comparison.json
