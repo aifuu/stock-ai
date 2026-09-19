@@ -9,7 +9,6 @@ on:
   push:
     paths:
       - .github/workflows/enforce-policy-signature.yml
-      - strategy_policy.json
 
 permissions:
   contents: write
