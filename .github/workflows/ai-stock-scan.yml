@@ -123,6 +123,32 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
+          # 東証休場日(土日・祝日・年末年始)はループに入らず正常終了する。
+          # 判定不能(import失敗等)な場合は安全側(取引日扱い)に倒す。
+          TRADING_DAY=1
+          if ! python - <<'PY'
+          import sys
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          try:
+              from common import is_tse_trading_day
+              today = datetime.now(ZoneInfo('Asia/Tokyo')).date()
+              trading = is_tse_trading_day(today)
+              print(f'ℹ️ 営業日判定: {today} (JST) trading_day={trading}')
+          except Exception as e:
+              print(f'⚠️ 営業日判定に失敗、安全側(取引日扱い)で継続します: {e}')
+              trading = True
+          sys.exit(0 if trading else 1)
+          PY
+          then
+            TRADING_DAY=0
+          fi
+
+          if [ "$TRADING_DAY" -eq 0 ]; then
+            echo "🏖 本日は東証休場日のためセッションをスキップします(git commit/pushも行いません)"
+            exit 0
+          fi
+
           case "$SESSION" in
             AM) SESSION_END_MIN=755 ;;
             PM) SESSION_END_MIN=935 ;;
@@ -133,8 +159,17 @@ jobs:
           HARD_WALL_EPOCH=$((START_EPOCH + 320*60))
           FAIL_STREAK=0
           ITER=0
+          STOP=0
+          # キャンセル(SIGINT/SIGTERM)を受けたらフラグを立ててループを抜ける。
+          # 進行中tickの失敗カウント(FAIL_STREAK)の挙動は変更しない。
+          trap 'echo "🛑 中断シグナル受信、次のチェックポイントでループを終了します"; STOP=1' INT TERM
 
           while true; do
+            if [ "$STOP" -eq 1 ]; then
+              echo "🛑 中断要求によりセッションを終了します"
+              break
+            fi
+
             ITER=$((ITER+1))
             NOW_EPOCH=$(date +%s)
             CUR_MIN=$(TZ=Asia/Tokyo date +%H:%M | awk -F: '{print $1*60+$2}')
@@ -245,12 +280,22 @@ jobs:
               fi
             fi
 
+            if [ "$STOP" -eq 1 ]; then
+              echo "🛑 中断要求によりセッションを終了します"
+              break
+            fi
+
             NOW_SEC=$(date +%s)
             REMAINDER=$((NOW_SEC % 300))
             SLEEP_SEC=$((300 - REMAINDER))
             if [ "$SLEEP_SEC" -ge 300 ]; then SLEEP_SEC=300; fi
             echo "💤 次のtickまで${SLEEP_SEC}秒sleep"
-            sleep "$SLEEP_SEC"
+            # バックグラウンドsleep+waitにして、キャンセルシグナルを即座に
+            # trapで拾えるようにする(フォアグラウンドsleepだとシグナル配送が
+            # 遅延する可能性があるため)。
+            sleep "$SLEEP_SEC" &
+            SLEEP_PID=$!
+            wait "$SLEEP_PID" || true
           done
 
       - name: Upload paper artifacts (AM)
@@ -270,7 +315,10 @@ jobs:
 
   session_pm:
     needs: [session_am]
-    if: always()
+    # AMがキャンセルされた場合はPMも起動しない(旧always()だとAMキャンセル後も
+    # PMが自動起動し、キャンセルが効かなくなっていた)。AMの失敗/スキップでは
+    # 従来どおりPMを起動する。
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 210
     env:
@@ -367,6 +415,32 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
+          # 東証休場日(土日・祝日・年末年始)はループに入らず正常終了する。
+          # 判定不能(import失敗等)な場合は安全側(取引日扱い)に倒す。
+          TRADING_DAY=1
+          if ! python - <<'PY'
+          import sys
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          try:
+              from common import is_tse_trading_day
+              today = datetime.now(ZoneInfo('Asia/Tokyo')).date()
+              trading = is_tse_trading_day(today)
+              print(f'ℹ️ 営業日判定: {today} (JST) trading_day={trading}')
+          except Exception as e:
+              print(f'⚠️ 営業日判定に失敗、安全側(取引日扱い)で継続します: {e}')
+              trading = True
+          sys.exit(0 if trading else 1)
+          PY
+          then
+            TRADING_DAY=0
+          fi
+
+          if [ "$TRADING_DAY" -eq 0 ]; then
+            echo "🏖 本日は東証休場日のためセッションをスキップします(git commit/pushも行いません)"
+            exit 0
+          fi
+
           case "$SESSION" in
             AM) SESSION_END_MIN=755 ;;
             PM) SESSION_END_MIN=935 ;;
@@ -377,8 +451,17 @@ jobs:
           HARD_WALL_EPOCH=$((START_EPOCH + 320*60))
           FAIL_STREAK=0
           ITER=0
+          STOP=0
+          # キャンセル(SIGINT/SIGTERM)を受けたらフラグを立ててループを抜ける。
+          # 進行中tickの失敗カウント(FAIL_STREAK)の挙動は変更しない。
+          trap 'echo "🛑 中断シグナル受信、次のチェックポイントでループを終了します"; STOP=1' INT TERM
 
           while true; do
+            if [ "$STOP" -eq 1 ]; then
+              echo "🛑 中断要求によりセッションを終了します"
+              break
+            fi
+
             ITER=$((ITER+1))
             NOW_EPOCH=$(date +%s)
             CUR_MIN=$(TZ=Asia/Tokyo date +%H:%M | awk -F: '{print $1*60+$2}')
@@ -489,12 +572,22 @@ jobs:
               fi
             fi
 
+            if [ "$STOP" -eq 1 ]; then
+              echo "🛑 中断要求によりセッションを終了します"
+              break
+            fi
+
             NOW_SEC=$(date +%s)
             REMAINDER=$((NOW_SEC % 300))
             SLEEP_SEC=$((300 - REMAINDER))
             if [ "$SLEEP_SEC" -ge 300 ]; then SLEEP_SEC=300; fi
             echo "💤 次のtickまで${SLEEP_SEC}秒sleep"
-            sleep "$SLEEP_SEC"
+            # バックグラウンドsleep+waitにして、キャンセルシグナルを即座に
+            # trapで拾えるようにする(フォアグラウンドsleepだとシグナル配送が
+            # 遅延する可能性があるため)。
+            sleep "$SLEEP_SEC" &
+            SLEEP_PID=$!
+            wait "$SLEEP_PID" || true
           done
 
       - name: Upload paper artifacts (PM)
