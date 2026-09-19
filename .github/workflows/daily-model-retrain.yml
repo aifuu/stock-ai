@@ -15,7 +15,7 @@ permissions:
 
 # Research/retraining must not block the independent paper-trading workflow.
 concurrency:
-  group: stock-ai-research
+  group: stock-ai-research-VERIFY-DRYRUN
   cancel-in-progress: false
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
       - name: Checkout latest main
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: Setup Python
@@ -104,6 +104,41 @@ jobs:
           rm -f model_prev.pkl
           echo '✅ 一時退避model_prev.pklを削除（Git/Artifactには残さない）'
 
+      # ★追加(2026-09): train_data.csvはプレーンCSVのままgit管理すると
+      # walk_forward_all_candidates.csv(修正: b292b03)と同じ構造的リスク
+      # (GitHubのpush時ファイルサイズ上限100MBにいつか抵触)を抱えるため、
+      # gzip圧縮した.gzのみをgit管理対象にする。read側(stock_scan.py)は
+      # train_data.csv.gzへのフォールバックに対応済みで、このジョブ内では
+      # 直前のステップが書いたプレーンtrain_data.csvをそのまま圧縮するだけ
+      # (train_data.csv自体の生成ロジック・列は一切変更しない)。
+      # 圧縮後も上限に接近/超過する場合は、pushを失敗させる代わりに
+      # git addをスキップして前回コミット済みの内容を維持する(このジョブの
+      # 主目的はOOSゲート付きモデル再学習であり、train_data.csvの更新が
+      # それを止めてはならないため)。
+      - name: Compress train data for git storage
+        if: always()
+        run: |
+          TRAIN_DATA_SKIP=0
+          if [ -s train_data.csv ]; then
+            gzip -k -9 -f train_data.csv
+            ls -la train_data.csv train_data.csv.gz
+            TD_GZ_BYTES=$(stat -c%s train_data.csv.gz)
+            TD_GZ_MB=$((TD_GZ_BYTES / 1000000))
+            echo "train_data.csv.gz size: ${TD_GZ_MB} MB"
+            if [ "$TD_GZ_BYTES" -ge 97000000 ]; then
+              echo "❌ train_data.csv.gzが97MBを超えました。GitHubのpush上限(100MB)に" \
+                   "抵触する恐れがあるため、今回のtrain_data.csv.gz更新はスキップし、" \
+                   "直前にコミット済みの内容を維持します(要調査)。"
+              TRAIN_DATA_SKIP=1
+            elif [ "$TD_GZ_BYTES" -ge 90000000 ]; then
+              echo "⚠️ train_data.csv.gzが90MBに接近しています。GitHubのpush上限(100MB)に" \
+                   "将来再度抵触する可能性があるため、保持方針の見直しを検討してください。"
+            fi
+          else
+            echo 'ℹ️ train_data.csvが無い/空のため圧縮をスキップします'
+          fi
+          echo "TRAIN_DATA_SKIP=${TRAIN_DATA_SKIP}" >> "$GITHUB_ENV"
+
       - name: Commit retraining and feedback artifacts safely
         if: always()
         run: |
@@ -123,7 +158,12 @@ jobs:
           # では何もチェックしない、誤検知防止)。
           PKL_CHANGED_BEFORE_ADD=$(git status --porcelain -- directional_model.pkl)
           git add directional_model.pkl 2>/dev/null || true
-          git add train_data.csv 2>/dev/null || true
+          git rm --cached --ignore-unmatch train_data.csv >/dev/null 2>&1 || true
+          if [ "${TRAIN_DATA_SKIP:-0}" = "1" ]; then
+            echo '⏭ train_data.csv.gzのサイズガードによりgit addをスキップします'
+          else
+            git add train_data.csv.gz 2>/dev/null || true
+          fi
           git add daily_retrain_report.csv 2>/dev/null || true
           git add trade_feedback_policy.json 2>/dev/null || true
           git add trade_feedback_report.csv 2>/dev/null || true
@@ -134,17 +174,11 @@ jobs:
           fi
           git diff --cached --quiet && exit 0
           git commit -m 'chore: daily model retrain and feedback [skip ci]'
-          for i in 1 2 3 4 5; do
-            git fetch origin main
-            if git rebase --autostash origin/main && git push origin HEAD:main; then
-              echo '✅ daily model retrain/feedback push成功'
-              exit 0
-            fi
-            git rebase --abort || true
-            sleep $((i * 3))
-          done
-          echo '❌ daily model retrain/feedback push失敗'
-          exit 1
+          echo '🧪 VERIFY-DRYRUN: mainへのpushは行いません。ローカルcommitの内容のみ確認します。'
+          git show --stat HEAD
+          echo '--- diff origin/main vs HEAD (この検証runのcommitのみが差分であることを確認) ---'
+          git fetch origin main
+          git diff --stat origin/main HEAD
 
       - name: Upload retrain artifacts
         uses: actions/upload-artifact@v4

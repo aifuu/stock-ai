@@ -2522,15 +2522,24 @@ for col in [
 
 def load_training_data():
 
-    if not os.path.exists(
-        TRAIN_FILE
-    ):
-
-        return None, None
+    # ★追加(2026-09): train_data.csvはgit上ではgzip圧縮のtrain_data.csv.gz
+    # としてのみ管理される(daily-model-retrain.yml / refresh-walk-forward-
+    # candidates.ymlのコミット時に圧縮、GitHubのpush上限100MB対策)。
+    # daily_model_retrain.py実行直後のジョブ内ではプレーンtrain_data.csvが
+    # 存在するのでそちらを優先し、それが無いフレッシュチェックアウト時は
+    # train_data.csv.gzへ透過的にフォールバックする
+    # (pandas.read_csvは拡張子.gzを見て自動的に展開して読む)。
+    train_path = TRAIN_FILE
+    if not os.path.exists(train_path):
+        gz_path = TRAIN_FILE + ".gz"
+        if os.path.exists(gz_path):
+            train_path = gz_path
+        else:
+            return None, None
 
 
     df = pd.read_csv(
-        TRAIN_FILE
+        train_path
     )
 
 
