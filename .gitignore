@@ -1,0 +1,7 @@
+# walk_forward_all_candidates.csv is regenerated in full on every run of
+# refresh-walk-forward-candidates.yml and is only ever persisted to git as
+# the gzip-compressed walk_forward_all_candidates.csv.gz (see that workflow's
+# "Commit refreshed candidates" step). The plain .csv is a local/CI working
+# file only; keeping it untracked stops it from ever being re-added by
+# `git add -u` or `git add -A` by accident.
+walk_forward_all_candidates.csv
