@@ -12,6 +12,9 @@ ASTでbuild_effective_strategy_name()とevaluate_min_hold_retention()の2つの
 一切触れない。
 """
 import ast
+import json
+import os
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,7 +23,12 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parent
 MODULE_PATH = REPO_ROOT / "build_strategy_policy.py"
-FUNCTION_NAMES = ("build_effective_strategy_name", "evaluate_min_hold_retention")
+FUNCTION_NAMES = (
+    "build_effective_strategy_name",
+    "evaluate_min_hold_retention",
+    "_manual_override_retention",
+    "_load_manual_overrides",
+)
 
 
 def _load_pure_functions():
@@ -36,12 +44,22 @@ def _load_pure_functions():
 
     module_ast = ast.Module(body=wanted, type_ignores=[])
     ast.fix_missing_locations(module_ast)
-    namespace = {"datetime": datetime}
+    namespace = {"datetime": datetime, "os": os, "json": json}
     exec(compile(module_ast, filename=str(MODULE_PATH), mode="exec"), namespace)
-    return namespace["build_effective_strategy_name"], namespace["evaluate_min_hold_retention"]
+    return (
+        namespace["build_effective_strategy_name"],
+        namespace["evaluate_min_hold_retention"],
+        namespace["_manual_override_retention"],
+        namespace["_load_manual_overrides"],
+    )
 
 
-build_effective_strategy_name, evaluate_min_hold_retention = _load_pure_functions()
+(
+    build_effective_strategy_name,
+    evaluate_min_hold_retention,
+    _manual_override_retention,
+    _load_manual_overrides,
+) = _load_pure_functions()
 
 
 # 現行のstrategy_policy.json相当(名前はSCORE80、実際の値はSCORE40)。
@@ -229,6 +247,147 @@ class EvaluateMinHoldRetentionTests(unittest.TestCase):
             approved, variant, self.now, 30, policy_file_name="strategy_policy.json",
         )
         self.assertTrue(result["keep"])
+
+
+# ---------------------------------------------------------------------------
+# 「記録済みの手動上書きは保護する」フォールバック(_manual_override_retention /
+# _load_manual_overrides)のテスト。通常判定(保持日数+実効名照合)が
+# 「維持しない」と結論した場合に限って発動することを確認する。
+# strategy_policy.json / strategy_policy_up.json / policy_manual_overrides.json
+# は実ファイルを読み取るだけで一切書き換えない。
+# ---------------------------------------------------------------------------
+class ManualOverrideProtectionTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime.fromisoformat("2026-09-19T00:00:00")
+        with open(REPO_ROOT / "strategy_policy.json", "r", encoding="utf-8") as f:
+            self.live_policy = json.load(f)
+        with open(REPO_ROOT / "strategy_policy_up.json", "r", encoding="utf-8") as f:
+            self.up_policy = json.load(f)
+        self._env_backup = os.environ.get("BSP_MANUAL_OVERRIDES_FILE")
+        os.environ["BSP_MANUAL_OVERRIDES_FILE"] = str(REPO_ROOT / "policy_manual_overrides.json")
+
+    def tearDown(self):
+        if self._env_backup is None:
+            os.environ.pop("BSP_MANUAL_OVERRIDES_FILE", None)
+        else:
+            os.environ["BSP_MANUAL_OVERRIDES_FILE"] = self._env_backup
+
+    def test_a_real_policy_and_real_overrides_protect_score80_only_candidates(self):
+        # (a) 承認済み候補がSCORE80(=strategy_policy.jsonの記録上のstrategy_name)のみで、
+        # 実効名(SCORE40)を含まなくても、実際のpolicy_manual_overrides.jsonの記録
+        # (live_value=40==実際のmin_score_for_buy)により保護されることを確認する。
+        overrides = _load_manual_overrides()
+        self.assertTrue(overrides, "実際のpolicy_manual_overrides.jsonからoverridesが読めていません")
+        approved = pd.Series([self.live_policy["strategy_name"]])  # SCORE80のみ
+        result = evaluate_min_hold_retention(
+            approved, self.live_policy, self.now, 30,
+            policy_file_name="strategy_policy.json", manual_overrides=overrides,
+        )
+        self.assertTrue(result["keep"])
+        self.assertIn("min_score_for_buy=40", result["reason"])
+        self.assertIn("policy_manual_overrides.json", result["reason"])
+        self.assertTrue(any("policy_manual_overrides.json" in line for line in result["log_lines"]))
+
+    def test_a_protection_does_not_depend_on_min_hold_days(self):
+        # 保持日数(30日)を超えていても保護されること。
+        overrides = _load_manual_overrides()
+        old_policy = dict(self.live_policy)
+        old_policy["updated_at"] = (self.now - timedelta(days=31)).isoformat(timespec="seconds")
+        approved = pd.Series([self.live_policy["strategy_name"]])
+        result = evaluate_min_hold_retention(
+            approved, old_policy, self.now, 30,
+            policy_file_name="strategy_policy.json", manual_overrides=overrides,
+        )
+        self.assertTrue(result["keep"])
+        self.assertIn("min_score_for_buy=40", result["reason"])
+
+    def test_b_policy_without_recorded_override_behaves_as_before(self):
+        # (b) 記録にないpolicy(strategy_policy_up.json相当)は、still_qualifies=False
+        # でも保護されず従来どおりkeep=Falseになること。
+        overrides = _load_manual_overrides()
+        approved = pd.Series(["UP99_SCOREXX_NIKKEIOFF_TP1.0_SL1.0_H1"])  # 一致しない候補
+        result = evaluate_min_hold_retention(
+            approved, self.up_policy, self.now, 30,
+            policy_file_name="strategy_policy_up.json", manual_overrides=overrides,
+        )
+        self.assertFalse(result["keep"])
+        self.assertIsNone(result["reason"])
+
+    def test_c_live_value_mismatch_does_not_protect(self):
+        # (c) 記録のlive_valueと現行policyの実際の値が食い違う場合は保護しない。
+        mismatched_policy = dict(self.live_policy)
+        mismatched_policy["min_score_for_buy"] = 55  # 記録のlive_value(40)と不一致
+        approved = pd.Series([self.live_policy["strategy_name"]])  # still_qualifies=Falseにする
+        result = evaluate_min_hold_retention(
+            approved, mismatched_policy, self.now, 30,
+            policy_file_name="strategy_policy.json",
+            manual_overrides=[{
+                "policy_file": "strategy_policy.json",
+                "field": "min_score_for_buy",
+                "validated_value": 80,
+                "live_value": 40,
+            }],
+        )
+        self.assertFalse(result["keep"])
+        self.assertIsNone(result["reason"])
+
+    def test_d_missing_file_returns_empty_list_without_raising(self):
+        os.environ["BSP_MANUAL_OVERRIDES_FILE"] = str(REPO_ROOT / "does_not_exist.json")
+        self.assertEqual(_load_manual_overrides(), [])
+
+    def test_d_corrupt_json_returns_empty_list_without_raising(self):
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write("{not valid json")
+            tmp_path = tmp.name
+        try:
+            os.environ["BSP_MANUAL_OVERRIDES_FILE"] = tmp_path
+            self.assertEqual(_load_manual_overrides(), [])
+        finally:
+            os.remove(tmp_path)
+
+    def test_d_malformed_structure_returns_empty_list_without_raising(self):
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as tmp:
+            json.dump(["not", "a", "dict", "with", "overrides"], tmp)
+            tmp_path = tmp.name
+        try:
+            os.environ["BSP_MANUAL_OVERRIDES_FILE"] = tmp_path
+            self.assertEqual(_load_manual_overrides(), [])
+        finally:
+            os.remove(tmp_path)
+
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as tmp:
+            json.dump({"overrides": "not-a-list"}, tmp)
+            tmp_path = tmp.name
+        try:
+            os.environ["BSP_MANUAL_OVERRIDES_FILE"] = tmp_path
+            self.assertEqual(_load_manual_overrides(), [])
+        finally:
+            os.remove(tmp_path)
+
+    def test_e_not_approved_status_is_not_protected_even_with_matching_override(self):
+        # (e) 現行policyのstatusがAPPROVEDでなければ、一致するoverride記録が
+        # あっても保護しない(従来のstatusチェックがフォールバックより先に効く)。
+        default_policy = dict(self.live_policy)
+        default_policy["status"] = "DEFAULT"
+        approved = pd.Series([self.live_policy["strategy_name"]])
+        result = evaluate_min_hold_retention(
+            approved, default_policy, self.now, 30,
+            policy_file_name="strategy_policy.json",
+            manual_overrides=[{
+                "policy_file": "strategy_policy.json",
+                "field": "min_score_for_buy",
+                "validated_value": 80,
+                "live_value": 40,
+            }],
+        )
+        self.assertFalse(result["keep"])
+        self.assertIsNone(result["reason"])
 
 
 if __name__ == "__main__":

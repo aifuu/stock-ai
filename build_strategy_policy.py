@@ -238,9 +238,10 @@ def build_effective_strategy_name(policy):
     return f"UP{up}_SCORE{score}_NIKKEI{'ON' if nikkei else 'OFF'}_TP{tp}_SL{sl}_H{hold}"
 
 
-def _load_manual_overrides_for_logging():
+def _load_manual_overrides():
     """policy_manual_overrides.jsonの読み取り専用ベストエフォート読み込み。
-    ログ表示のためだけに使い、判定ロジックには影響しない。失敗時は[]。"""
+    ログ表示、および現行policy保護の判定(evaluate_min_hold_retention)に使う。
+    ファイル不在/壊れたJSON/形式不正でも例外を投げず、失敗時は[]を返す。"""
     path = os.getenv("BSP_MANUAL_OVERRIDES_FILE", "policy_manual_overrides.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -249,6 +250,31 @@ def _load_manual_overrides_for_logging():
         return entries if isinstance(entries, list) else []
     except Exception:
         return []
+
+
+def _manual_override_retention(policy_file_name, existing_policy, manual_overrides, log_lines):
+    """記録済みの手動上書き(policy_manual_overrides.json)が現行policyの実際の値と
+    一致する場合に限り、保持継続(keep=True)の判定結果を返す。一致する記録が
+    なければNone。例外は投げない。"""
+    for entry in (manual_overrides or []):
+        try:
+            if entry.get("policy_file") != policy_file_name:
+                continue
+            field = entry.get("field")
+            if field is None:
+                continue
+            if existing_policy.get(field) != entry.get("live_value"):
+                continue
+        except Exception:
+            continue
+        reason = (
+            f"記録済みの手動上書き({field}={existing_policy.get(field)})のため"
+            "現行policyを維持する。自動更新を再開するには"
+            " policy_manual_overrides.json の記録を削除する"
+        )
+        log_lines.append(reason)
+        return {"keep": True, "reason": reason, "log_lines": log_lines}
+    return None
 
 
 def evaluate_min_hold_retention(
@@ -271,6 +297,11 @@ def evaluate_min_hold_retention(
         existing_age_days = None
 
     if existing_age_days is None or existing_age_days >= min_hold_days:
+        protected = _manual_override_retention(
+            policy_file_name, existing_policy, manual_overrides, log_lines
+        )
+        if protected is not None:
+            return protected
         return {"keep": False, "reason": None, "log_lines": log_lines}
 
     recorded_name = existing_policy.get("strategy_name")
@@ -307,6 +338,11 @@ def evaluate_min_hold_retention(
         still_qualifies = match_name in set(approved_strategy_names)
 
     if not still_qualifies:
+        protected = _manual_override_retention(
+            policy_file_name, existing_policy, manual_overrides, log_lines
+        )
+        if protected is not None:
+            return protected
         return {"keep": False, "reason": None, "log_lines": log_lines}
 
     reason = (
@@ -320,7 +356,7 @@ MIN_HOLD_DAYS = int(os.getenv("BSP_MIN_HOLD_DAYS", "30"))
 existing_policy = load_existing_policy()
 retention_decision = evaluate_min_hold_retention(
     approved["strategy"], existing_policy, datetime.now(), MIN_HOLD_DAYS,
-    policy_file_name=POLICY_FILE, manual_overrides=_load_manual_overrides_for_logging(),
+    policy_file_name=POLICY_FILE, manual_overrides=_load_manual_overrides(),
 )
 for _log_line in retention_decision["log_lines"]:
     print(_log_line)
