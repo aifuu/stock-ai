@@ -126,5 +126,188 @@ class RobustnessAgainstBadInput(unittest.TestCase):
         self.assertEqual(exit_code, 0)
 
 
+class ManualOverrideClassification(unittest.TestCase):
+    """(a)-(e) policy_manual_overrides.json driven warning/notice split.
+
+    Never touches the repo's real strategy_policy*.json or
+    policy_manual_overrides.json; everything here runs against files
+    written into a temporary directory.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.root = Path(self.tmpdir.name)
+
+    def _write_policy(self, name="strategy_policy.json"):
+        payload = {
+            "up_threshold": 20,
+            "min_score_for_buy": 40,
+            "nikkei_filter": True,
+            "atr_tp_multiplier": 4.0,
+            "atr_sl_multiplier": 1.0,
+            "hold_days": 1,
+            "strategy_name": "UP20_SCORE80_NIKKEION_TP4.0_SL1.0_H1",
+        }
+        path = self.root / name
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _write_overrides(self, overrides_obj):
+        path = self.root / "policy_manual_overrides.json"
+        if isinstance(overrides_obj, str):
+            path.write_text(overrides_obj, encoding="utf-8")
+        else:
+            path.write_text(json.dumps(overrides_obj), encoding="utf-8")
+        return path
+
+    def _mismatches_for(self, policy_path):
+        info = cpm._analyze(policy_path)
+        self.assertEqual(info["status"], "mismatch")
+        return info["mismatches"]
+
+    def test_a_recorded_override_matching_both_values_is_not_a_warning(self):
+        policy_path = self._write_policy()
+        self._write_overrides({
+            "overrides": [{
+                "policy_file": "strategy_policy.json",
+                "field": "min_score_for_buy",
+                "validated_value": 80,
+                "live_value": 40,
+                "reason": "test",
+                "date": "2026-09-16",
+                "validated": False,
+            }]
+        })
+        overrides = cpm.load_manual_overrides(self.root)
+        mismatches = self._mismatches_for(policy_path)
+        warnings, notices = cpm.classify_mismatches("strategy_policy.json", mismatches, overrides)
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(notices), 1)
+        self.assertIn("記録済みの手動上書き", notices[0])
+
+    def test_b_no_recorded_entry_is_a_warning(self):
+        policy_path = self._write_policy()
+        self._write_overrides({"overrides": []})
+        overrides = cpm.load_manual_overrides(self.root)
+        mismatches = self._mismatches_for(policy_path)
+        warnings, notices = cpm.classify_mismatches("strategy_policy.json", mismatches, overrides)
+        self.assertEqual(notices, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("min_score_for_buy", warnings[0])
+
+    def test_c_recorded_live_value_mismatches_actual_value_is_a_warning(self):
+        policy_path = self._write_policy()  # actual min_score_for_buy = 40
+        self._write_overrides({
+            "overrides": [{
+                "policy_file": "strategy_policy.json",
+                "field": "min_score_for_buy",
+                "validated_value": 80,
+                "live_value": 50,  # does not match actual (40)
+                "reason": "test",
+            }]
+        })
+        overrides = cpm.load_manual_overrides(self.root)
+        mismatches = self._mismatches_for(policy_path)
+        warnings, notices = cpm.classify_mismatches("strategy_policy.json", mismatches, overrides)
+        self.assertEqual(notices, [])
+        self.assertEqual(len(warnings), 1)
+
+    def test_d_recorded_validated_value_mismatches_name_value_is_a_warning(self):
+        policy_path = self._write_policy()  # name-side SCORE80
+        self._write_overrides({
+            "overrides": [{
+                "policy_file": "strategy_policy.json",
+                "field": "min_score_for_buy",
+                "validated_value": 90,  # does not match name-side (80)
+                "live_value": 40,
+                "reason": "test",
+            }]
+        })
+        overrides = cpm.load_manual_overrides(self.root)
+        mismatches = self._mismatches_for(policy_path)
+        warnings, notices = cpm.classify_mismatches("strategy_policy.json", mismatches, overrides)
+        self.assertEqual(notices, [])
+        self.assertEqual(len(warnings), 1)
+
+    def test_e_missing_overrides_file_is_treated_as_no_record(self):
+        policy_path = self._write_policy()
+        # no policy_manual_overrides.json written at all
+        overrides = cpm.load_manual_overrides(self.root)
+        self.assertEqual(overrides, [])
+        mismatches = self._mismatches_for(policy_path)
+        warnings, notices = cpm.classify_mismatches("strategy_policy.json", mismatches, overrides)
+        self.assertEqual(notices, [])
+        self.assertEqual(len(warnings), 1)
+
+    def test_e_broken_json_overrides_file_is_treated_as_no_record(self):
+        policy_path = self._write_policy()
+        self._write_overrides('{"overrides": [ this is not valid json')
+        overrides = cpm.load_manual_overrides(self.root)
+        self.assertEqual(overrides, [])
+        mismatches = self._mismatches_for(policy_path)
+        warnings, notices = cpm.classify_mismatches("strategy_policy.json", mismatches, overrides)
+        self.assertEqual(notices, [])
+        self.assertEqual(len(warnings), 1)
+
+    def test_e_malformed_shape_overrides_file_is_treated_as_no_record(self):
+        policy_path = self._write_policy()
+        # "overrides" is not a list, and entries below are missing required keys.
+        self._write_overrides({"overrides": {"not": "a list"}})
+        overrides = cpm.load_manual_overrides(self.root)
+        self.assertEqual(overrides, [])
+        mismatches = self._mismatches_for(policy_path)
+        warnings, notices = cpm.classify_mismatches("strategy_policy.json", mismatches, overrides)
+        self.assertEqual(notices, [])
+        self.assertEqual(len(warnings), 1)
+
+    def test_e_malformed_entries_are_skipped_not_raised(self):
+        policy_path = self._write_policy()
+        self._write_overrides({
+            "overrides": [
+                {"policy_file": "strategy_policy.json"},  # missing field/values
+                "not-a-dict",
+                {"policy_file": "strategy_policy.json", "field": "min_score_for_buy",
+                 "validated_value": 80, "live_value": 40, "reason": "ok"},
+            ]
+        })
+        overrides = cpm.load_manual_overrides(self.root)
+        self.assertEqual(len(overrides), 1)
+        mismatches = self._mismatches_for(policy_path)
+        warnings, notices = cpm.classify_mismatches("strategy_policy.json", mismatches, overrides)
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(notices), 1)
+
+    def test_load_manual_overrides_never_writes_and_never_raises(self):
+        # Directory without the file at all: still must not raise.
+        empty_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(empty_dir, ignore_errors=True))
+        overrides = cpm.load_manual_overrides(empty_dir)
+        self.assertEqual(overrides, [])
+
+
+class ManualOverrideEndToEnd(unittest.TestCase):
+    """(f) main() over the real repo must still exit 0 and stay a no-op
+    against the repo's actual policy files (read-only)."""
+
+    def test_main_over_real_repo_still_exits_zero(self):
+        self.assertEqual(cpm.main(), 0)
+
+    def test_real_repo_override_file_is_well_formed_and_matches(self):
+        overrides = cpm.load_manual_overrides(REPO_ROOT)
+        self.assertEqual(len(overrides), 1)
+        entry = overrides[0]
+        self.assertEqual(entry["policy_file"], "strategy_policy.json")
+        self.assertEqual(entry["field"], "min_score_for_buy")
+
+        info = cpm._analyze(REPO_ROOT / "strategy_policy.json")
+        self.assertEqual(info["status"], "mismatch")
+        warnings, notices = cpm.classify_mismatches(
+            "strategy_policy.json", info["mismatches"], overrides
+        )
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(notices), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

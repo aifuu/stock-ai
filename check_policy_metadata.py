@@ -28,6 +28,8 @@ TARGET_FILE_NAMES = (
     "strategy_policy_down.json",
 )
 
+MANUAL_OVERRIDES_FILE_NAME = "policy_manual_overrides.json"
+
 NAME_PATTERN = re.compile(
     r"^UP(?P<up_threshold>-?\d+(?:\.\d+)?)"
     r"_SCORE(?P<min_score_for_buy>-?\d+(?:\.\d+)?)"
@@ -56,40 +58,70 @@ def numbers_equal(name_value: str, actual_value) -> bool:
         return False
 
 
-def check_file(path: Path):
-    """Inspect one policy file. Returns (status, warnings: list[str]).
+def _analyze(path: Path) -> dict:
+    """Inspect one policy file and return structured details.
 
     Never raises: any problem (missing file, broken JSON, unexpected shape)
-    is captured as a warning/status instead of an exception, per the
+    is captured as a status/warning instead of an exception, per the
     "must never crash and must never affect trading" requirement.
+
+    Returns a dict with keys: status, strategy_name, mismatches (list of
+    raw (field, name_value, actual_value) tuples, only populated when
+    status == "mismatch"), warnings (list[str], formatted messages matching
+    the pre-existing check_file() behaviour).
     """
     if not path.exists():
-        return "missing", []
+        return {"status": "missing", "strategy_name": None, "mismatches": [], "warnings": []}
 
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
-        return "read_error", [f"{path.name}: ファイルを読み込めませんでした ({exc})"]
+        return {
+            "status": "read_error",
+            "strategy_name": None,
+            "mismatches": [],
+            "warnings": [f"{path.name}: ファイルを読み込めませんでした ({exc})"],
+        }
 
     try:
         policy = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return "invalid_json", [f"{path.name}: JSONとして壊れています ({exc})"]
+        return {
+            "status": "invalid_json",
+            "strategy_name": None,
+            "mismatches": [],
+            "warnings": [f"{path.name}: JSONとして壊れています ({exc})"],
+        }
 
     if not isinstance(policy, dict):
-        return "invalid_json", [f"{path.name}: トップレベルがJSONオブジェクトではありません"]
+        return {
+            "status": "invalid_json",
+            "strategy_name": None,
+            "mismatches": [],
+            "warnings": [f"{path.name}: トップレベルがJSONオブジェクトではありません"],
+        }
 
     strategy_name = policy.get("strategy_name")
     if not isinstance(strategy_name, str) or not strategy_name.strip():
-        return "no_name", [f"{path.name}: strategy_name フィールドがありません"]
+        return {
+            "status": "no_name",
+            "strategy_name": None,
+            "mismatches": [],
+            "warnings": [f"{path.name}: strategy_name フィールドがありません"],
+        }
 
     m = NAME_PATTERN.match(strategy_name.strip())
     if not m:
-        return "unknown_format", [
-            f"{path.name}: strategy_name '{strategy_name}' が既知パターン "
-            "(UP{up_threshold}_SCORE{min_score_for_buy}_NIKKEI{ON|OFF}_TP{atr_tp_multiplier}"
-            "_SL{atr_sl_multiplier}_H{hold_days}) に一致しません [形式不明]"
-        ]
+        return {
+            "status": "unknown_format",
+            "strategy_name": strategy_name,
+            "mismatches": [],
+            "warnings": [
+                f"{path.name}: strategy_name '{strategy_name}' が既知パターン "
+                "(UP{up_threshold}_SCORE{min_score_for_buy}_NIKKEI{ON|OFF}_TP{atr_tp_multiplier}"
+                "_SL{atr_sl_multiplier}_H{hold_days}) に一致しません [形式不明]"
+            ],
+        }
 
     parsed = m.groupdict()
     mismatches = []
@@ -110,19 +142,116 @@ def check_file(path: Path):
         mismatches.append(("nikkei_filter", parsed["nikkei_filter"], actual_nikkei))
 
     if not mismatches:
-        return "ok", []
+        return {"status": "ok", "strategy_name": strategy_name, "mismatches": [], "warnings": []}
 
     warnings = [
         f"{path.name}: strategy_name '{strategy_name}' 上の {field}={name_value!s} が "
         f"実際の値 {field}={actual_value!s} と食い違っています"
         for field, name_value, actual_value in mismatches
     ]
-    return "mismatch", warnings
+    return {
+        "status": "mismatch",
+        "strategy_name": strategy_name,
+        "mismatches": mismatches,
+        "warnings": warnings,
+    }
+
+
+def check_file(path: Path):
+    """Inspect one policy file. Returns (status, warnings: list[str]).
+
+    Never raises: any problem (missing file, broken JSON, unexpected shape)
+    is captured as a warning/status instead of an exception, per the
+    "must never crash and must never affect trading" requirement.
+    """
+    info = _analyze(path)
+    return info["status"], info["warnings"]
+
+
+def load_manual_overrides(repo_root: Path):
+    """Read policy_manual_overrides.json (read-only, advisory).
+
+    Never raises: a missing file, broken JSON, or unexpected shape is
+    treated as "no recorded overrides" rather than an error. This file is
+    never written to, and it never touches approval_signature or any
+    policy file's contents.
+    """
+    path = repo_root / MANUAL_OVERRIDES_FILE_NAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        entries = data.get("overrides") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            return []
+        result = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if not (
+                isinstance(entry.get("policy_file"), str)
+                and isinstance(entry.get("field"), str)
+                and "validated_value" in entry
+                and "live_value" in entry
+            ):
+                continue
+            result.append(entry)
+        return result
+    except Exception:
+        return []
+
+
+def _recorded_value_matches(recorded_value, observed_value) -> bool:
+    """Compare a recorded override value against a name-derived or actual
+    field value, tolerating numeric-formatting and ON/OFF-vs-bool style
+    differences the same way numbers_equal() does for the main check."""
+    if numbers_equal(str(recorded_value), observed_value):
+        return True
+    return str(recorded_value).strip().upper() == str(observed_value).strip().upper()
+
+
+def find_recorded_override(overrides, policy_file_name: str, field: str):
+    for entry in overrides:
+        if entry.get("policy_file") == policy_file_name and entry.get("field") == field:
+            return entry
+    return None
+
+
+def classify_mismatches(policy_file_name: str, mismatches, overrides):
+    """Split a file's mismatches into (warnings, notices) formatted
+    messages. A mismatch becomes a "recorded manual override" notice only
+    when a matching (policy_file, field) entry exists AND both the
+    name-side value equals validated_value AND the actual value equals
+    live_value; otherwise it is reported as a warning, same as before."""
+    warning_messages = []
+    notice_messages = []
+    for field, name_value, actual_value in mismatches:
+        override = find_recorded_override(overrides, policy_file_name, field)
+        if (
+            override is not None
+            and _recorded_value_matches(override.get("validated_value"), name_value)
+            and _recorded_value_matches(override.get("live_value"), actual_value)
+        ):
+            reason = override.get("reason", "")
+            notice_messages.append(
+                f"{policy_file_name}: 記録済みの手動上書き - {field} は strategy_name 上 "
+                f"{name_value!s}(検証済み)、実際の値は {actual_value!s}(未検証)。{reason}"
+            )
+        else:
+            warning_messages.append(
+                f"{policy_file_name}: strategy_name 上の {field}={name_value!s} が "
+                f"実際の値 {field}={actual_value!s} と食い違っています"
+            )
+    return warning_messages, notice_messages
 
 
 def emit_github_warning(message: str) -> None:
     safe = message.replace("\r", "").replace("\n", " ").replace("%", "%25")
     print(f"::warning::{safe}")
+
+
+def emit_github_notice(message: str) -> None:
+    safe = message.replace("\r", "").replace("\n", " ").replace("%", "%25")
+    print(f"::notice::{safe}")
 
 
 def write_step_summary(rows) -> None:
@@ -150,20 +279,41 @@ def write_step_summary(rows) -> None:
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parent
+    overrides = load_manual_overrides(repo_root)
     rows = []
     any_warning = False
 
     for name in TARGET_FILE_NAMES:
         path = repo_root / name
-        status, warnings = check_file(path)
+        info = _analyze(path)
+        status = info["status"]
+
         if status == "missing":
             rows.append((name, "skip", "ファイルなし"))
             continue
-        if warnings:
-            any_warning = True
-            for w in warnings:
+
+        if status == "mismatch":
+            warning_messages, notice_messages = classify_mismatches(
+                name, info["mismatches"], overrides
+            )
+            for w in warning_messages:
                 emit_github_warning(w)
-            rows.append((name, status, " / ".join(warnings)))
+            for n in notice_messages:
+                emit_github_notice(n)
+
+            detail = " / ".join(warning_messages + notice_messages)
+            if warning_messages:
+                any_warning = True
+                rows.append((name, "mismatch", detail))
+            else:
+                rows.append((name, "manual_override", detail))
+            continue
+
+        if info["warnings"]:
+            any_warning = True
+            for w in info["warnings"]:
+                emit_github_warning(w)
+            rows.append((name, status, " / ".join(info["warnings"])))
         else:
             rows.append((name, "ok", "strategy_name と実際の値は一致"))
 

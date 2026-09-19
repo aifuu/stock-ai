@@ -1,0 +1,13 @@
+{
+  "overrides": [
+    {
+      "policy_file": "strategy_policy.json",
+      "field": "min_score_for_buy",
+      "validated_value": 80,
+      "live_value": 40,
+      "reason": "ユーザー指示による手動変更(検証時は80)。OOS未検証",
+      "date": "2026-09-16",
+      "validated": false
+    }
+  ]
+}
