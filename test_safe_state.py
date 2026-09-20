@@ -140,6 +140,25 @@ class LoadJsonStateTests(TmpDirMixin, unittest.TestCase):
         quarantines = [f for f in os.listdir(".") if f.startswith("s.json.corrupt-")]
         self.assertEqual(len(quarantines), 1)
 
+    def test_repeated_corruption_within_one_second_keeps_every_quarantine(self):
+        # Several failures landing in the same wall-clock second must not
+        # collide on the same quarantine filename and overwrite each other.
+        with open("s.json", "w", encoding="utf-8") as f:
+            f.write("{not valid")
+        for _ in range(10):
+            with self.assertRaises(safe_state.StateCorruptError):
+                safe_state.load_json_state("s.json", label="s.json")
+        quarantines = [f for f in os.listdir(".") if f.startswith("s.json.corrupt-")]
+        self.assertEqual(len(quarantines), 10)
+        self.assertEqual(len(set(quarantines)), 10)
+
+    def test_quarantine_stamp_matches_gitignore_pattern(self):
+        import fnmatch
+
+        stamp = safe_state._utc_stamp()
+        name = f"s.json.corrupt-{stamp}"
+        self.assertTrue(fnmatch.fnmatch(name, "*.corrupt-*"), name)
+
     def test_notify_failure_never_propagates(self):
         with open("s.json", "w", encoding="utf-8") as f:
             f.write("{not valid")

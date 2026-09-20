@@ -17,6 +17,7 @@ nikkei_macd_dip_paper.py, risk_manager.py)のstate(JSON)/履歴(CSV)ファイル
   - .bak/.corrupt-*はgit管理下に置かない(.gitignore参照)。
 """
 
+import itertools
 import json
 import os
 import shutil
@@ -29,8 +30,14 @@ class StateCorruptError(RuntimeError):
     """状態ファイルとその.bakの両方が読み込み不能なときに送出される。"""
 
 
+_quarantine_seq = itertools.count()
+
+
 def _utc_stamp():
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    """隔離ファイル名用のUTCタイムスタンプ。1秒内の複数回失敗でも衝突(上書き)
+    しないよう、マイクロ秒とプロセス内カウンタを付与して一意にする。"""
+    now = datetime.now(timezone.utc)
+    return f"{now.strftime('%Y%m%dT%H%M%S')}.{now.microsecond:06d}Z-{next(_quarantine_seq):04d}"
 
 
 def _notify(notify, message):
