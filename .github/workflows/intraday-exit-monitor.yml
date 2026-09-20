@@ -3,6 +3,9 @@ name: LEGACY DISABLED - 5分足 自動決済監視
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   disabled:
     runs-on: ubuntu-latest
