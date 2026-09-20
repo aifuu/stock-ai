@@ -6,6 +6,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: stock-ai-apply-requested-hardening
+  cancel-in-progress: false
+
 jobs:
   harden:
     runs-on: ubuntu-latest
@@ -76,5 +80,19 @@ jobs:
             echo "No changes to commit"
             exit 0
           fi
-          git commit -m "fix: harden OOS retraining and phase leakage gates"
-          git push origin main
+          git commit -m "fix: harden OOS retraining and phase leakage gates [skip ci]"
+          PUSH_OK=0
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
+              echo '✅ requested hardening push成功'
+              PUSH_OK=1
+              break
+            fi
+            git rebase --abort || true
+            sleep $((i*3))
+          done
+          if [ "$PUSH_OK" -ne 1 ]; then
+            echo '❌ requested hardening push失敗'
+            exit 1
+          fi
