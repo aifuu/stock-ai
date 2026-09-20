@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: stock-ai-daily-movers-root-cause
+  cancel-in-progress: false
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
@@ -49,7 +53,7 @@ jobs:
           git add daily_sector_performance_history.csv 2>/dev/null || true
           git add -u
           git diff --cached --quiet && exit 0
-          git commit -m 'Update daily movers root-cause analysis'
+          git commit -m 'Update daily movers root-cause analysis [skip ci]'
           PUSH_OK=0
           for i in 1 2 3 4 5; do
             git fetch origin main
