@@ -10,6 +10,8 @@ name: Policy metadata consistency check (read-only)
 on:
   workflow_dispatch: {}
   push:
+    branches:
+      - main
     paths:
       - strategy_policy.json
       - strategy_policy_up.json

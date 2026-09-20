@@ -3,6 +3,8 @@ name: Fold 4 OOS Filter Funnel Diagnostic
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - 'fold4_oos_filter_trace.py'
       - '.github/workflows/fold4-filter-diagnostic.yml'
