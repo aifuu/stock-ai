@@ -3,6 +3,8 @@ name: Fold 4 UP Probability Root Cause Diagnostic
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - walk_forward_exact_pipeline_trace.py
       - .github/workflows/fold4-up-probability-root-cause.yml
