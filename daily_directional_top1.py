@@ -1,4 +1,3 @@
-import json
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -8,6 +7,9 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+
+import safe_state
+from common import count_tse_trading_days, tse_trading_days_between
 
 TZ = ZoneInfo("Asia/Tokyo")
 MODEL_FILE = "directional_model.pkl"
@@ -676,25 +678,18 @@ def directional_score(row,up,down):
 
 
 def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE,encoding="utf-8") as f:return json.load(f)
-        except Exception:pass
-    return {"capital":INITIAL_CAPITAL,"position":None,"peak":INITIAL_CAPITAL,"max_dd":0.0,"trades_today":0,"trade_count_date":None,"daily_start_capital":INITIAL_CAPITAL}
+    default={"capital":INITIAL_CAPITAL,"position":None,"peak":INITIAL_CAPITAL,"max_dd":0.0,"trades_today":0,"trade_count_date":None,"daily_start_capital":INITIAL_CAPITAL}
+    loaded=safe_state.load_json_state(STATE_FILE,notify=send,label=STATE_FILE,validate=lambda d:isinstance(d,dict))
+    if loaded is not None: default.update(loaded)
+    return default
 
 
 def save_state(state):
-    tmp=STATE_FILE+".tmp"
-    with open(tmp,"w",encoding="utf-8") as f:json.dump(state,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
-    os.replace(tmp,STATE_FILE)
+    safe_state.atomic_write_json(STATE_FILE,state)
 
 
 def append_history(row):
-    df=pd.DataFrame([row])
-    if os.path.exists(HISTORY_FILE):
-        try:df=pd.concat([pd.read_csv(HISTORY_FILE),df],ignore_index=True)
-        except Exception:pass
-    df.to_csv(HISTORY_FILE,index=False,encoding="utf-8-sig")
+    safe_state.safe_append_history(HISTORY_FILE,row,notify=send,label=HISTORY_FILE)
 
 
 def update_open_position(state):
@@ -702,7 +697,7 @@ def update_open_position(state):
     if not p:return None
     df=download(p["ticker"],period="3mo")
     if df is None or df.empty:return None
-    entry_date=pd.Timestamp(p["entry_date"]); days=pd.bdate_range(entry_date+pd.Timedelta(days=1),pd.Timestamp.now(tz=TZ).tz_localize(None).normalize())
+    entry_date=pd.Timestamp(p["entry_date"]); days=tse_trading_days_between(entry_date+pd.Timedelta(days=1),pd.Timestamp.now(tz=TZ).tz_localize(None).normalize())
     if len(days)==0:return None
     bars=df[df.index.normalize().isin(days)]
     if bars.empty:return None
@@ -721,7 +716,7 @@ def update_open_position(state):
     if exit_reason is None and len(bars)>=HOLD_DAYS:exit_date,exit_price,exit_reason=bars.index[HOLD_DAYS-1],float(bars.iloc[HOLD_DAYS-1]["Close"]),"TIME"
     if exit_reason is None:return None
     entry=float(p["entry_price"]); ret=(exit_price-entry)/entry*100 if p["direction"]=="BUY" else (entry-exit_price)/entry*100; pnl=state["capital"]*ret/100; state["capital"]+=pnl; state["position"]=None; state["peak"]=max(float(state.get("peak",state["capital"])),state["capital"]); state["max_dd"]=max(float(state.get("max_dd",0)),((state["peak"]-state["capital"])/state["peak"]*100 if state["peak"] else 0))
-    hold_days=len(pd.bdate_range(entry_date,pd.Timestamp(exit_date)))
+    hold_days=count_tse_trading_days(entry_date,pd.Timestamp(exit_date))
     append_history({"entry_date":p["entry_date"],"exit_date":str(pd.Timestamp(exit_date).date()),"ticker":p["ticker"],"company":p["company"],"direction":p["direction"],"selection_mode":p.get("selection_mode","unknown"),"entry_price":entry,"exit_price":exit_price,"tp":p["tp"],"sl":p["sl"],"score":p["score"],"up_probability":p["up_probability"],"down_probability":p["down_probability"],"return_pct":round(ret,3),"pnl":round(pnl,2),"result":exit_reason,"hold_days":hold_days,"capital_after":round(state["capital"],2)})
     result_label={"TP":"利確(TP)","SL":"損切(SL)","TIME":"期限到達"}.get(exit_reason,exit_reason)
     emoji="✅" if pnl>=0 else "❌"

@@ -8,7 +8,8 @@ from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_m
 import paper_risk_policy
 import futures_trend
 import discord_progress
-from common import is_tse_trading_day
+import safe_state
+from common import is_tse_trading_day, tse_trading_days_between, count_tse_trading_days
 
 TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; POLICY_FILE_UP='strategy_policy_up.json'; POLICY_FILE_DOWN='strategy_policy_down.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
 
@@ -65,24 +66,16 @@ def load_policy(policy_file=None):
 def default_state(): return {'capital':INITIAL_CAPITAL,'peak':INITIAL_CAPITAL,'max_dd':0.0,'positions':[],'trade_count_date':None,'trades_today':0,'trades_by_ticker_today':{},'daily_start_capital':INITIAL_CAPITAL}
 def load_state():
     s=default_state()
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE,encoding='utf-8') as f:s.update(json.load(f))
-        except Exception: pass
+    loaded=safe_state.load_json_state(STATE_FILE,notify=lambda m:discord_send(m),label=STATE_FILE,validate=lambda d:isinstance(d,dict))
+    if loaded is not None: s.update(loaded)
     s.setdefault('positions',[]); s.setdefault('trades_by_ticker_today',{}); return s
 def save_state(s):
-    tmp=STATE_FILE+'.tmp'
-    with open(tmp,'w',encoding='utf-8') as f: json.dump(s,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
-    os.replace(tmp,STATE_FILE)
+    safe_state.atomic_write_json(STATE_FILE,s)
 def reset_daily(s,today):
     if s.get('trade_count_date')!=today:s.update({'trade_count_date':today,'trades_today':0,'trades_by_ticker_today':{},'daily_start_capital':float(s.get('capital',INITIAL_CAPITAL))})
 
 def append_history(row):
-    df=pd.DataFrame([row])
-    if os.path.exists(HISTORY_FILE):
-        try: df=pd.concat([pd.read_csv(HISTORY_FILE),df],ignore_index=True)
-        except Exception: pass
-    df.to_csv(HISTORY_FILE,index=False,encoding='utf-8-sig')
+    safe_state.safe_append_history(HISTORY_FILE,row,notify=lambda m:discord_send(m),label=HISTORY_FILE)
 
 def download_5m(t):
     try:
@@ -221,7 +214,7 @@ def mark_and_close(s,now,policy):
     for p in s['positions']:
         ep=float(p['entry_price']); sh=int(p.get('shares',0)); direction=p.get('direction','BUY'); entry_date=pd.Timestamp(p['entry_date'])
         exit_price=reason=exit_dt=None
-        prior_days=pd.bdate_range(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date())-pd.Timedelta(days=1))
+        prior_days=tse_trading_days_between(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date())-pd.Timedelta(days=1))
         if len(prior_days)>0:
             daily=download(p['ticker'],period='3mo')
             if daily is not None and not daily.empty:
@@ -236,7 +229,7 @@ def mark_and_close(s,now,policy):
                         elif lo<=p['tp']:exit_price,reason=float(p['tp']),'TP'
                         elif hi>=p['sl']:exit_price,reason=float(p['sl']),'SL'
                     if reason:exit_dt=ts;break
-        held=len(pd.bdate_range(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date())))
+        held=count_tse_trading_days(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date()))
         if exit_price is None:
             d=download_5m(p['ticker'])
             if d is not None and not d.empty:
