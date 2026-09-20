@@ -199,11 +199,13 @@ class SafeAppendHistoryTests(TmpDirMixin, unittest.TestCase):
     def test_corrupt_existing_file_is_not_overwritten(self):
         with open("h.csv", "w", encoding="utf-8") as f:
             f.write("this,is,not\nvalid,csv,\"unterminated")
-        original = open("h.csv", "rb").read()
+        with open("h.csv", "rb") as f:
+            original = f.read()
         notified = []
         safe_state.safe_append_history("h.csv", {"a": 1}, notify=notified.append, label="h.csv")
         # original left untouched
-        self.assertEqual(open("h.csv", "rb").read(), original)
+        with open("h.csv", "rb") as f:
+            self.assertEqual(f.read(), original)
         self.assertEqual(len(notified), 1)
         quarantines = [f for f in os.listdir(".") if f.startswith("h.csv.corrupt-")]
         self.assertEqual(len(quarantines), 1)
@@ -221,9 +223,11 @@ class SafeAppendHistoryTests(TmpDirMixin, unittest.TestCase):
 
     def test_empty_existing_file_is_treated_as_corrupt_not_overwritten(self):
         open("h.csv", "w").close()
-        original = open("h.csv", "rb").read()
+        with open("h.csv", "rb") as f:
+            original = f.read()
         safe_state.safe_append_history("h.csv", {"a": 1})
-        self.assertEqual(open("h.csv", "rb").read(), original)
+        with open("h.csv", "rb") as f:
+            self.assertEqual(f.read(), original)
         self.assertTrue(os.path.exists("h.recovery.csv"))
 
 
