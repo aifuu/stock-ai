@@ -7,9 +7,11 @@
 walk_forward_all_candidates.csv
 
 # train_data.csv is regenerated in full (not appended) on every run of
-# daily-model-retrain.yml and refresh-walk-forward-candidates.yml, and is
-# only ever persisted to git as the gzip-compressed train_data.csv.gz (see
-# those workflows' commit steps). The plain .csv is a local/CI working file
-# only; keeping it untracked stops it from ever being re-added by
-# `git add -u` or `git add -A` by accident.
+# daily-model-retrain.yml and refresh-walk-forward-candidates.yml. It is not
+# persisted to git at all (not even gzip-compressed): both workflows upload
+# it as a 30-day Actions artifact instead, since committing any version of
+# it (plain or .gz) grows the repository forever. The plain .csv and any
+# leftover .gz are local/CI working files only; keeping them untracked stops
+# them from ever being re-added by `git add -u` or `git add -A` by accident.
 train_data.csv
+train_data.csv.gz

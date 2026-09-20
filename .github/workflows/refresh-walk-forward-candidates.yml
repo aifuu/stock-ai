@@ -195,6 +195,17 @@ jobs:
           GZ_BYTES=$(stat -c%s walk_forward_all_candidates.csv.gz)
           GZ_MB=$((GZ_BYTES / 1000000))
           echo "walk_forward_all_candidates.csv.gz size: ${GZ_MB} MB"
+          # ★追加(2026-09): 100MB上限に対する段階的な可視化として、80/90/95MBで
+          # ワークフローアノテーション(::warning::/::error::)を追加する。
+          # 実際のgit add抑止(fail-safe)は従来通り97MBのWF_SKIPで行い、
+          # この段階警告はしきい値やスキップ挙動を変更しない。
+          if [ "$GZ_MB" -ge 95 ]; then
+            echo "::error::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 95MB (GitHub push limit 100MB) - approaching hard skip threshold (97MB)"
+          elif [ "$GZ_MB" -ge 90 ]; then
+            echo "::warning::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 90MB (GitHub push limit 100MB)"
+          elif [ "$GZ_MB" -ge 80 ]; then
+            echo "::warning::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 80MB (GitHub push limit 100MB)"
+          fi
           if [ "$GZ_BYTES" -ge 97000000 ]; then
             echo "❌ walk_forward_all_candidates.csv.gzが97MBを超えました。GitHubのpush上限" \
                  "(100MB)に抵触する恐れがあるため、今回のgit addはスキップし、直前に" \
@@ -206,28 +217,19 @@ jobs:
           fi
           echo "WF_SKIP=${WF_SKIP}" >> "$GITHUB_ENV"
 
-          # ★追加(2026-09): このジョブはdaily_model_retrain.py(69行目)を経由して
-          # train_data.csvも副次的に再生成する。walk_forward_all_candidates.csv.gzと
-          # 同じ理由(100MB上限)・同じ設計(gzip化+上限ガード)をtrain_data.csvにも
-          # 適用する(daily-model-retrain.yml側の同名ステップと同じロジック)。
-          TRAIN_DATA_SKIP=0
-          if [ -s train_data.csv ]; then
-            gzip -k -9 -f train_data.csv
-            ls -la train_data.csv train_data.csv.gz
-            TD_GZ_BYTES=$(stat -c%s train_data.csv.gz)
-            TD_GZ_MB=$((TD_GZ_BYTES / 1000000))
-            echo "train_data.csv.gz size: ${TD_GZ_MB} MB"
-            if [ "$TD_GZ_BYTES" -ge 97000000 ]; then
-              echo "❌ train_data.csv.gzが97MBを超えました。今回のtrain_data.csv.gz更新は" \
-                   "スキップし、直前にコミット済みの内容を維持します(要調査)。"
-              TRAIN_DATA_SKIP=1
-            elif [ "$TD_GZ_BYTES" -ge 90000000 ]; then
-              echo "⚠️ train_data.csv.gzが90MBに接近しています。保持方針の見直しを検討してください。"
-            fi
-          else
-            echo 'ℹ️ train_data.csvが無い/空のため圧縮をスキップします'
-          fi
-          echo "TRAIN_DATA_SKIP=${TRAIN_DATA_SKIP}" >> "$GITHUB_ENV"
+      # ★変更(2026-09): train_data.csvはこのジョブでもdaily_model_retrain.py経由で
+      # 副次的に再生成されるが、daily-model-retrain.ymlと同じ理由でgit管理対象から
+      # 完全に外し、Actions artifact(30日保持)としてのみ保存する。walk_forward_
+      # all_candidates.csv.gzは引き続きgit管理対象(このリポジトリの主要な生成物)
+      # のため、そちらのgzip圧縮・サイズガードは変更しない。
+      - name: Upload train data artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: train-data-csv-refresh-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: train_data.csv
 
       - name: Commit refreshed candidates
         run: |
@@ -249,17 +251,17 @@ jobs:
           # 「このジョブの最新出力」で上書きしてよい)。
           stage_and_commit() {
             git rm --cached --ignore-unmatch walk_forward_all_candidates.csv >/dev/null 2>&1 || true
-            git rm --cached --ignore-unmatch train_data.csv >/dev/null 2>&1 || true
-            rm -f train_data.csv
+            # ★変更(2026-09): train_data.csv/.gzはもはやgit管理対象ではない
+            # (直前のUpload train data artifactステップでActions artifactとして
+            # 保存済み)。古いorigin/mainがまだ追跡している場合に備えてgit rm
+            # --cachedし、作業ツリーの生成物もrebase時のcheckout衝突を避けるため
+            # 削除する。
+            git rm --cached --ignore-unmatch train_data.csv train_data.csv.gz >/dev/null 2>&1 || true
+            rm -f train_data.csv train_data.csv.gz
             if [ "${WF_SKIP:-0}" = "1" ]; then
               echo '⏭ walk_forward_all_candidates.csv.gzのサイズガードによりgit addをスキップします'
             else
               git add walk_forward_all_candidates.csv.gz 2>/dev/null || true
-            fi
-            if [ "${TRAIN_DATA_SKIP:-0}" = "1" ]; then
-              echo '⏭ train_data.csv.gzのサイズガードによりgit addをスキップします'
-            else
-              git add train_data.csv.gz 2>/dev/null || true
             fi
             git add model.pkl 2>/dev/null || true
             git add -u

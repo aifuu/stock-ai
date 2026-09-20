@@ -15,6 +15,7 @@ fixtures are written under a TemporaryDirectory.
 import ast
 import gzip
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -144,31 +145,69 @@ class GzipRoundTripIdenticalDataFrame(unittest.TestCase):
 
 class WorkflowAndGitignoreInvariants(unittest.TestCase):
     """Static regression guard over the actual committed workflow/.gitignore
-    content (no execution): catches accidental removal of the size guard,
-    the gz-only tracking, or the push-trigger branch scope fix."""
+    content (no execution): catches accidental removal of the artifact
+    upload, the "never commit train_data.csv[.gz]" invariant, the
+    walk_forward_all_candidates.csv.gz size guard, or the push-trigger
+    branch scope fix."""
 
     def _read(self, relpath):
         return (REPO_ROOT / relpath).read_text(encoding="utf-8")
 
-    def test_gitignore_excludes_plain_train_data_csv(self):
+    def _yaml(self, relpath):
+        import yaml
+
+        return yaml.safe_load(self._read(relpath))
+
+    def test_gitignore_excludes_plain_and_gz_train_data_csv(self):
         gitignore = self._read(".gitignore")
         lines = [l.strip() for l in gitignore.splitlines()]
         self.assertIn("train_data.csv", lines)
+        self.assertIn("train_data.csv.gz", lines)
 
-    def test_daily_retrain_workflow_has_size_guard_and_gz_tracking(self):
-        wf = self._read(".github/workflows/daily-model-retrain.yml")
-        self.assertIn("gzip -k -9 -f train_data.csv", wf)
-        self.assertIn("97000000", wf)
-        self.assertIn("90000000", wf)
-        self.assertIn("git add train_data.csv.gz", wf)
-        self.assertIn("git rm --cached --ignore-unmatch train_data.csv", wf)
-        self.assertNotIn("git add train_data.csv 2>/dev/null", wf)
+    def _assert_uploads_train_data_as_artifact(self, wf_yaml, retention_days=30):
+        steps = wf_yaml["jobs"][next(iter(wf_yaml["jobs"]))]["steps"]
+        upload_steps = [
+            s
+            for s in steps
+            if s.get("uses", "").startswith("actions/upload-artifact@")
+            and "train_data.csv" in str(s.get("with", {}).get("path", ""))
+        ]
+        self.assertEqual(
+            len(upload_steps), 1, "expected exactly one train_data.csv artifact upload step"
+        )
+        self.assertEqual(upload_steps[0]["with"]["path"], "train_data.csv")
+        self.assertEqual(upload_steps[0]["with"]["retention-days"], retention_days)
 
-    def test_refresh_candidates_workflow_has_size_guard_and_gz_tracking(self):
+    def _assert_never_commits_train_data(self, wf_text):
+        # train_data.csv (plain or gz) must never be `git add`-ed anywhere:
+        # only defensive `git rm --cached` of a possibly still-tracked copy.
+        self.assertNotIn("git add train_data.csv", wf_text)
+        self.assertIn("git rm --cached --ignore-unmatch train_data.csv train_data.csv.gz", wf_text)
+        self.assertNotIn("gzip -k -9 -f train_data.csv", wf_text)
+
+    def test_daily_retrain_workflow_uploads_artifact_and_never_commits_train_data(self):
+        wf_text = self._read(".github/workflows/daily-model-retrain.yml")
+        self._assert_never_commits_train_data(wf_text)
+        self._assert_uploads_train_data_as_artifact(self._yaml(".github/workflows/daily-model-retrain.yml"))
+
+    def test_refresh_candidates_workflow_uploads_artifact_and_never_commits_train_data(self):
+        wf_text = self._read(".github/workflows/refresh-walk-forward-candidates.yml")
+        self._assert_never_commits_train_data(wf_text)
+        self._assert_uploads_train_data_as_artifact(
+            self._yaml(".github/workflows/refresh-walk-forward-candidates.yml")
+        )
+
+    def test_refresh_candidates_still_commits_walk_forward_gz_with_staged_warnings(self):
+        # walk_forward_all_candidates.csv.gz is unaffected by this change: it
+        # stays git-tracked, and now carries staged 80/90/95MB annotations on
+        # top of the pre-existing 90/97MB text warning + hard skip.
         wf = self._read(".github/workflows/refresh-walk-forward-candidates.yml")
-        self.assertIn("gzip -k -9 -f train_data.csv", wf)
-        self.assertIn("git add train_data.csv.gz", wf)
-        self.assertIn("git rm --cached --ignore-unmatch train_data.csv", wf)
+        self.assertIn("git add walk_forward_all_candidates.csv.gz", wf)
+        self.assertIn("gzip -k -9 -f walk_forward_all_candidates.csv", wf)
+        self.assertIn('::warning::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 80MB', wf)
+        self.assertIn('::warning::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 90MB', wf)
+        self.assertIn('::error::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 95MB', wf)
+        self.assertIn("97000000", wf)
 
     def test_refresh_candidates_push_trigger_is_scoped_to_main(self):
         # Regression guard for the incident this fix responds to: an
@@ -178,6 +217,24 @@ class WorkflowAndGitignoreInvariants(unittest.TestCase):
         wf = self._read(".github/workflows/refresh-walk-forward-candidates.yml")
         push_section = wf.split("push:", 1)[1].split("schedule:", 1)[0]
         self.assertIn("branches: [main]", push_section)
+
+    def test_no_workflow_or_python_file_reads_a_committed_train_data_copy(self):
+        # The only file that ever reads train_data.csv/.gz on a fresh
+        # checkout (without regenerating it first in the same job) is
+        # stock_scan.py's load_training_data(), which is never imported or
+        # executed by any workflow (only py_compile'd / ast-parsed) and
+        # already degrades gracefully (returns None, None) when neither
+        # file exists. daily_directional_top1.py defines TRAIN_FILE but
+        # never reads it in the production (load_model/main) path.
+        read_pattern = re.compile(r"read_csv\([^)]*(TRAIN_FILE|train_data\.csv|train_path)")
+        consumers = []
+        for py_file in sorted(REPO_ROOT.glob("*.py")):
+            if py_file.name == Path(__file__).name:
+                continue
+            text = py_file.read_text(encoding="utf-8", errors="ignore")
+            if read_pattern.search(text):
+                consumers.append(py_file.name)
+        self.assertEqual(consumers, ["stock_scan.py"])
 
 
 if __name__ == "__main__":

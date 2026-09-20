@@ -104,40 +104,31 @@ jobs:
           rm -f model_prev.pkl
           echo '✅ 一時退避model_prev.pklを削除（Git/Artifactには残さない）'
 
-      # ★追加(2026-09): train_data.csvはプレーンCSVのままgit管理すると
-      # walk_forward_all_candidates.csv(修正: b292b03)と同じ構造的リスク
-      # (GitHubのpush時ファイルサイズ上限100MBにいつか抵触)を抱えるため、
-      # gzip圧縮した.gzのみをgit管理対象にする。read側(stock_scan.py)は
-      # train_data.csv.gzへのフォールバックに対応済みで、このジョブ内では
-      # 直前のステップが書いたプレーンtrain_data.csvをそのまま圧縮するだけ
-      # (train_data.csv自体の生成ロジック・列は一切変更しない)。
-      # 圧縮後も上限に接近/超過する場合は、pushを失敗させる代わりに
-      # git addをスキップして前回コミット済みの内容を維持する(このジョブの
-      # 主目的はOOSゲート付きモデル再学習であり、train_data.csvの更新が
-      # それを止めてはならないため)。
-      - name: Compress train data for git storage
+      # ★変更(2026-09): train_data.csvはこのジョブの中で毎回全期間から完全に
+      # 再生成される中間データであり、gitで履歴管理する必要が無い
+      # (gzip圧縮してgit管理していたverify/train-data-csv-gz時点の設計は、
+      # 圧縮後もpush毎に新規blobとしてリポジトリに積み増され続け、GitHubの
+      # リポジトリサイズを圧迫し続ける問題を解決できていなかった)。
+      # git管理を完全にやめ、直後のUpload train data artifactステップで
+      # Actions artifact(30日保持)としてのみ保存する。読む側で唯一
+      # train_data.csv/.gzを参照するstock_scan.pyは、このワークフローからは
+      # 呼び出されておらず(py_compileのみ)、フレッシュチェックアウトで
+      # ファイルが存在しない場合は元々None,Noneを返す設計のため影響しない。
+      # アーティファクトのアップロードはgit tracking除去・削除より前に
+      # 行う必要があるため、コミットステップより前に配置する。
+      - name: Upload train data artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: train-data-csv-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: train_data.csv
+
+      - name: Remove temporary train_data.csv from git tracking
         if: always()
         run: |
-          TRAIN_DATA_SKIP=0
-          if [ -s train_data.csv ]; then
-            gzip -k -9 -f train_data.csv
-            ls -la train_data.csv train_data.csv.gz
-            TD_GZ_BYTES=$(stat -c%s train_data.csv.gz)
-            TD_GZ_MB=$((TD_GZ_BYTES / 1000000))
-            echo "train_data.csv.gz size: ${TD_GZ_MB} MB"
-            if [ "$TD_GZ_BYTES" -ge 97000000 ]; then
-              echo "❌ train_data.csv.gzが97MBを超えました。GitHubのpush上限(100MB)に" \
-                   "抵触する恐れがあるため、今回のtrain_data.csv.gz更新はスキップし、" \
-                   "直前にコミット済みの内容を維持します(要調査)。"
-              TRAIN_DATA_SKIP=1
-            elif [ "$TD_GZ_BYTES" -ge 90000000 ]; then
-              echo "⚠️ train_data.csv.gzが90MBに接近しています。GitHubのpush上限(100MB)に" \
-                   "将来再度抵触する可能性があるため、保持方針の見直しを検討してください。"
-            fi
-          else
-            echo 'ℹ️ train_data.csvが無い/空のため圧縮をスキップします'
-          fi
-          echo "TRAIN_DATA_SKIP=${TRAIN_DATA_SKIP}" >> "$GITHUB_ENV"
+          git rm --cached --ignore-unmatch train_data.csv train_data.csv.gz >/dev/null 2>&1 || true
 
       - name: Commit retraining and feedback artifacts safely
         if: always()
@@ -145,28 +136,16 @@ jobs:
           set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # ★修正(2026-09): 実際にOOSゲートを通過したモデルは
-          # directional_model.pkl(daily_directional_top1.py / profit_top10_paper.py
-          # が読む本番ファイル)。旧"model.pkl"は無関係な別ファイル名で、
-          # 生成された検証済みモデルが一度もコミットされずランナー終了と共に
-          # 消滅していた。
-          # ★変更(2026-09): 上記の事故(2026-09-03)は当時のファイル名不一致バグが
-          # 原因でgit add自体が実質的に空振りしていた。同種の再発(git add失敗の
-          # 黙殺・将来のtypo等)を検知できるよう、add前に「新規/更新されたdirectional_
-          # model.pklが作業ツリーにあるか」を記録しておき、あった場合はadd後に必ず
-          # stageされていることを確認する(deploy=Falseで既存モデル無変更の通常ケース
-          # では何もチェックしない、誤検知防止)。
-          # ★修正(2026-09): train_data.csvがmain上でまだプレーンCSVとして
-          # 追跡されている間(移行後の最初の数回の実行)は、git rm --cached
-          # だけでは作業ツリーにプレーンtrain_data.csvが未追跡ファイルとして
-          # 残ってしまい、その後のrebaseがorigin/mainの当該コミット(train_data.csv
-          # をまだ追跡している)へチェックアウトしようとした際に
+          # ★修正(2026-09): train_data.csvがmain上でまだ(プレーンCSV or .gzとして)
+          # 追跡されている間(この移行の最初の数回の実行)は、git rm --cached
+          # だけでは作業ツリーに生成物が未追跡ファイルとして残ってしまい、
+          # その後のrebaseがorigin/mainの当該コミット(train_data.csv[.gz]を
+          # まだ追跡している)へチェックアウトしようとした際に
           # 「would be overwritten by checkout」で必ず失敗する
-          # (5分間隔のpaper-trading state commit等、このジョブの実行中に
-          # 他のコミットがmainへ1つでも積まれると発生。ローカルsimulationで
-          # 実測・再現済み)。stage_and_commitを関数化し、rebaseが競合で
-          # 失敗した場合はリトライ毎に「git reset(mixed)でHEAD/indexだけを
-          # origin/mainへ合わせ、作業ツリーの生成済み出力(train_data.csv.gz等)は
+          # (このジョブの実行中に他のコミットがmainへ1つでも積まれると発生。
+          # ローカルsimulationで実測・再現済み)。stage_and_commitを関数化し、
+          # rebaseが競合で失敗した場合はリトライ毎に「git reset(mixed)で
+          # HEAD/indexだけをorigin/mainへ合わせ、作業ツリーの生成済み出力は
           # 保持したまま再ステージ・再コミットする」方式に変更する
           # (このジョブの出力は常に全期間からの完全な再生成であり、
           # 過去にコミット済みの内容とマージする意味は無いため、
@@ -185,13 +164,12 @@ jobs:
             # では何もチェックしない、誤検知防止)。
             PKL_CHANGED_BEFORE_ADD=$(git status --porcelain -- directional_model.pkl)
             git add directional_model.pkl 2>/dev/null || true
-            git rm --cached --ignore-unmatch train_data.csv >/dev/null 2>&1 || true
-            rm -f train_data.csv
-            if [ "${TRAIN_DATA_SKIP:-0}" = "1" ]; then
-              echo '⏭ train_data.csv.gzのサイズガードによりgit addをスキップします'
-            else
-              git add train_data.csv.gz 2>/dev/null || true
-            fi
+            # ★変更(2026-09): train_data.csvはもはやgit管理対象ではない
+            # (Upload retrain artifactsステップでActions artifactとしてのみ保存)。
+            # 古いorigin/mainがまだ追跡している場合に備えてgit rm --cachedし、
+            # 作業ツリーの生成物もrebase時のcheckout衝突を避けるため削除する。
+            git rm --cached --ignore-unmatch train_data.csv train_data.csv.gz >/dev/null 2>&1 || true
+            rm -f train_data.csv train_data.csv.gz
             git add daily_retrain_report.csv 2>/dev/null || true
             git add trade_feedback_policy.json 2>/dev/null || true
             git add trade_feedback_report.csv 2>/dev/null || true
@@ -225,7 +203,6 @@ jobs:
           if-no-files-found: warn
           path: |
             directional_model.pkl
-            train_data.csv
             daily_retrain_report.csv
             trade_feedback_policy.json
             trade_feedback_report.csv
