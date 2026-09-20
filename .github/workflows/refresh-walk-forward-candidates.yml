@@ -233,25 +233,43 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm --cached --ignore-unmatch walk_forward_all_candidates.csv >/dev/null 2>&1 || true
-          git rm --cached --ignore-unmatch train_data.csv >/dev/null 2>&1 || true
-          if [ "${WF_SKIP:-0}" = "1" ]; then
-            echo '⏭ walk_forward_all_candidates.csv.gzのサイズガードによりgit addをスキップします'
-          else
-            git add walk_forward_all_candidates.csv.gz 2>/dev/null || true
-          fi
-          if [ "${TRAIN_DATA_SKIP:-0}" = "1" ]; then
-            echo '⏭ train_data.csv.gzのサイズガードによりgit addをスキップします'
-          else
-            git add train_data.csv.gz 2>/dev/null || true
-          fi
-          git add model.pkl 2>/dev/null || true
-          git add -u
-          if git diff --cached --quiet; then
-            echo '変更なし'
-            exit 0
-          fi
-          git commit -m 'refresh: rebuild walk-forward candidates and diagnose OOS density [skip ci]'
+          # ★修正(2026-09): train_data.csvがmain上でまだプレーンCSVとして
+          # 追跡されている間(移行後の最初の数回の実行)は、git rm --cached
+          # だけでは作業ツリーにプレーンtrain_data.csvが未追跡ファイルとして
+          # 残ってしまい、その後のrebaseがorigin/mainの当該コミット(train_data.csv
+          # をまだ追跡している)へチェックアウトしようとした際に
+          # 「would be overwritten by checkout」で必ず失敗する
+          # (daily-model-retrain.yml等、他ジョブのコミットがこのジョブの実行中に
+          # mainへ1つでも積まれると発生。ローカルsimulationで実測・再現済み)。
+          # stage_and_commitを関数化し、rebaseが競合で失敗した場合はリトライ毎に
+          # 「git reset(mixed)でHEAD/indexだけをorigin/mainへ合わせ、作業ツリーの
+          # 生成済み出力(train_data.csv.gz等)は保持したまま再ステージ・再コミットする」
+          # 方式に変更する(このジョブの出力は常に全期間からの完全な再生成であり、
+          # 過去にコミット済みの内容とマージする意味は無いため、競合時は常に
+          # 「このジョブの最新出力」で上書きしてよい)。
+          stage_and_commit() {
+            git rm --cached --ignore-unmatch walk_forward_all_candidates.csv >/dev/null 2>&1 || true
+            git rm --cached --ignore-unmatch train_data.csv >/dev/null 2>&1 || true
+            rm -f train_data.csv
+            if [ "${WF_SKIP:-0}" = "1" ]; then
+              echo '⏭ walk_forward_all_candidates.csv.gzのサイズガードによりgit addをスキップします'
+            else
+              git add walk_forward_all_candidates.csv.gz 2>/dev/null || true
+            fi
+            if [ "${TRAIN_DATA_SKIP:-0}" = "1" ]; then
+              echo '⏭ train_data.csv.gzのサイズガードによりgit addをスキップします'
+            else
+              git add train_data.csv.gz 2>/dev/null || true
+            fi
+            git add model.pkl 2>/dev/null || true
+            git add -u
+            if git diff --cached --quiet; then
+              echo '変更なし'
+              exit 0
+            fi
+            git commit -m 'refresh: rebuild walk-forward candidates and diagnose OOS density [skip ci]'
+          }
+          stage_and_commit
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then
@@ -259,6 +277,8 @@ jobs:
               exit 0
             fi
             git rebase --abort || true
+            git reset origin/main
+            stage_and_commit
             sleep $((i * 3))
           done
           echo '❌ push failed'

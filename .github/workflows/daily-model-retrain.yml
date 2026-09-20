@@ -156,24 +156,54 @@ jobs:
           # model.pklが作業ツリーにあるか」を記録しておき、あった場合はadd後に必ず
           # stageされていることを確認する(deploy=Falseで既存モデル無変更の通常ケース
           # では何もチェックしない、誤検知防止)。
-          PKL_CHANGED_BEFORE_ADD=$(git status --porcelain -- directional_model.pkl)
-          git add directional_model.pkl 2>/dev/null || true
-          git rm --cached --ignore-unmatch train_data.csv >/dev/null 2>&1 || true
-          if [ "${TRAIN_DATA_SKIP:-0}" = "1" ]; then
-            echo '⏭ train_data.csv.gzのサイズガードによりgit addをスキップします'
-          else
-            git add train_data.csv.gz 2>/dev/null || true
-          fi
-          git add daily_retrain_report.csv 2>/dev/null || true
-          git add trade_feedback_policy.json 2>/dev/null || true
-          git add trade_feedback_report.csv 2>/dev/null || true
-          git add -u
-          if [ -n "$PKL_CHANGED_BEFORE_ADD" ] && ! git diff --cached --name-only | grep -qx 'directional_model.pkl'; then
-            echo '❌ directional_model.pklが新規/更新されているのにgit stageに含まれていません(git add失敗の可能性、要調査)'
-            exit 1
-          fi
-          git diff --cached --quiet && exit 0
-          git commit -m 'chore: daily model retrain and feedback [skip ci]'
+          # ★修正(2026-09): train_data.csvがmain上でまだプレーンCSVとして
+          # 追跡されている間(移行後の最初の数回の実行)は、git rm --cached
+          # だけでは作業ツリーにプレーンtrain_data.csvが未追跡ファイルとして
+          # 残ってしまい、その後のrebaseがorigin/mainの当該コミット(train_data.csv
+          # をまだ追跡している)へチェックアウトしようとした際に
+          # 「would be overwritten by checkout」で必ず失敗する
+          # (5分間隔のpaper-trading state commit等、このジョブの実行中に
+          # 他のコミットがmainへ1つでも積まれると発生。ローカルsimulationで
+          # 実測・再現済み)。stage_and_commitを関数化し、rebaseが競合で
+          # 失敗した場合はリトライ毎に「git reset(mixed)でHEAD/indexだけを
+          # origin/mainへ合わせ、作業ツリーの生成済み出力(train_data.csv.gz等)は
+          # 保持したまま再ステージ・再コミットする」方式に変更する
+          # (このジョブの出力は常に全期間からの完全な再生成であり、
+          # 過去にコミット済みの内容とマージする意味は無いため、
+          # 競合時は常に「このジョブの最新出力」で上書きしてよい)。
+          stage_and_commit() {
+            # ★修正(2026-09): 実際にOOSゲートを通過したモデルは
+            # directional_model.pkl(daily_directional_top1.py / profit_top10_paper.py
+            # が読む本番ファイル)。旧"model.pkl"は無関係な別ファイル名で、
+            # 生成された検証済みモデルが一度もコミットされずランナー終了と共に
+            # 消滅していた。
+            # ★変更(2026-09): 上記の事故(2026-09-03)は当時のファイル名不一致バグが
+            # 原因でgit add自体が実質的に空振りしていた。同種の再発(git add失敗の
+            # 黙殺・将来のtypo等)を検知できるよう、add前に「新規/更新されたdirectional_
+            # model.pklが作業ツリーにあるか」を記録しておき、あった場合はadd後に必ず
+            # stageされていることを確認する(deploy=Falseで既存モデル無変更の通常ケース
+            # では何もチェックしない、誤検知防止)。
+            PKL_CHANGED_BEFORE_ADD=$(git status --porcelain -- directional_model.pkl)
+            git add directional_model.pkl 2>/dev/null || true
+            git rm --cached --ignore-unmatch train_data.csv >/dev/null 2>&1 || true
+            rm -f train_data.csv
+            if [ "${TRAIN_DATA_SKIP:-0}" = "1" ]; then
+              echo '⏭ train_data.csv.gzのサイズガードによりgit addをスキップします'
+            else
+              git add train_data.csv.gz 2>/dev/null || true
+            fi
+            git add daily_retrain_report.csv 2>/dev/null || true
+            git add trade_feedback_policy.json 2>/dev/null || true
+            git add trade_feedback_report.csv 2>/dev/null || true
+            git add -u
+            if [ -n "$PKL_CHANGED_BEFORE_ADD" ] && ! git diff --cached --name-only | grep -qx 'directional_model.pkl'; then
+              echo '❌ directional_model.pklが新規/更新されているのにgit stageに含まれていません(git add失敗の可能性、要調査)'
+              exit 1
+            fi
+            git diff --cached --quiet && exit 0
+            git commit -m 'chore: daily model retrain and feedback [skip ci]'
+          }
+          stage_and_commit
           for i in 1 2 3 4 5; do
             git fetch origin main
             if git rebase --autostash origin/main && git push origin HEAD:main; then
@@ -181,6 +211,8 @@ jobs:
               exit 0
             fi
             git rebase --abort || true
+            git reset origin/main
+            stage_and_commit
             sleep $((i * 3))
           done
           echo '❌ daily model retrain/feedback push失敗'
