@@ -57,16 +57,40 @@ jobs:
           python -m py_compile adversarial_oos_diagnostic.py
           python -m py_compile build_strategy_policy.py
 
-      # ★修正(2026-09): walk_forward_all_candidates.csvはGitHubのpushサイズ上限を
-      # 避けるため、git管理はgzip圧縮版(walk_forward_all_candidates.csv.gz)のみに
-      # 切り替えた(refresh-walk-forward-candidates.yml参照)。checkout直後にここで
-      # 展開しておかないと、次の"Build candidates when needed"が誤って
-      # (実際には最新候補があるのに)再生成フォールバックに入ってしまう。
+      # ★変更(2026-09): walk_forward_all_candidates.csv.gzはもうgit管理対象
+      # ではなく、GitHub Release(walk-forward-candidates-latest)のアセットとして
+      # 配布される(refresh-walk-forward-candidates.yml参照)。checkout直後に
+      # releaseからダウンロードし、ダウンロードに失敗した場合のみ、まだgit管理
+      # 下に残っている可能性のある.gz(移行期のフォールバック)を使う。どちらも
+      # 無ければ(このワークフローだけは)次の"Build candidates when needed"の
+      # ゼロからの再生成フォールバックに委ねる(このワークフローの既存の
+      # 再生成フォールバックを壊さないよう、ここではジョブを失敗させない)。
       # ゲート条件・探索範囲・検証ロジックは変更していない。
-      - name: Materialize candidates CSV from compressed git storage
+      - name: Materialize candidates CSV from release or compressed git storage
         run: |
-          if [ ! -s walk_forward_all_candidates.csv ] && [ -f walk_forward_all_candidates.csv.gz ]; then
-            gunzip -k walk_forward_all_candidates.csv.gz
+          if [ ! -s walk_forward_all_candidates.csv ]; then
+            GZ_FROM_GIT=0
+            [ -f walk_forward_all_candidates.csv.gz ] && GZ_FROM_GIT=1
+            DOWNLOADED=0
+            for i in 1 2 3; do
+              if curl -fL -o walk_forward_all_candidates.csv.gz.tmp \
+                "https://github.com/aifuu/stock-ai/releases/download/walk-forward-candidates-latest/walk_forward_all_candidates.csv.gz"; then
+                mv -f walk_forward_all_candidates.csv.gz.tmp walk_forward_all_candidates.csv.gz
+                DOWNLOADED=1
+                break
+              fi
+              rm -f walk_forward_all_candidates.csv.gz.tmp
+              echo "⚠️ release資産のダウンロード失敗 (試行${i}/3)"
+              sleep $((i * 5))
+            done
+            if [ "$DOWNLOADED" != "1" ] && [ "$GZ_FROM_GIT" = "1" ]; then
+              echo '⚠️ releaseダウンロードに失敗したため、git管理下の.gz(移行期のフォールバック)を使用します'
+            fi
+            if [ -f walk_forward_all_candidates.csv.gz ]; then
+              gunzip -k walk_forward_all_candidates.csv.gz
+            else
+              echo '⚠️ walk_forward_all_candidates.csv.gzが見つかりません。次のBuild candidates when neededでゼロから再生成します。'
+            fi
           fi
 
       - name: Build candidates when needed
@@ -292,16 +316,40 @@ jobs:
           python -m py_compile multi_oos_profit_gate.py
           python -m py_compile build_strategy_policy.py
 
-      # ★修正(2026-09): walk_forward_all_candidates.csvはGitHubのpushサイズ上限を
-      # 避けるため、git管理はgzip圧縮版(walk_forward_all_candidates.csv.gz)のみに
-      # 切り替えた(refresh-walk-forward-candidates.yml参照)。checkout直後にここで
-      # 展開しておかないと、次の"Build candidates when needed"が誤って
-      # (実際には最新候補があるのに)再生成フォールバックに入ってしまう。
+      # ★変更(2026-09): walk_forward_all_candidates.csv.gzはもうgit管理対象
+      # ではなく、GitHub Release(walk-forward-candidates-latest)のアセットとして
+      # 配布される(refresh-walk-forward-candidates.yml参照)。checkout直後に
+      # releaseからダウンロードし、ダウンロードに失敗した場合のみ、まだgit管理
+      # 下に残っている可能性のある.gz(移行期のフォールバック)を使う。どちらも
+      # 無ければ(このワークフローだけは)次の"Build candidates when needed"の
+      # ゼロからの再生成フォールバックに委ねる(このワークフローの既存の
+      # 再生成フォールバックを壊さないよう、ここではジョブを失敗させない)。
       # ゲート条件・探索範囲・検証ロジックは変更していない。
-      - name: Materialize candidates CSV from compressed git storage
+      - name: Materialize candidates CSV from release or compressed git storage
         run: |
-          if [ ! -s walk_forward_all_candidates.csv ] && [ -f walk_forward_all_candidates.csv.gz ]; then
-            gunzip -k walk_forward_all_candidates.csv.gz
+          if [ ! -s walk_forward_all_candidates.csv ]; then
+            GZ_FROM_GIT=0
+            [ -f walk_forward_all_candidates.csv.gz ] && GZ_FROM_GIT=1
+            DOWNLOADED=0
+            for i in 1 2 3; do
+              if curl -fL -o walk_forward_all_candidates.csv.gz.tmp \
+                "https://github.com/aifuu/stock-ai/releases/download/walk-forward-candidates-latest/walk_forward_all_candidates.csv.gz"; then
+                mv -f walk_forward_all_candidates.csv.gz.tmp walk_forward_all_candidates.csv.gz
+                DOWNLOADED=1
+                break
+              fi
+              rm -f walk_forward_all_candidates.csv.gz.tmp
+              echo "⚠️ release資産のダウンロード失敗 (試行${i}/3)"
+              sleep $((i * 5))
+            done
+            if [ "$DOWNLOADED" != "1" ] && [ "$GZ_FROM_GIT" = "1" ]; then
+              echo '⚠️ releaseダウンロードに失敗したため、git管理下の.gz(移行期のフォールバック)を使用します'
+            fi
+            if [ -f walk_forward_all_candidates.csv.gz ]; then
+              gunzip -k walk_forward_all_candidates.csv.gz
+            else
+              echo '⚠️ walk_forward_all_candidates.csv.gzが見つかりません。次のBuild candidates when neededでゼロから再生成します。'
+            fi
           fi
 
       - name: Build candidates when needed

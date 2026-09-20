@@ -184,10 +184,12 @@ jobs:
       # プレーンCSVのままgit管理するとGitHubのpush時ファイルサイズ上限(100MB)を
       # いつか必ず超えて "pre-receive hook declined" で永久に失敗する
       # (実測: 2026-09-18 run 35407517293で133.47MBとなり実際に拒否された)。
-      # gzip圧縮した.gzのみをgit管理対象にし、プレーンCSV自体はコミットしない
-      # ようにする(読む側の全スクリプトはこの実行内でrm -f直後に作り直された
+      # gzip圧縮は今も毎回行う(圧縮後のファイルをGitHub Releaseアセットとして
+      # アップロードするため)。★変更(2026-09): この.gz自体はもうgit管理対象
+      # ではない(下のUpload candidates release asset to GitHub Releaseステップ
+      # 参照。読む側の全スクリプトはこの実行内でrm -f直後に作り直された
       # プレーンCSVをそのまま読むため、フォーマット変更は一切不要)。
-      - name: Compress candidates CSV for git storage
+      - name: Compress candidates CSV for release upload
         run: |
           WF_SKIP=0
           gzip -k -9 -f walk_forward_all_candidates.csv
@@ -195,10 +197,11 @@ jobs:
           GZ_BYTES=$(stat -c%s walk_forward_all_candidates.csv.gz)
           GZ_MB=$((GZ_BYTES / 1000000))
           echo "walk_forward_all_candidates.csv.gz size: ${GZ_MB} MB"
-          # ★追加(2026-09): 100MB上限に対する段階的な可視化として、80/90/95MBで
-          # ワークフローアノテーション(::warning::/::error::)を追加する。
-          # 実際のgit add抑止(fail-safe)は従来通り97MBのWF_SKIPで行い、
-          # この段階警告はしきい値やスキップ挙動を変更しない。
+          # ★追加(2026-09): 段階的な可視化として、80/90/95MBでワークフロー
+          # アノテーション(::warning::/::error::)を追加する。実際のfail-safe
+          # (97MBのWF_SKIP)は、以前はgit addの抑止だったが、release移行後は
+          # release資産の更新抑止(前回資産を維持)に読み替える。この段階警告
+          # 自体のしきい値やスキップ挙動は変更しない。
           if [ "$GZ_MB" -ge 95 ]; then
             echo "::error::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 95MB (GitHub push limit 100MB) - approaching hard skip threshold (97MB)"
           elif [ "$GZ_MB" -ge 90 ]; then
@@ -217,11 +220,36 @@ jobs:
           fi
           echo "WF_SKIP=${WF_SKIP}" >> "$GITHUB_ENV"
 
+      # ★変更(2026-09): walk_forward_all_candidates.csv.gzは毎週の全期間再生成の
+      # たびにgitへ~63MBの非圧縮性バイナリdiffを積み増し、リポジトリサイズを
+      # 際限なく肥大化させていた。git管理をやめ、rolling release
+      # (walk-forward-candidates-latest)のアセットとして配布する。releaseの
+      # アセットサイズ上限はgit pushの100MB制限よりずっと大きいため、
+      # WF_SKIPの意味はgit addの抑止からrelease更新の抑止に読み替える
+      # (=巨大化時は前回のrelease資産をそのまま維持する)。
+      - name: Upload candidates release asset to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '============================================================'
+          echo '📦 UPLOAD walk_forward_all_candidates.csv.gz TO RELEASE'
+          echo '目的: 巨大バイナリのgit管理をやめ、GitHub Releaseアセット'
+          echo '(walk-forward-candidates-latest)として配布する'
+          echo '============================================================'
+          if [ "${WF_SKIP:-0}" = "1" ]; then
+            echo '⏭ サイズガードによりrelease資産の更新をスキップします(前回の資産を維持)'
+            exit 0
+          fi
+          gh release create walk-forward-candidates-latest \
+            --title 'walk-forward-candidates-latest' \
+            --notes 'Machine-updated data asset (not a software release). walk_forward_all_candidates.csv.gz is refreshed automatically by refresh-walk-forward-candidates.yml and overwritten in place via --clobber on every successful run.' \
+            --prerelease || true
+          gh release upload walk-forward-candidates-latest walk_forward_all_candidates.csv.gz --clobber
+          echo '✅ release asset uploaded'
+
       # ★変更(2026-09): train_data.csvはこのジョブでもdaily_model_retrain.py経由で
       # 副次的に再生成されるが、daily-model-retrain.ymlと同じ理由でgit管理対象から
-      # 完全に外し、Actions artifact(30日保持)としてのみ保存する。walk_forward_
-      # all_candidates.csv.gzは引き続きgit管理対象(このリポジトリの主要な生成物)
-      # のため、そちらのgzip圧縮・サイズガードは変更しない。
+      # 完全に外し、Actions artifact(30日保持)としてのみ保存する。
       - name: Upload train data artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -251,6 +279,28 @@ jobs:
           # 「このジョブの最新出力」で上書きしてよい)。
           stage_and_commit() {
             git rm --cached --ignore-unmatch walk_forward_all_candidates.csv >/dev/null 2>&1 || true
+            # ★変更(2026-09): walk_forward_all_candidates.csv.gzはもはやgit管理
+            # 対象ではない(直前のUpload candidates release asset to GitHub
+            # Releaseステップでrelease資産としてアップロード済み。アップロードが
+            # 失敗した場合はこのステップより前でジョブが失敗し、ここには到達しない
+            # ため、git管理を外すのはアップロードが実際に行われた場合のみでよい
+            # はずだが、WF_SKIP=1の場合はそのUploadステップ自体がアップロードを
+            # スキップする(前回のrelease資産を維持するだけで、今回は何もしない)。
+            # そのままここで無条件にgit rm --cachedすると、たまたま最初の移行
+            # 直後の実行でWF_SKIP=1が発生した場合にrelease資産もgit管理下の
+            # コピーもどちらも存在しない状態になりかねない。WF_SKIP=1の間は
+            # Uploadステップと同様にgit管理を外す処理自体もスキップし、既存の
+            # git管理下コピー(あれば)をそのまま維持する。
+            if [ "${WF_SKIP:-0}" != "1" ]; then
+              git rm --cached --ignore-unmatch walk_forward_all_candidates.csv.gz >/dev/null 2>&1 || true
+              rm -f walk_forward_all_candidates.csv.gz
+            else
+              # 移行期にまだgit管理下にある場合、今回作業ツリーで上書きされた
+              # (巨大化した)gzをcommit済みの内容へ戻し、直後のgit add -uが
+              # それを拾って結局コミットしてしまう(WF_SKIPの意味が無くなる)
+              # のを防ぐ。
+              git checkout -- walk_forward_all_candidates.csv.gz 2>/dev/null || true
+            fi
             # ★変更(2026-09): train_data.csv/.gzはもはやgit管理対象ではない
             # (直前のUpload train data artifactステップでActions artifactとして
             # 保存済み)。古いorigin/mainがまだ追跡している場合に備えてgit rm
@@ -258,11 +308,6 @@ jobs:
             # 削除する。
             git rm --cached --ignore-unmatch train_data.csv train_data.csv.gz >/dev/null 2>&1 || true
             rm -f train_data.csv train_data.csv.gz
-            if [ "${WF_SKIP:-0}" = "1" ]; then
-              echo '⏭ walk_forward_all_candidates.csv.gzのサイズガードによりgit addをスキップします'
-            else
-              git add walk_forward_all_candidates.csv.gz 2>/dev/null || true
-            fi
             git add model.pkl 2>/dev/null || true
             git add -u
             if git diff --cached --quiet; then
