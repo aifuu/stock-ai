@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Unit tests for the train_data.csv -> train_data.csv.gz git-storage change.
+"""Unit tests for the train_data.csv -> train_data.csv.gz git-storage change,
+plus the walk_forward_all_candidates.csv.gz git -> GitHub Release asset
+change (release tag walk-forward-candidates-latest).
 
 stock_scan.py is not imported directly: importing it executes a large amount
 of module-level code (network downloads, feature computation, and even a
@@ -197,17 +199,169 @@ class WorkflowAndGitignoreInvariants(unittest.TestCase):
             self._yaml(".github/workflows/refresh-walk-forward-candidates.yml")
         )
 
-    def test_refresh_candidates_still_commits_walk_forward_gz_with_staged_warnings(self):
-        # walk_forward_all_candidates.csv.gz is unaffected by this change: it
-        # stays git-tracked, and now carries staged 80/90/95MB annotations on
-        # top of the pre-existing 90/97MB text warning + hard skip.
+    def test_refresh_candidates_still_gzips_with_staged_warnings(self):
+        # walk_forward_all_candidates.csv is still gzip-compressed every run
+        # (the release upload needs the .gz), and still carries the staged
+        # 80/90/95MB annotations on top of the pre-existing 90/97MB text
+        # warning + hard skip (now a release-upload skip, not a git-add skip;
+        # see test_refresh_candidates_untracks_gz_and_uploads_to_release).
         wf = self._read(".github/workflows/refresh-walk-forward-candidates.yml")
-        self.assertIn("git add walk_forward_all_candidates.csv.gz", wf)
         self.assertIn("gzip -k -9 -f walk_forward_all_candidates.csv", wf)
         self.assertIn('::warning::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 80MB', wf)
         self.assertIn('::warning::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 90MB', wf)
         self.assertIn('::error::walk_forward_all_candidates.csv.gz size ${GZ_MB}MB >= 95MB', wf)
         self.assertIn("97000000", wf)
+
+    RELEASE_TAG = "walk-forward-candidates-latest"
+    RELEASE_URL = (
+        "https://github.com/aifuu/stock-ai/releases/download/"
+        "walk-forward-candidates-latest/walk_forward_all_candidates.csv.gz"
+    )
+
+    def test_refresh_candidates_untracks_gz_and_uploads_to_release(self):
+        # walk_forward_all_candidates.csv.gz must never be `git add`-ed
+        # anymore (only defensively `git rm --cached`, exactly like
+        # train_data.csv/.gz already is): it is published as a GitHub
+        # Release asset instead.
+        wf = self._read(".github/workflows/refresh-walk-forward-candidates.yml")
+        self.assertNotIn("git add walk_forward_all_candidates.csv.gz", wf)
+        self.assertIn(
+            "git rm --cached --ignore-unmatch walk_forward_all_candidates.csv.gz", wf
+        )
+        self.assertIn(f"gh release upload {self.RELEASE_TAG} walk_forward_all_candidates.csv.gz --clobber", wf)
+        self.assertIn(f"gh release create {self.RELEASE_TAG}", wf)
+
+    def test_refresh_candidates_upload_step_precedes_untrack_commit_step(self):
+        # The release asset must exist before the gz is untracked from git
+        # (transition safety: consumers fall back to a git-tracked copy
+        # until it disappears). Steps run sequentially and the workflow has
+        # no continue-on-error, so this ordering alone guarantees a failed
+        # upload aborts the job before "Commit refreshed candidates" (and
+        # therefore its git rm --cached) ever runs.
+        wf_yaml = self._yaml(".github/workflows/refresh-walk-forward-candidates.yml")
+        steps = wf_yaml["jobs"]["refresh"]["steps"]
+        names = [s["name"] for s in steps]
+        upload_idx = names.index("Upload candidates release asset to GitHub Release")
+        commit_idx = names.index("Commit refreshed candidates")
+        self.assertLess(upload_idx, commit_idx)
+        upload_step = steps[upload_idx]
+        self.assertNotIn("continue-on-error", upload_step)
+        self.assertEqual(
+            upload_step.get("env", {}).get("GH_TOKEN"), "${{ secrets.GITHUB_TOKEN }}"
+        )
+
+    def test_refresh_candidates_untrack_is_gated_by_wf_skip_too(self):
+        # Regression guard: the git-untrack step in "Commit refreshed
+        # candidates" must be gated by the SAME WF_SKIP flag as the release
+        # upload. Without this, a WF_SKIP=1 run (release upload skipped)
+        # would still unconditionally `git rm --cached` the gz -- and, if
+        # this happened on the very first post-merge run (main still
+        # tracking the old gz), that run's oversized regenerated .csv.gz
+        # would then be silently swept into the commit by the unconditional
+        # `git add -u` below (since the file stays tracked once `git rm
+        # --cached` is skipped, `git add -u` restages ANY working-tree
+        # change to it) -- leaving neither a valid release asset nor a
+        # valid git-tracked copy, and defeating the whole point of WF_SKIP
+        # (verified against this exact failure mode via local simulation).
+        wf = self._read(".github/workflows/refresh-walk-forward-candidates.yml")
+        commit_step_text = wf.split("- name: Commit refreshed candidates", 1)[1]
+        self.assertIn(
+            'if [ "${WF_SKIP:-0}" != "1" ]; then\n'
+            "              git rm --cached --ignore-unmatch walk_forward_all_candidates.csv.gz",
+            commit_step_text,
+        )
+        # And when WF_SKIP=1, the working tree copy must be restored to the
+        # committed content, so the unconditional `git add -u` below finds
+        # no diff for it (instead of silently re-committing the oversized
+        # regenerated file).
+        self.assertIn("git checkout -- walk_forward_all_candidates.csv.gz", commit_step_text)
+
+    def test_refresh_candidates_release_upload_skipped_on_size_guard(self):
+        # WF_SKIP (>=97MB) used to skip `git add`; it must now skip the
+        # release upload instead (keeping the previous release asset), via
+        # an early `exit 0` before the `gh release` calls.
+        wf = self._read(".github/workflows/refresh-walk-forward-candidates.yml")
+        upload_step_text = wf.split("- name: Upload candidates release asset to GitHub Release", 1)[1]
+        upload_step_text = upload_step_text.split("\n      - name:", 1)[0]
+        self.assertIn('if [ "${WF_SKIP:-0}" = "1" ]; then', upload_step_text)
+        exit_idx = upload_step_text.index("exit 0")
+        create_idx = upload_step_text.index("gh release create")
+        self.assertLess(exit_idx, create_idx)
+
+    def test_gitignore_excludes_walk_forward_candidates_gz(self):
+        gitignore = self._read(".gitignore")
+        lines = [l.strip() for l in gitignore.splitlines()]
+        self.assertIn("walk_forward_all_candidates.csv.gz", lines)
+        self.assertIn("walk_forward_all_candidates.csv", lines)
+
+    CONSUMER_WORKFLOWS = [
+        ".github/workflows/fold4-up-probability-root-cause.yml",
+        ".github/workflows/fold4-up-probability-diagnostic.yml",
+        ".github/workflows/fold4-filter-diagnostic.yml",
+        ".github/workflows/profit-optimizer-validation.yml",
+    ]
+
+    def _materialize_step_texts(self, wf_text):
+        # profit-optimizer-validation.yml has two (matrix-adjacent) copies.
+        parts = wf_text.split("- name: Materialize candidates CSV from release or compressed git storage")
+        return [p.split("\n      - name:", 1)[0] for p in parts[1:]]
+
+    def test_every_consumer_has_release_download_with_git_fallback(self):
+        for relpath in self.CONSUMER_WORKFLOWS:
+            wf_text = self._read(relpath)
+            steps = self._materialize_step_texts(wf_text)
+            self.assertGreaterEqual(len(steps), 1, f"no Materialize step found in {relpath}")
+            for step_text in steps:
+                self.assertIn(self.RELEASE_URL, step_text)
+                self.assertIn("curl -fL", step_text)
+                # git-tracked fallback: only used when the download failed
+                # AND a git-tracked copy is already present from checkout.
+                self.assertIn("GZ_FROM_GIT", step_text)
+                self.assertIn("DOWNLOADED", step_text)
+
+    def test_fold4_consumers_fail_loudly_when_neither_source_available(self):
+        # The three fold4-* diagnostic workflows have no regeneration
+        # fallback of their own, so a missing CSV must abort the job with a
+        # clear message rather than let the next Python step crash with a
+        # confusing FileNotFoundError.
+        for relpath in [
+            ".github/workflows/fold4-up-probability-root-cause.yml",
+            ".github/workflows/fold4-up-probability-diagnostic.yml",
+            ".github/workflows/fold4-filter-diagnostic.yml",
+        ]:
+            wf_text = self._read(relpath)
+            steps = self._materialize_step_texts(wf_text)
+            for step_text in steps:
+                self.assertIn("exit 1", step_text)
+                self.assertIn("test -s walk_forward_all_candidates.csv", step_text)
+
+    def test_profit_optimizer_consumer_defers_to_its_own_regeneration_fallback(self):
+        # profit-optimizer-validation.yml already regenerates the CSV from
+        # scratch in its "Build candidates when needed" step when the file
+        # is still missing after Materialize. That existing fallback must
+        # not be short-circuited by a hard failure in the new Materialize
+        # step (this is a deliberate deviation from the fold4 workflows).
+        wf_text = self._read(".github/workflows/profit-optimizer-validation.yml")
+        steps = self._materialize_step_texts(wf_text)
+        self.assertEqual(len(steps), 2, "expected two matrix-adjacent Materialize steps")
+        for step_text in steps:
+            self.assertNotIn("exit 1", step_text)
+        self.assertIn("python daily_model_retrain.py", wf_text)
+        self.assertIn("python walk_forward.py", wf_text)
+        # Build candidates when needed still enforces a non-empty CSV in the end.
+        build_idx = wf_text.index("- name: Build candidates when needed")
+        self.assertIn(
+            "test -s walk_forward_all_candidates.csv", wf_text[build_idx:build_idx + 400]
+        )
+
+    def test_no_consumer_downloads_from_a_different_repo_or_tag(self):
+        # Regression guard against a copy/paste mistake pointing at the
+        # wrong repo or a non-rolling tag.
+        for relpath in self.CONSUMER_WORKFLOWS:
+            wf_text = self._read(relpath)
+            for step_text in self._materialize_step_texts(wf_text):
+                self.assertIn(f"/releases/download/{self.RELEASE_TAG}/", step_text)
+                self.assertNotIn("releases/latest/download", step_text)
 
     def test_refresh_candidates_push_trigger_is_scoped_to_main(self):
         # Regression guard for the incident this fix responds to: an

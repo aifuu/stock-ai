@@ -25,16 +25,40 @@ jobs:
       - name: Install dependencies
         run: pip install pandas numpy
 
-      # ★修正(2026-09): walk_forward_all_candidates.csvはGitHubのpushサイズ上限を
-      # 避けるため、git管理はgzip圧縮版(walk_forward_all_candidates.csv.gz)のみに
-      # 切り替えた(refresh-walk-forward-candidates.yml参照)。checkout直後にここで
-      # 展開しておけば、fold4_up_probability_diagnostic.pyは従来通りプレーンCSVを
-      # 読める。
-      - name: Materialize candidates CSV from compressed git storage
+      # ★変更(2026-09): walk_forward_all_candidates.csv.gzはもうgit管理対象
+      # ではなく、GitHub Release(walk-forward-candidates-latest)のアセットとして
+      # 配布される(refresh-walk-forward-candidates.yml参照)。checkout直後に
+      # releaseからダウンロードし、ダウンロードに失敗した場合のみ、まだgit管理
+      # 下に残っている可能性のある.gz(移行期のフォールバック)を使う。どちらも
+      # 無ければジョブを失敗させる。
+      - name: Materialize candidates CSV from release or compressed git storage
         run: |
-          if [ ! -s walk_forward_all_candidates.csv ] && [ -f walk_forward_all_candidates.csv.gz ]; then
+          if [ ! -s walk_forward_all_candidates.csv ]; then
+            GZ_FROM_GIT=0
+            [ -f walk_forward_all_candidates.csv.gz ] && GZ_FROM_GIT=1
+            DOWNLOADED=0
+            for i in 1 2 3; do
+              if curl -fL -o walk_forward_all_candidates.csv.gz.tmp \
+                "https://github.com/aifuu/stock-ai/releases/download/walk-forward-candidates-latest/walk_forward_all_candidates.csv.gz"; then
+                mv -f walk_forward_all_candidates.csv.gz.tmp walk_forward_all_candidates.csv.gz
+                DOWNLOADED=1
+                break
+              fi
+              rm -f walk_forward_all_candidates.csv.gz.tmp
+              echo "⚠️ release資産のダウンロード失敗 (試行${i}/3)"
+              sleep $((i * 5))
+            done
+            if [ "$DOWNLOADED" != "1" ]; then
+              if [ "$GZ_FROM_GIT" = "1" ]; then
+                echo '⚠️ releaseダウンロードに失敗したため、git管理下の.gz(移行期のフォールバック)を使用します'
+              else
+                echo '❌ walk_forward_all_candidates.csv.gzが見つかりません(release資産のダウンロードに失敗し、git管理下のフォールバックも存在しません)'
+                exit 1
+              fi
+            fi
             gunzip -k walk_forward_all_candidates.csv.gz
           fi
+          test -s walk_forward_all_candidates.csv
 
       - name: Run Fold 4 UP probability diagnostic
         run: python fold4_up_probability_diagnostic.py
