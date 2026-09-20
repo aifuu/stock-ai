@@ -12,6 +12,15 @@ on:
 permissions:
   contents: write
 
+# 独立の専用グループ。stock-ai-paper-trading(ai-stock-scan.yml)や
+# stock-ai-research(daily-model-retrain.yml、直前のJST 07:30に実行)と
+# グループを共有すると、このレポートがそれらライブ系ジョブの後ろに
+# 直列化されてしまう(cancel-in-progress: falseのため待たされる)。
+# 完全に独立したグループ名にして、ライブ系ジョブを一切ブロックしない。
+concurrency:
+  group: stock-ai-ticker-performance-report
+  cancel-in-progress: false
+
 jobs:
   report:
     runs-on: ubuntu-latest
@@ -49,7 +58,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add top10_ticker_performance.csv 2>/dev/null || true
           git diff --cached --quiet && exit 0
-          git commit -m 'Update TOP10 ticker performance report'
+          git commit -m 'Update TOP10 ticker performance report [skip ci]'
           PUSH_OK=0
           for i in 1 2 3 4 5; do
             git fetch origin main

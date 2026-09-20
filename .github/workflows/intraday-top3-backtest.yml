@@ -33,6 +33,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: stock-ai-intraday-top3-backtest
+  cancel-in-progress: false
+
 jobs:
   backtest:
     runs-on: ubuntu-latest
@@ -40,6 +44,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,11 +58,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas numpy requests
 
+      # スケジュール実行(workflow_dispatch inputsが空)の既定期間は、以前は
+      # 2026-08-01〜2026-08-22の固定リテラルだった。実行日が進むにつれて
+      # このリテラルは過去の期間を指し続けてしまうため、実行日(JST)基準の
+      # ローリングウィンドウに置き換える。窓の長さは元の期間と同じ21日間
+      # (2026-08-01〜2026-08-22)を維持する。
+      - name: Compute default backtest date range
+        run: |
+          END_DEFAULT=$(TZ=Asia/Tokyo date +%F)
+          START_DEFAULT=$(TZ=Asia/Tokyo date -d "$END_DEFAULT -21 days" +%F)
+          echo "DEFAULT_IT_END_DATE=$END_DEFAULT" >> "$GITHUB_ENV"
+          echo "DEFAULT_IT_START_DATE=$START_DEFAULT" >> "$GITHUB_ENV"
+
       - name: Run TOP3 intraday backtest
         env:
           TOP3_HISTORY_FILE: prediction_history.csv
-          IT_START_DATE: ${{ github.event.inputs.start_date || '2026-08-01' }}
-          IT_END_DATE: ${{ github.event.inputs.end_date || '2026-08-22' }}
+          IT_START_DATE: ${{ github.event.inputs.start_date || env.DEFAULT_IT_START_DATE }}
+          IT_END_DATE: ${{ github.event.inputs.end_date || env.DEFAULT_IT_END_DATE }}
           IT_MIN_SCORE: ${{ github.event.inputs.min_score || '70' }}
           IT_MIN_UP_PROB: ${{ github.event.inputs.min_up_prob || '60' }}
           IT_ATR_TP: ${{ github.event.inputs.atr_tp || '2.0' }}
@@ -89,27 +108,45 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add '*.csv' || true
+          for f in intraday_top3_backtest_results.csv intraday_top3_equity.csv; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
           if git diff --cached --quiet; then
             echo "結果CSVの変更なし"
-          else
-            git commit -m "chore: update TOP3 intraday backtest results" || true
-            git push || true
+            exit 0
+          fi
+          git commit -m "chore: update TOP3 intraday backtest results [skip ci]"
+          PUSH_OK=0
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
+              echo '✅ TOP3 intraday backtest push成功'
+              PUSH_OK=1
+              break
+            fi
+            git rebase --abort || true
+            sleep $((i*3))
+          done
+          if [ "$PUSH_OK" -ne 1 ]; then
+            echo '❌ TOP3 intraday backtest push失敗'
+            exit 1
           fi
 
       - name: Send Discord notification
         if: always()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          JOB_STATUS: ${{ job.status }}
+          IT_START_DATE: ${{ github.event.inputs.start_date || env.DEFAULT_IT_START_DATE }}
+          IT_END_DATE: ${{ github.event.inputs.end_date || env.DEFAULT_IT_END_DATE }}
+          IT_MIN_SCORE: ${{ github.event.inputs.min_score || '70' }}
+          IT_MIN_UP_PROB: ${{ github.event.inputs.min_up_prob || '60' }}
+          IT_ATR_TP: ${{ github.event.inputs.atr_tp || '2.0' }}
+          IT_ATR_SL: ${{ github.event.inputs.atr_sl || '1.0' }}
         run: |
           if [ -z "$DISCORD_WEBHOOK" ]; then
             echo "DISCORD_WEBHOOK未設定のため通知をスキップ"
             exit 0
-          fi
-
-          STATUS="✅ 成功"
-          if [ "${{ job.status }}" != "success" ]; then
-            STATUS="❌ 失敗"
           fi
 
           python - <<'PY'
@@ -117,8 +154,14 @@ jobs:
           import glob
           import requests
 
-          webhook = os.environ.get("DISCORD_WEBHOOK")
-          status = "✅ 成功" if "${{ job.status }}" == "success" else "❌ 失敗"
+          webhook = os.environ["DISCORD_WEBHOOK"]
+          status = "✅ 成功" if os.environ.get("JOB_STATUS") == "success" else "❌ 失敗"
+          start_date = os.environ.get("IT_START_DATE", "")
+          end_date = os.environ.get("IT_END_DATE", "")
+          min_score = os.environ.get("IT_MIN_SCORE", "")
+          min_up_prob = os.environ.get("IT_MIN_UP_PROB", "")
+          atr_tp = os.environ.get("IT_ATR_TP", "")
+          atr_sl = os.environ.get("IT_ATR_SL", "")
 
           files = []
           for pattern in ["top3_intraday_backtest*.csv", "intraday_top3_backtest*.csv", "*_monthly*.csv", "*_summary*.csv"]:
@@ -127,9 +170,9 @@ jobs:
           lines = [
               "📊 TOP3 寄り後チャート・当日決済バックテスト",
               f"実行結果：{status}",
-              f"期間：${{ github.event.inputs.start_date || '2026-08-01' }} ～ ${{ github.event.inputs.end_date || '2026-08-22' }}",
+              f"期間：{start_date} ～ {end_date}",
               "戦略：毎日TOP3 → 9:15～10:00チャート確認 → 最初の成立銘柄1件のみ → 当日15:25までに決済",
-              "条件：AIスコア≥${{ github.event.inputs.min_score || '70' }} / 上昇確率≥${{ github.event.inputs.min_up_prob || '60' }}% / ATR TP=${{ github.event.inputs.atr_tp || '2.0' }}x / SL=${{ github.event.inputs.atr_sl || '1.0' }}x",
+              f"条件：AIスコア≥{min_score} / 上昇確率≥{min_up_prob}% / ATR TP={atr_tp}x / SL={atr_sl}x",
           ]
 
           if files:

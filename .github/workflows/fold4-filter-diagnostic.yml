@@ -112,9 +112,21 @@ jobs:
             exit 0
           fi
           git commit -m 'diagnostic: record exact Fold 4 OOS filter funnel [skip ci]'
-          git fetch origin main
-          git rebase origin/main
-          git push origin HEAD:main
+          PUSH_OK=0
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
+              echo '✅ fold4 filter diagnostic push成功'
+              PUSH_OK=1
+              break
+            fi
+            git rebase --abort || true
+            sleep $((i*3))
+          done
+          if [ "$PUSH_OK" -ne 1 ]; then
+            echo '❌ fold4 filter diagnostic push失敗'
+            exit 1
+          fi
 
       - name: Upload diagnostic artifact
         uses: actions/upload-artifact@v4

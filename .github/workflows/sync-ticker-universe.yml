@@ -3,6 +3,15 @@ name: Sync Nikkei 225 universe
 on:
   push:
     branches: [main]
+    # sync_ticker_universe.pyはstock_scan.pyのTICKERSを読み取り、
+    # stock_scan.py/walk_forward.pyへ書き戻すだけで、他のどのワークフローも
+    # この2ファイルのTICKERS本体を書き換えない(grep済み)。したがって
+    # この2ファイル(と本ワークフロー自体)が変わらないpushでは常にno-opに
+    # なるため、pathsで対象を絞り毎push実行を避ける。
+    paths:
+      - stock_scan.py
+      - walk_forward.py
+      - .github/workflows/sync-ticker-universe.yml
   workflow_dispatch:
 
 permissions:
