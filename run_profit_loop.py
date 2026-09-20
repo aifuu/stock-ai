@@ -190,8 +190,14 @@ def open_top1_only(state,policy,candidates,today):
         if int(state.get("trades_today",0))>=MAX_DAILY_TRADES:break
         raw=cooldowns.get(ticker)
         if raw:
-            try:remaining=(_as_aware_jst(raw)+timedelta(minutes=SAME_TICKER_COOLDOWN_MINUTES)-now).total_seconds()
-            except Exception:remaining=0
+            try:
+                remaining=(_as_aware_jst(raw)+timedelta(minutes=SAME_TICKER_COOLDOWN_MINUTES)-now).total_seconds()
+            except Exception as e:
+                print(f"⚠️ 不正なクールダウン値を検出: {ticker} raw={raw!r} err={e} → 自己修復(新規クールダウン開始)")
+                try:app.discord_send(f"⚠️ クールダウン値が不正のため自己修復しました: {ticker} raw={raw!r} err={e}")
+                except Exception:pass
+                cooldowns[ticker]=app.pd.Timestamp(now).isoformat()
+                remaining=SAME_TICKER_COOLDOWN_MINUTES*60
             if remaining>0:print(f"⏸ 同一銘柄クールダウン中: {ticker} 残り約{int(remaining//60)+1}分");continue
             cooldowns.pop(ticker,None)
         eligible.append(candidate)

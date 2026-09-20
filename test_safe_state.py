@@ -140,6 +140,25 @@ class LoadJsonStateTests(TmpDirMixin, unittest.TestCase):
         quarantines = [f for f in os.listdir(".") if f.startswith("s.json.corrupt-")]
         self.assertEqual(len(quarantines), 1)
 
+    def test_repeated_corruption_within_one_second_keeps_every_quarantine(self):
+        # Several failures landing in the same wall-clock second must not
+        # collide on the same quarantine filename and overwrite each other.
+        with open("s.json", "w", encoding="utf-8") as f:
+            f.write("{not valid")
+        for _ in range(10):
+            with self.assertRaises(safe_state.StateCorruptError):
+                safe_state.load_json_state("s.json", label="s.json")
+        quarantines = [f for f in os.listdir(".") if f.startswith("s.json.corrupt-")]
+        self.assertEqual(len(quarantines), 10)
+        self.assertEqual(len(set(quarantines)), 10)
+
+    def test_quarantine_stamp_matches_gitignore_pattern(self):
+        import fnmatch
+
+        stamp = safe_state._utc_stamp()
+        name = f"s.json.corrupt-{stamp}"
+        self.assertTrue(fnmatch.fnmatch(name, "*.corrupt-*"), name)
+
     def test_notify_failure_never_propagates(self):
         with open("s.json", "w", encoding="utf-8") as f:
             f.write("{not valid")
@@ -199,11 +218,13 @@ class SafeAppendHistoryTests(TmpDirMixin, unittest.TestCase):
     def test_corrupt_existing_file_is_not_overwritten(self):
         with open("h.csv", "w", encoding="utf-8") as f:
             f.write("this,is,not\nvalid,csv,\"unterminated")
-        original = open("h.csv", "rb").read()
+        with open("h.csv", "rb") as f:
+            original = f.read()
         notified = []
         safe_state.safe_append_history("h.csv", {"a": 1}, notify=notified.append, label="h.csv")
         # original left untouched
-        self.assertEqual(open("h.csv", "rb").read(), original)
+        with open("h.csv", "rb") as f:
+            self.assertEqual(f.read(), original)
         self.assertEqual(len(notified), 1)
         quarantines = [f for f in os.listdir(".") if f.startswith("h.csv.corrupt-")]
         self.assertEqual(len(quarantines), 1)
@@ -221,9 +242,11 @@ class SafeAppendHistoryTests(TmpDirMixin, unittest.TestCase):
 
     def test_empty_existing_file_is_treated_as_corrupt_not_overwritten(self):
         open("h.csv", "w").close()
-        original = open("h.csv", "rb").read()
+        with open("h.csv", "rb") as f:
+            original = f.read()
         safe_state.safe_append_history("h.csv", {"a": 1})
-        self.assertEqual(open("h.csv", "rb").read(), original)
+        with open("h.csv", "rb") as f:
+            self.assertEqual(f.read(), original)
         self.assertTrue(os.path.exists("h.recovery.csv"))
 
 
