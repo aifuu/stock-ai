@@ -25,3 +25,16 @@ walk_forward_all_candidates.csv.gz
 # them from ever being re-added by `git add -u` or `git add -A` by accident.
 train_data.csv
 train_data.csv.gz
+
+# safe_state.py writes a one-generation-back backup (<name>.bak) before every
+# atomic state-file replace, and quarantines a copy of a corrupt state/history
+# file as <name>.corrupt-<UTC timestamp> instead of overwriting it. These are
+# local forensic/recovery copies only, never inputs to any script, and every
+# `git add` in the workflows lists exact filenames (or uses `git add -u`,
+# which never stages new untracked files), so they are never committed even
+# without this entry; it is kept here as a second line of defense.
+# *.recovery.csv (new rows saved when a history CSV itself is corrupt) is
+# intentionally NOT listed here: those rows are real trading data and must
+# stay committable.
+*.bak
+*.corrupt-*

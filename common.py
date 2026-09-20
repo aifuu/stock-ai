@@ -156,6 +156,34 @@ def is_tse_trading_day(d: date) -> bool:
 
 
 # =====================
+# 保有営業日数(東証営業日ベース)
+#
+# pd.bdate_range(start, end) は土日だけを除外した「暦上の営業日」を返すため、
+# 東証の祝日(is_tse_trading_dayがFalseを返す日)を挟むと実際より多く数えて
+# しまう(祝日ブロックの直後に保有上限(HOLD_LIMIT)へ到達したと誤判定する
+# 原因)。ここではis_tse_trading_dayで実際の東証営業日だけを数える、
+# pd.bdate_rangeと同じ「start, end両端を含む」動作の純粋関数を提供する。
+# 祝日を含まない期間ではpd.bdate_range(start, end)と完全に同じ結果になる
+# (test_hold_days_trading_calendar.pyで全期間の差分を検証済み)。
+# =====================
+def tse_trading_days_between(start, end):
+    """startからendまで(両端含む)の東証営業日をpandas.DatetimeIndexで返す。
+    祝日を含まない期間ではpd.bdate_range(start, end)と同じ結果になる。"""
+    start_ts = pd.Timestamp(start).normalize()
+    end_ts = pd.Timestamp(end).normalize()
+    if start_ts > end_ts:
+        return pd.DatetimeIndex([])
+    all_days = pd.date_range(start_ts, end_ts, freq="D")
+    trading = [d for d in all_days if is_tse_trading_day(d.date())]
+    return pd.DatetimeIndex(trading)
+
+
+def count_tse_trading_days(start, end):
+    """startからendまで(両端含む)の東証営業日数。tse_trading_days_between参照。"""
+    return len(tse_trading_days_between(start, end))
+
+
+# =====================
 # 現在の市場フェーズ判定
 #
 # before_open : 〜8:59  (寄り前。リアルタイム株価がまだ薄い/前場開始前)

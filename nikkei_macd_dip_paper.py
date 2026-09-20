@@ -60,7 +60,6 @@ strategy_policy.json 等)も一切読み書きしない、完全に独立した�
     が当日)の場合は同日中の再エントリーを行わない。
 """
 
-import json
 import os
 import sys
 from datetime import datetime
@@ -85,7 +84,8 @@ from daily_directional_top1 import (  # noqa: E402
     load_model,
     make_nikkei,
 )
-from common import is_tse_trading_day  # noqa: E402
+from common import is_tse_trading_day, count_tse_trading_days  # noqa: E402
+import safe_state  # noqa: E402
 
 TZ = ZoneInfo("Asia/Tokyo")
 
@@ -236,32 +236,18 @@ def default_state(cfg):
 
 def load_state(cfg):
     s = default_state(cfg)
-    if os.path.exists(cfg["state_file"]):
-        try:
-            with open(cfg["state_file"], encoding="utf-8") as f:
-                s.update(json.load(f))
-        except Exception:
-            pass
+    loaded = safe_state.load_json_state(cfg["state_file"], notify=send, label=cfg["state_file"], validate=lambda d: isinstance(d, dict))
+    if loaded is not None:
+        s.update(loaded)
     return s
 
 
 def save_state(cfg, s):
-    tmp = cfg["state_file"] + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(s, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, cfg["state_file"])
+    safe_state.atomic_write_json(cfg["state_file"], s)
 
 
 def append_history(cfg, row):
-    df = pd.DataFrame([row])
-    if os.path.exists(cfg["history_file"]):
-        try:
-            df = pd.concat([pd.read_csv(cfg["history_file"]), df], ignore_index=True)
-        except Exception:
-            pass
-    df.to_csv(cfg["history_file"], index=False, encoding="utf-8-sig")
+    safe_state.safe_append_history(cfg["history_file"], row, notify=send, label=cfg["history_file"])
 
 
 def nikkei_macd_signal(nikkei):
@@ -299,7 +285,7 @@ def check_exit_intraday(position, current_price, today):
     if current_price <= sl:
         return current_price, "SL"
     entry_date = pd.Timestamp(position["entry_date"])
-    held_bdays = len(pd.bdate_range(entry_date + pd.Timedelta(days=1), pd.Timestamp(today)))
+    held_bdays = count_tse_trading_days(entry_date + pd.Timedelta(days=1), pd.Timestamp(today))
     if held_bdays >= HOLD_DAYS:
         return current_price, "HOLD_LIMIT"
     return None
@@ -324,7 +310,7 @@ def close_position(cfg, state, current_price, today):
     )
     exit_date_str = today
     state["last_exit_date"] = today
-    hold_days_actual = len(pd.bdate_range(pd.Timestamp(p["entry_date"]), pd.Timestamp(today)))
+    hold_days_actual = count_tse_trading_days(pd.Timestamp(p["entry_date"]), pd.Timestamp(today))
     append_history(cfg, {
         "entry_date": p["entry_date"],
         "exit_date": exit_date_str,

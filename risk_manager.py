@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+import safe_state
+
 POLICY_FILE = "strategy_policy.json"
 RISK_STATE_FILE = "risk_state.json"
 PREDICTION_HISTORY_FILE = "prediction_history.csv"
@@ -83,10 +85,17 @@ def default_risk_state():
         "last_update": current.isoformat(),
     }
 
+def _notify_risk(message):
+    webhook = os.getenv("DISCORD_WEBHOOK", "").strip()
+    if not webhook:
+        return
+    import requests
+    requests.post(webhook, json={"content": message[:1950]}, timeout=15)
+
+
 def save_risk_state(state):
     state["last_update"] = now_jst().isoformat()
-    with open(RISK_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    safe_state.atomic_write_json(RISK_STATE_FILE, state)
 
 def _completed_negative_month_streak():
     if not os.path.exists(PREDICTION_HISTORY_FILE):
@@ -148,16 +157,22 @@ def load_risk_state():
         save_risk_state(state)
         return state
     try:
-        with open(RISK_STATE_FILE, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        if not isinstance(state, dict):
-            raise ValueError("risk stateがdictではありません")
-        defaults = default_risk_state()
-        defaults.update(state)
-        return _sync_state(defaults)
-    except Exception as e:
-        print(f"⚠ risk state読み込み失敗: {e}")
-        return default_risk_state()
+        state = safe_state.load_json_state(
+            RISK_STATE_FILE,
+            notify=_notify_risk,
+            label=RISK_STATE_FILE,
+            validate=lambda d: isinstance(d, dict),
+        )
+    except safe_state.StateCorruptError as e:
+        print(f"🚨 risk state読み込み失敗、fail-safeで取引停止に倒します: {e}")
+        state = default_risk_state()
+        state["trading_enabled"] = False
+        state["risk_locked"] = True
+        state["stop_reason"] = "risk_state破損によるfail-safe停止"
+        return state
+    defaults = default_risk_state()
+    defaults.update(state)
+    return _sync_state(defaults)
 
 def get_available_cash(state=None):
     state = _sync_state(state or load_risk_state())
