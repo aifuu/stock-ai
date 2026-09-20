@@ -58,9 +58,9 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           for f in \
             nikkei_macd_dip_paper_state.json nikkei_macd_dip_paper_history.csv \
-            nikkei_macd_dip_paper_state_top.json nikkei_macd_dip_paper_history_top.csv \
-            nikkei_macd_dip_paper_state_mid.json nikkei_macd_dip_paper_history_mid.csv \
-            nikkei_macd_dip_paper_state_bottom.json nikkei_macd_dip_paper_history_bottom.csv \
+            nikkei_macd_dip_paper_state_top.json nikkei_macd_dip_paper_history_top.csv nikkei_macd_dip_paper_history_top.recovery.csv \
+            nikkei_macd_dip_paper_state_mid.json nikkei_macd_dip_paper_history_mid.csv nikkei_macd_dip_paper_history_mid.recovery.csv \
+            nikkei_macd_dip_paper_state_bottom.json nikkei_macd_dip_paper_history_bottom.csv nikkei_macd_dip_paper_history_bottom.recovery.csv \
           ; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
