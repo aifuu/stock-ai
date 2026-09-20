@@ -212,33 +212,166 @@ jobs:
           print('※診断専用。PASS条件・policy・閾値は変更しません。')
           PY
 
-      - name: Build verified policy
-        run: python build_strategy_policy.py
+      # ★変更(PLAN B, 2026-09): このワークフローはもうライブのstrategy_policy.jsonを
+      # 一切書かない。BSP_POLICY_FILEをcandidates/配下の別ファイル名に向け、
+      # ここで生成されるのは常に「候補(candidate)」であり、ユーザーの明示的な
+      # 承認作業(署名済みcandidateファイルをそのままrootへbyte-identicalコピー)
+      # を経なければ本番では絶対に使われない。build_strategy_policy.py自体は
+      # 変更していない(署名ペイロードはファイル名を含まないため、コピーしても
+      # 署名は有効なまま)。
+      - name: Build verified policy (candidate only — live policy files are never written)
+        env:
+          BSP_POLICY_FILE: candidates/candidate_strategy_policy.json
+        run: |
+          mkdir -p candidates
+          python build_strategy_policy.py
 
-      - name: Show selected policy
+      - name: Show selected policy (candidate)
         run: |
           python - <<'PY'
           import json
-          with open('strategy_policy.json', encoding='utf-8') as f:
-              p = json.load(f)
-          print('===== 4-FOLD PROFIT-FIRST POLICY =====')
-          print('status:', p.get('status'))
-          print('strategy:', p.get('strategy_name'))
-          print('monthly positive:', p.get('oos_monthly_positive_ratio'), '%')
-          print('OOS compound:', p.get('oos_compound_return'), '%')
-          print('OOS final capital:', p.get('oos_compound_final_capital'))
-          print('expected value:', p.get('oos_expected_value'), '%')
-          print('PF:', p.get('oos_pf'))
-          print('max DD:', p.get('oos_dd'), '%')
-          print('MC bankruptcy:', p.get('mc_bankruptcy_probability'), '%')
-          print('MC p90 DD:', p.get('mc_p90_max_dd'), '%')
+          from pathlib import Path
+          path = Path('candidates/candidate_strategy_policy.json')
+          if not path.exists():
+              print('candidateファイル未生成(PASS候補なし、または最低保持期間中で現行candidateを維持)')
+          else:
+              with open(path, encoding='utf-8') as f:
+                  p = json.load(f)
+              print('===== 4-FOLD PROFIT-FIRST POLICY (CANDIDATE — 未昇格/未本番反映) =====')
+              print('status:', p.get('status'))
+              print('strategy:', p.get('strategy_name'))
+              print('monthly positive:', p.get('oos_monthly_positive_ratio'), '%')
+              print('OOS compound:', p.get('oos_compound_return'), '%')
+              print('OOS final capital:', p.get('oos_compound_final_capital'))
+              print('expected value:', p.get('oos_expected_value'), '%')
+              print('PF:', p.get('oos_pf'))
+              print('max DD:', p.get('oos_dd'), '%')
+              print('MC bankruptcy:', p.get('mc_bankruptcy_probability'), '%')
+              print('MC p90 DD:', p.get('mc_p90_max_dd'), '%')
           PY
+
+      # 純粋な読み取り専用比較(JSONを読むだけ、署名計算やrepoモジュールの
+      # importは一切行わない)。ライブpolicyとcandidateの差分を可視化するだけで、
+      # どちらのファイルも書き換えない。
+      - name: Compare candidate vs live policy (read-only, no signature ops)
+        env:
+          CMP_CANDIDATE_FILE: candidates/candidate_strategy_policy.json
+          CMP_LIVE_FILE: strategy_policy.json
+          CMP_LABEL: 'main (strategy_policy.json)'
+          CMP_OUT_FILE: candidates/latest_comparison.md
+        run: |
+          mkdir -p candidates
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          CANDIDATE = os.environ['CMP_CANDIDATE_FILE']
+          LIVE = os.environ['CMP_LIVE_FILE']
+          LABEL = os.environ['CMP_LABEL']
+          OUT_MD = os.environ['CMP_OUT_FILE']
+
+          CORE_FIELDS = [
+              'up_threshold', 'min_score_for_buy', 'nikkei_filter',
+              'atr_tp_multiplier', 'atr_sl_multiplier', 'hold_days', 'strategy_name',
+          ]
+
+          def load(path):
+              p = Path(path)
+              if not p.exists() or p.stat().st_size == 0:
+                  return None
+              try:
+                  return json.loads(p.read_text(encoding='utf-8'))
+              except Exception as e:
+                  print(f'⚠ {path} 読み込み失敗: {e}')
+                  return None
+
+          def row(label, policy, note=''):
+              if policy is None:
+                  return f"| {label} | - | - | - | - | - | - | - | - | - | - | - | - | - | {note} |"
+              return (
+                  f"| {label} "
+                  f"| {policy.get('strategy_name','')} "
+                  f"| {policy.get('up_threshold','')} "
+                  f"| {policy.get('min_score_for_buy','')} "
+                  f"| {policy.get('nikkei_filter','')} "
+                  f"| {policy.get('atr_tp_multiplier','')} "
+                  f"| {policy.get('atr_sl_multiplier','')} "
+                  f"| {policy.get('hold_days','')} "
+                  f"| {policy.get('validation_pf','')} "
+                  f"| {policy.get('oos_pf','')} "
+                  f"| {policy.get('oos_dd','')} "
+                  f"| {policy.get('oos_avg_month_return','')} "
+                  f"| {policy.get('oos_signals','')} "
+                  f"| {policy.get('status','')} ({policy.get('updated_at','')}) "
+                  f"| {note} |"
+              )
+
+          candidate = load(CANDIDATE)
+          live = load(LIVE)
+
+          header = (
+              "| kind | strategy_name | up_threshold | min_score_for_buy | nikkei_filter | "
+              "TP | SL | hold_days | validation_pf | oos_pf | oos_dd | oos_avg_month_return | "
+              "oos_signals | status(updated_at) | note |\n"
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+          )
+
+          lines = [f"# Candidate vs Live Policy Comparison — {LABEL}", "", header]
+          lines.append(row('LIVE', live, '' if live is not None else 'ファイルなし'))
+          lines.append(row('CANDIDATE', candidate, '' if candidate is not None else 'ファイルなし(未生成)'))
+          lines.append('')
+
+          if candidate is None:
+              verdict = 'DIFFERENT'
+              lines.append(f'判定: {verdict} — candidateファイルが存在しません(今回PASS候補なし、または保持期間中で更新なし)')
+          elif live is None:
+              verdict = 'DIFFERENT'
+              lines.append(f'判定: {verdict} — LIVEファイルが存在しません(比較対象なし)')
+          else:
+              same_core = all(candidate.get(k) == live.get(k) for k in CORE_FIELDS)
+              verdict = 'SAME' if same_core else 'DIFFERENT'
+              lines.append(f'判定: {verdict}')
+
+          lines.append('')
+          lines.append('LIVE FILES UNCHANGED')
+          lines.append('')
+
+          out_text = '\n'.join(lines) + '\n'
+          Path(OUT_MD).write_text(out_text, encoding='utf-8')
+          print(out_text)
+
+          summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary_path:
+              with open(summary_path, 'a', encoding='utf-8') as f:
+                  f.write(out_text)
+          PY
+
+      # 防御的多層化: 直前までのどのステップも本来ライブpolicyファイルへは
+      # 一切触れていないはずだが、将来の変更でこの不変条件が壊れた場合に
+      # コミット前に確実にジョブを失敗させる最終ガード。
+      - name: 'Guard: live policy files must stay untouched'
+        run: |
+          CHANGED=$(git status --porcelain -- strategy_policy.json strategy_policy_up.json strategy_policy_down.json policy_manual_overrides.json)
+          if [ -n "$CHANGED" ]; then
+            echo '❌ 安全ガード: ライブpolicyファイルへの変更を検出したため中断します'
+            echo "$CHANGED"
+            exit 1
+          fi
+          echo '✅ ライブpolicyファイルは変更されていません(strategy_policy.json / strategy_policy_up.json / strategy_policy_down.json / policy_manual_overrides.json)'
 
       - name: Commit optimizer outputs
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add strategy_policy.json adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv adversarial_oos_diagnostics.csv adversarial_oos_near_miss.csv adversarial_multi_oos_folds.csv multi_oos_folds.csv multi_oos_results/ multi_oos_fold_funnel.csv multi_oos_threshold_diagnostics.csv 2>/dev/null || true
+          # candidates/candidate_strategy_policy.json は「今回PASS候補なし」等で
+          # 生成されないことがあるため、他のCSV群と同じgit addにまとめない
+          # (git addは指定パスのうち1つでも存在しないと、そのgit add呼び出し
+          # 全体が何もstageせず失敗する。混ぜるとCSV群まで巻き添えで
+          # stageされなくなる)。
+          git add candidates/candidate_strategy_policy.json 2>/dev/null || true
+          git add candidates/latest_comparison.md 2>/dev/null || true
+          git add adversarial_dev_all_results.csv adversarial_dev_selected_candidates.csv adversarial_validation_results.csv adversarial_oos_results.csv adversarial_final_candidates.csv adversarial_oos_diagnostics.csv adversarial_oos_near_miss.csv adversarial_multi_oos_folds.csv multi_oos_folds.csv multi_oos_results/ multi_oos_fold_funnel.csv multi_oos_threshold_diagnostics.csv 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
             echo '変更なし'
@@ -275,7 +408,8 @@ jobs:
             multi_oos_results/**
             multi_oos_fold_funnel.csv
             multi_oos_threshold_diagnostics.csv
-            strategy_policy.json
+            candidates/candidate_strategy_policy.json
+            candidates/latest_comparison.md
 
   # 案3拡張: 先物トレンド軸(上昇/下落)専用のTOP1戦略を週次で別途算出する。
   # 既存の本番ジョブ(strategy_policy.json)には一切影響しない。
@@ -365,24 +499,29 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python multi_oos_profit_gate.py
 
-      - name: Build trend-specific policy
+      # ★変更(PLAN B, 2026-09): validateジョブと同じ理由でcandidates/配下のみに
+      # 書く。strategy_policy_up.json / strategy_policy_down.jsonといったライブ
+      # ファイルはこのジョブからは一切書き込まれない。
+      - name: Build trend-specific policy (candidate only — live policy files are never written)
         env:
           BSP_INPUT_FILE: adversarial_final_candidates_${{ matrix.trend }}.csv
-          BSP_POLICY_FILE: strategy_policy_${{ matrix.trend }}.json
-        run: python build_strategy_policy.py
+          BSP_POLICY_FILE: candidates/candidate_strategy_policy_${{ matrix.trend }}.json
+        run: |
+          mkdir -p candidates
+          python build_strategy_policy.py
 
-      - name: Show selected trend policy
+      - name: Show selected trend policy (candidate)
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          path = Path('strategy_policy_${{ matrix.trend }}.json')
+          path = Path('candidates/candidate_strategy_policy_${{ matrix.trend }}.json')
           if not path.exists():
-              print('policyファイル未生成(Final PASS 0件のため既存を維持)')
+              print('candidateファイル未生成(Final PASS 0件、または最低保持期間中で現行candidateを維持)')
           else:
               with open(path, encoding='utf-8') as f:
                   p = json.load(f)
-              print('===== TREND=${{ matrix.trend }} POLICY =====')
+              print('===== TREND=${{ matrix.trend }} POLICY (CANDIDATE — 未昇格/未本番反映) =====')
               print('status:', p.get('status'))
               print('strategy:', p.get('strategy_name'))
               print('monthly positive:', p.get('oos_monthly_positive_ratio'), '%')
@@ -391,11 +530,126 @@ jobs:
               print('max DD:', p.get('oos_dd'), '%')
           PY
 
+      # 純粋な読み取り専用比較(JSONを読むだけ)。up/downは並列実行される別
+      # matrixジョブなので、up/downそれぞれ専用の比較ファイル名にして
+      # 互いの出力を上書きしないようにする(latest_comparison_up.md /
+      # latest_comparison_down.md)。ライブ側のstrategy_policy_down.jsonは
+      # まだ存在しない場合があり、その場合も例外を出さず「LIVEファイルなし」
+      # として扱う。
+      - name: Compare trend candidate vs live policy (read-only, no signature ops)
+        env:
+          CMP_CANDIDATE_FILE: candidates/candidate_strategy_policy_${{ matrix.trend }}.json
+          CMP_LIVE_FILE: strategy_policy_${{ matrix.trend }}.json
+          CMP_LABEL: 'trend=${{ matrix.trend }} (strategy_policy_${{ matrix.trend }}.json)'
+          CMP_OUT_FILE: candidates/latest_comparison_${{ matrix.trend }}.md
+        run: |
+          mkdir -p candidates
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          CANDIDATE = os.environ['CMP_CANDIDATE_FILE']
+          LIVE = os.environ['CMP_LIVE_FILE']
+          LABEL = os.environ['CMP_LABEL']
+          OUT_MD = os.environ['CMP_OUT_FILE']
+
+          CORE_FIELDS = [
+              'up_threshold', 'min_score_for_buy', 'nikkei_filter',
+              'atr_tp_multiplier', 'atr_sl_multiplier', 'hold_days', 'strategy_name',
+          ]
+
+          def load(path):
+              p = Path(path)
+              if not p.exists() or p.stat().st_size == 0:
+                  return None
+              try:
+                  return json.loads(p.read_text(encoding='utf-8'))
+              except Exception as e:
+                  print(f'⚠ {path} 読み込み失敗: {e}')
+                  return None
+
+          def row(label, policy, note=''):
+              if policy is None:
+                  return f"| {label} | - | - | - | - | - | - | - | - | - | - | - | - | - | {note} |"
+              return (
+                  f"| {label} "
+                  f"| {policy.get('strategy_name','')} "
+                  f"| {policy.get('up_threshold','')} "
+                  f"| {policy.get('min_score_for_buy','')} "
+                  f"| {policy.get('nikkei_filter','')} "
+                  f"| {policy.get('atr_tp_multiplier','')} "
+                  f"| {policy.get('atr_sl_multiplier','')} "
+                  f"| {policy.get('hold_days','')} "
+                  f"| {policy.get('validation_pf','')} "
+                  f"| {policy.get('oos_pf','')} "
+                  f"| {policy.get('oos_dd','')} "
+                  f"| {policy.get('oos_avg_month_return','')} "
+                  f"| {policy.get('oos_signals','')} "
+                  f"| {policy.get('status','')} ({policy.get('updated_at','')}) "
+                  f"| {note} |"
+              )
+
+          candidate = load(CANDIDATE)
+          live = load(LIVE)
+
+          header = (
+              "| kind | strategy_name | up_threshold | min_score_for_buy | nikkei_filter | "
+              "TP | SL | hold_days | validation_pf | oos_pf | oos_dd | oos_avg_month_return | "
+              "oos_signals | status(updated_at) | note |\n"
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+          )
+
+          lines = [f"# Candidate vs Live Policy Comparison — {LABEL}", "", header]
+          lines.append(row('LIVE', live, '' if live is not None else 'ファイルなし'))
+          lines.append(row('CANDIDATE', candidate, '' if candidate is not None else 'ファイルなし(未生成)'))
+          lines.append('')
+
+          if candidate is None:
+              verdict = 'DIFFERENT'
+              lines.append(f'判定: {verdict} — candidateファイルが存在しません(今回PASS候補なし、または保持期間中で更新なし)')
+          elif live is None:
+              verdict = 'DIFFERENT'
+              lines.append(f'判定: {verdict} — LIVEファイルが存在しません(比較対象なし)')
+          else:
+              same_core = all(candidate.get(k) == live.get(k) for k in CORE_FIELDS)
+              verdict = 'SAME' if same_core else 'DIFFERENT'
+              lines.append(f'判定: {verdict}')
+
+          lines.append('')
+          lines.append('LIVE FILES UNCHANGED')
+          lines.append('')
+
+          out_text = '\n'.join(lines) + '\n'
+          Path(OUT_MD).write_text(out_text, encoding='utf-8')
+          print(out_text)
+
+          summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary_path:
+              with open(summary_path, 'a', encoding='utf-8') as f:
+                  f.write(out_text)
+          PY
+
+      - name: 'Guard: live policy files must stay untouched'
+        run: |
+          CHANGED=$(git status --porcelain -- strategy_policy.json strategy_policy_up.json strategy_policy_down.json policy_manual_overrides.json)
+          if [ -n "$CHANGED" ]; then
+            echo '❌ 安全ガード: ライブpolicyファイルへの変更を検出したため中断します'
+            echo "$CHANGED"
+            exit 1
+          fi
+          echo '✅ ライブpolicyファイルは変更されていません(strategy_policy.json / strategy_policy_up.json / strategy_policy_down.json / policy_manual_overrides.json)'
+
       - name: Commit trend-specific optimizer outputs
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add strategy_policy_${{ matrix.trend }}.json adversarial_final_candidates_${{ matrix.trend }}.csv adversarial_validation_results_${{ matrix.trend }}.csv adversarial_oos_results_${{ matrix.trend }}.csv multi_oos_folds_${{ matrix.trend }}.csv multi_oos_fold_funnel_${{ matrix.trend }}.csv multi_oos_results_${{ matrix.trend }}/ 2>/dev/null || true
+          # candidates/candidate_strategy_policy_${{ matrix.trend }}.json は
+          # 「今回Final PASS 0件」等で生成されないことがあるため、他のCSV群と
+          # 同じgit addにまとめない(理由はvalidateジョブのコメントと同じ)。
+          git add candidates/candidate_strategy_policy_${{ matrix.trend }}.json 2>/dev/null || true
+          git add candidates/latest_comparison_${{ matrix.trend }}.md 2>/dev/null || true
+          git add adversarial_final_candidates_${{ matrix.trend }}.csv adversarial_validation_results_${{ matrix.trend }}.csv adversarial_oos_results_${{ matrix.trend }}.csv multi_oos_folds_${{ matrix.trend }}.csv multi_oos_fold_funnel_${{ matrix.trend }}.csv multi_oos_results_${{ matrix.trend }}/ 2>/dev/null || true
           git add -u
           if git diff --cached --quiet; then
             echo '変更なし'
@@ -426,4 +680,5 @@ jobs:
             multi_oos_folds_${{ matrix.trend }}.csv
             multi_oos_results_${{ matrix.trend }}/**
             multi_oos_fold_funnel_${{ matrix.trend }}.csv
-            strategy_policy_${{ matrix.trend }}.json
+            candidates/candidate_strategy_policy_${{ matrix.trend }}.json
+            candidates/latest_comparison_${{ matrix.trend }}.md

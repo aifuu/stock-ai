@@ -38,3 +38,12 @@ train_data.csv.gz
 # stay committable.
 *.bak
 *.corrupt-*
+
+# build_strategy_policy.py writes its output via a <POLICY_FILE>.tmp ->
+# os.replace() atomic swap. profit-optimizer-validation.yml points
+# BSP_POLICY_FILE at candidates/candidate_strategy_policy*.json, so the
+# transient .tmp file lands under candidates/ too. It is always renamed
+# away before the workflow's `git add` step (which lists exact candidate
+# filenames, never a glob), so this is a second line of defense only: a
+# leftover .tmp from a crashed run must never be committed.
+candidates/*.tmp
