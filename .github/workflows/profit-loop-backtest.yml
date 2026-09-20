@@ -27,10 +27,15 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install pandas numpy
+      # workflow_dispatchのend_date入力が空(APIディスパッチ等でinputsのdefault
+      # が適用されない場合)でも、固定リテラルへ古びずに常に実行日(JST)を
+      # 既定終了日として使えるようにする。
+      - name: Compute default backtest end date
+        run: echo "DEFAULT_BT_END_DATE=$(TZ=Asia/Tokyo date +%F)" >> "$GITHUB_ENV"
       - name: Run isolated backtest
         env:
           BT_START_DATE: ${{ github.event.inputs.start_date || '2021-01-01' }}
-          BT_END_DATE: ${{ github.event.inputs.end_date || '2026-08-22' }}
+          BT_END_DATE: ${{ github.event.inputs.end_date || env.DEFAULT_BT_END_DATE }}
           BT_TOP_N: "10"
           BT_MAX_PER_TICKER_DAY: "10"
           BT_MAX_TRADES_DAY: "30"
