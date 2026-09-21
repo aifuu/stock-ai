@@ -38,7 +38,12 @@ def _load_closed_history():
     if not path.exists() or path.stat().st_size == 0:
         return pd.DataFrame()
 
-    df = pd.read_csv(path)
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:
+        print(f"⚠️ {HISTORY_FILE} の読み込みに失敗したため月次集計をスキップします({exc!r})")
+        return pd.DataFrame()
+
     required = {"exit_date", "pnl", "total_assets"}
     if df.empty or not required.issubset(df.columns):
         return pd.DataFrame()
