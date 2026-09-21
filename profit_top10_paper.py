@@ -1,4 +1,4 @@
-import hashlib, hmac, json, os
+import hashlib, hmac, json, math, os
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 import numpy as np
@@ -180,7 +180,9 @@ def open_positions(s,policy,cands,today):
         cnt=int(s.get('trades_by_ticker_today',{}).get(c['ticker'],0))
         if cnt>=MAX_TRADES_PER_TICKER_PER_DAY or int(s.get('trades_today',0))>=MAX_TOTAL_TRADES_PER_DAY: continue
         price=float(c['price'])
-        if price<=0:continue
+        if not math.isfinite(price) or price<=0:
+            print(f"⚠️ 不正な価格のため候補をスキップ: {c.get('ticker')} price={price!r}")
+            continue
         # ★変更(2026-09): 資産をTOP_Nで分割せず、毎回その時点の総資産を丸ごと
         # 予算として使う(ユーザー承認済みのハイリスク運用)。これにより実質的に
         # 1銘柄集中投資となる(最初に処理される最有力候補が残り現金のほぼ全額を

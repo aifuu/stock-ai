@@ -310,7 +310,12 @@ def close_position(cfg, state, current_price, today):
     )
     exit_date_str = today
     state["last_exit_date"] = today
-    hold_days_actual = count_tse_trading_days(pd.Timestamp(p["entry_date"]), pd.Timestamp(today))
+    # check_exit_intraday()のHOLD_LIMIT判定(エントリー翌営業日〜todayの
+    # 経過営業日数)と一致させる。以前はエントリー当日を含めて数えていたため
+    # HOLD_DAYS=3での決済でも4と記録されていた(判定基準とのズレ)。
+    # このカラムは表示・記録のみに使われ、どの消費者(nikkei_macd_dip_daily_report.py
+    # や履歴CSVの他の読み手)も値の意味には依存していないため補正して問題ない。
+    hold_days_actual = count_tse_trading_days(pd.Timestamp(p["entry_date"]) + pd.Timedelta(days=1), pd.Timestamp(today))
     append_history(cfg, {
         "entry_date": p["entry_date"],
         "exit_date": exit_date_str,
