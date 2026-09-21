@@ -50,7 +50,13 @@ def _notify(notify, message):
 
 
 def atomic_write_json(path, data):
-    """dataをpathへアトミックに書き込む。置き換え前のpathは<path>.bakへ複製する。"""
+    """dataをpathへアトミックに書き込む。置き換え前のpathは<path>.bakへ複製する。
+
+    ただし置き換え前のpathが壊れている(有効なJSONとして読めない)場合は、
+    その壊れた内容で既存の.bak(＝直近の正常な状態)を上書きしてしまわないよう
+    .bakへの複製をスキップする(「壊れている→.bakから復元→保存」という流れで
+    安全網である.bak自体を壊さないため)。
+    """
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -58,9 +64,15 @@ def atomic_write_json(path, data):
         os.fsync(f.fileno())
     if os.path.exists(path):
         try:
-            shutil.copyfile(path, path + ".bak")
-        except OSError as exc:
-            print(f"⚠️ {path}: .bak作成失敗(無視して継続): {exc}")
+            with open(path, encoding="utf-8") as f:
+                json.load(f)
+        except Exception as exc:
+            print(f"⚠️ {path}: 内容が壊れているため.bak更新をスキップします(既存の.bakを保持): {exc}")
+        else:
+            try:
+                shutil.copyfile(path, path + ".bak")
+            except OSError as exc:
+                print(f"⚠️ {path}: .bak作成失敗(無視して継続): {exc}")
     os.replace(tmp, path)
 
 

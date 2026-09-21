@@ -38,6 +38,50 @@ class AtomicWriteJsonTests(TmpDirMixin, unittest.TestCase):
         with open("s.json", encoding="utf-8") as f:
             self.assertEqual(json.load(f), {"a": 2})
 
+    def test_corrupt_current_file_does_not_overwrite_good_bak(self):
+        # F3回帰: 「壊れている→.bakから復元→保存」という流れで、保存直前の
+        # 壊れたs.jsonをそのまま.bakへ複製すると、直近の正常な状態だった
+        # 既存.bakが壊れた内容で上書きされ安全網が失われてしまっていた。
+        safe_state.atomic_write_json("s.json", {"a": "gen0"})
+        safe_state.atomic_write_json("s.json", {"a": "good-gen1"})  # ここで.bak={"a":"gen0"}
+        with open("s.json", "w", encoding="utf-8") as f:
+            f.write("{not valid json")  # s.jsonだけを外部要因で壊す(.bakは正常なまま)
+
+        safe_state.atomic_write_json("s.json", {"a": "recovered"})
+
+        with open("s.json.bak", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"a": "gen0"}, "壊れたs.jsonで既存の正常な.bakを上書きしてはならない")
+        with open("s.json", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"a": "recovered"})
+
+    def test_normal_rotation_unchanged_when_current_file_valid(self):
+        safe_state.atomic_write_json("s.json", {"a": 1})
+        safe_state.atomic_write_json("s.json", {"a": 2})
+        safe_state.atomic_write_json("s.json", {"a": 3})
+        with open("s.json.bak", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"a": 2})
+        with open("s.json", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"a": 3})
+
+    def test_atomic_replace_still_safe_when_current_file_corrupt(self):
+        with open("s.json", "w", encoding="utf-8") as f:
+            f.write("{not valid json")
+        real_replace = os.replace
+
+        def boom(src, dst):
+            raise OSError("simulated interruption during os.replace")
+
+        os.replace = boom
+        try:
+            with self.assertRaises(OSError):
+                safe_state.atomic_write_json("s.json", {"a": "new"})
+        finally:
+            os.replace = real_replace
+        # replaceが起きる前に落ちたので、壊れたs.jsonはそのまま残る
+        # (部分書き込みや空ファイルにはならない)。
+        with open("s.json", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "{not valid json")
+
     def test_no_tmp_file_left_after_success(self):
         safe_state.atomic_write_json("s.json", {"a": 1})
         self.assertFalse(os.path.exists("s.json.tmp"))
