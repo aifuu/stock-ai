@@ -1,0 +1,2 @@
+﻿entry_date,exit_date,ticker,company,entry_price,exit_price,shares,invested_amount,tp,sl,score,up_probability,down_probability,nikkei_macd_at_entry,nikkei_macd_percentile_at_entry,return_pct,pnl,result,hold_days,capital_after
+2026-09-16,2026-09-24,8601.T,大和証券グループ本社,1831.0,1812.5,500,915500.0,1975.3556036249922,1748.5110836428616,72.96314450309379,39.04549875752803,24.58040260891429,-608.8557455939954,7.936507936507936,-1.12,-10251.96,HOLD_LIMIT,3,989748.04
