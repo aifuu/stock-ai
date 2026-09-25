@@ -1,0 +1,2 @@
+﻿# equal_weight_pnl_jpy is an APPROXIMATION: it simulates splitting a fixed ¥1,000,000 equally across that day's/month's entry-cohort candidates in each bucket and summing weight*return_pct/100 for the ones that have closed so far. It is NOT a true continuous equity curve (holds span multiple days, there is no shared/compounding capital pool), and rows for cohorts with still-open positions update on later runs as those trades close.
+date,bucket,candidate_count,trades_closed,win_rate,avg_return_pct,equal_weight_pnl_jpy
