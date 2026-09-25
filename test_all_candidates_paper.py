@@ -134,6 +134,7 @@ class ScanCalledWithFrozenPolicy(TmpDirMixin, unittest.TestCase):
              patch.object(acp, "scan", fake_scan), \
              patch.object(acp, "fetch_state", return_value=(acp.default_state(), "initialized_empty")), \
              patch.object(acp, "promote_and_upload_state"), \
+             patch.object(acp, "list_release_assets", return_value=[]), \
              patch.object(acp, "append_trade_rows", return_value={}), \
              patch.object(acp, "download_all_months", return_value=acp.rows_to_dataframe([])):
             acp.run(now=datetime(2026, 9, 25, 15, 20, tzinfo=TZ), work_dir=".")
@@ -458,6 +459,133 @@ class NonNotFoundFailureIsHardFailure(TmpDirMixin, unittest.TestCase):
 
 
 # =====================================================================
+# BUG2回帰テスト: curlが既存アセットの302リダイレクトを追跡すること
+# (-Lが無いと、既存アセットのdownloadは常にstatus=302を返し、200でも
+# 404でもないため非404失敗としてリトライ→ハード失敗になっていた)
+# =====================================================================
+
+class CurlFollowsRedirectsForExistingAssets(TmpDirMixin, unittest.TestCase):
+    def test_curl_invocation_includes_dash_L(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="200", stderr="")
+
+        with patch("all_candidates_paper.subprocess.run", side_effect=fake_run):
+            status, err = acp._curl_download_with_status("https://example.invalid/x", "acp_curl_L_test")
+
+        self.assertIsNone(err)
+        self.assertEqual(status, 200)
+        self.assertIn("-L", captured["cmd"])
+        # -L must come before the URL (last arg) to actually apply to this request
+        self.assertLess(captured["cmd"].index("-L"), len(captured["cmd"]) - 1)
+
+    def test_a_302_that_is_never_followed_would_be_treated_as_a_retryable_failure(self):
+        # このテストは「-Lを外すとどうなるか」を明示するための回帰ガード:
+        # curlがリダイレクトを追跡せずstatus=302を返した場合、
+        # download_release_asset()は200でも404でもないため必ず非404失敗
+        # (=ReleaseFetchError)として扱われることを確認する。
+        server = FakeReleaseServer()
+        server.set_asset(acp.RELEASE_TAG_STATE, acp.STATE_ASSET_NAME, 302, "")
+        with patch("all_candidates_paper.subprocess.run", side_effect=server), \
+             patch("all_candidates_paper.time.sleep"):
+            with self.assertRaises(acp.ReleaseFetchError):
+                acp.download_release_asset(acp.RELEASE_TAG_STATE, acp.STATE_ASSET_NAME, acp.STATE_ASSET_NAME, retries=3, retry_wait=0)
+
+
+# =====================================================================
+# BUG1回帰テスト: 集計は「今回アップロードした月」の再リストに依存しない
+# (アップロード直後にgh release view --json assetsで再リストすると
+# eventual-consistencyラグでその月が一覧に載らず、集計が空になっていた)
+# =====================================================================
+
+class StaleListFakeReleaseServer(FakeReleaseServer):
+    """gh release view(一覧取得)は常に「何もアップロードされていない」
+    かのように空を返す(returncode=1)。curlでの個別ダウンロードや
+    gh release uploadは通常どおり動く。「直前にアップロードした資産が
+    一覧にまだ反映されない」eventual-consistencyラグを再現するフェイク。
+    """
+
+    def __call__(self, cmd, capture_output=True, text=True, check=False, **kwargs):
+        if cmd[0] == "gh" and cmd[1] == "release" and cmd[2] == "view":
+            self.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="")
+        return super().__call__(cmd, capture_output=capture_output, text=text, check=check, **kwargs)
+
+
+class SummaryUsesInMemoryTodayDataNotStaleRelist(TmpDirMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        shutil.copyfile(os.path.join(REPO_ROOT, "all_candidates_frozen_policy.json"), "all_candidates_frozen_policy.json")
+        shutil.copyfile(os.path.join(REPO_ROOT, "all_candidates_frozen_policy_up.json"), "all_candidates_frozen_policy_up.json")
+
+    def test_todays_just_uploaded_month_appears_in_summary_despite_stale_asset_list(self):
+        server = StaleListFakeReleaseServer()
+        candidates = [{"ticker": "7203.T", "direction": "BUY", "price": 3000.0, "tp": 3100.0, "sl": 2950.0,
+                       "score": 80.0, "up_probability": 60.0, "down_probability": 10.0, "data_date": "2026-09-25"}]
+
+        with patch("all_candidates_paper.subprocess.run", side_effect=server), \
+             patch("all_candidates_paper.time.sleep"), \
+             patch.object(acp, "select_policy_file", return_value=("strategy_policy.json", {"trend": "up"})), \
+             patch.object(acp, "scan", return_value=(candidates, 100)):
+            result = acp.run(now=datetime(2026, 9, 25, 15, 20, tzinfo=TZ), work_dir=".")
+
+        # gh release viewは呼ばれたが、常に空を返す(=一覧に依存していたら
+        # 集計は0件になっていたはず)ことを確認したうえで、実際の集計結果を検証する
+        view_calls = [c for c in server.calls if c[0] == "gh" and c[1] == "release" and c[2] == "view"]
+        self.assertTrue(len(view_calls) >= 1)
+
+        daily = result["daily_summary"]
+        today_all = daily[(daily["date"] == "2026-09-25") & (daily["bucket"] == "ALL")]
+        self.assertEqual(len(today_all), 1)
+        self.assertEqual(int(today_all.iloc[0]["candidate_count"]), 1)
+
+        monthly = result["monthly_summary"]
+        month_all = monthly[(monthly["month"] == "2026-09") & (monthly["bucket"] == "ALL")]
+        self.assertEqual(len(month_all), 1)
+        self.assertEqual(int(month_all.iloc[0]["candidate_count"]), 1)
+
+    def test_prior_months_untouched_this_run_still_come_from_download_all_months(self):
+        # 8月分は今回アップロードしていない(=既に決済済みでopenポジションが
+        # 無い)月として、run開始時に取得したprior_monthsのリストに基づいて
+        # download_all_months()で正しく取り込まれることを確認する。
+        server = StaleListFakeReleaseServer()
+        aug_row = {
+            "trade_id": "2026-08-20|9984.T|BUY|2026-08-20|priorhash", "date": "2026-08-20",
+            "entry_date": "2026-08-20", "ticker": "9984.T", "direction": "BUY", "rank": 1,
+            "score": 70.0, "up_probability": 55.0, "down_probability": 20.0, "nikkei_filter": False,
+            "policy_file": "all_candidates_frozen_policy.json", "policy_hash": "priorhash",
+            "trend_down_flag": False, "entry_price": 3000.0, "tp": 3100.0, "sl": 2950.0, "hold_days": 1,
+            "entry_time": "09:05", "exit_price": 3100.0, "exit_time": "10:00", "exit_date": "2026-08-21",
+            "exit_reason": "TP", "return_pct": 3.3,
+        }
+        # 8月分アセットを直接サーバへ登録(=今回のrunより前から存在する
+        # プライベート済みの過去月データ、というシナリオ)。
+        aug_df = acp.rows_to_dataframe([aug_row])
+        import io
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(aug_df.to_csv(index=False).encode("utf-8"))
+        server.set_asset(acp.RELEASE_TAG_DATA, acp.month_asset_name("2026-08-01"), 200, buf.getvalue())
+
+        # このシナリオではlist_release_assets自体は正常(8月分は既に
+        # プロパゲーション済み)なので、list_release_assetsだけ直接差し替える。
+        with patch("all_candidates_paper.subprocess.run", side_effect=server), \
+             patch("all_candidates_paper.time.sleep"), \
+             patch.object(acp, "list_release_assets", return_value=[acp.month_asset_name("2026-08-01")]), \
+             patch.object(acp, "select_policy_file", return_value=("strategy_policy.json", {"trend": "up"})), \
+             patch.object(acp, "scan", return_value=([], 0)):
+            result = acp.run(now=datetime(2026, 9, 25, 15, 20, tzinfo=TZ), work_dir=".")
+
+        daily = result["daily_summary"]
+        aug_all = daily[(daily["date"] == "2026-08-20") & (daily["bucket"] == "ALL")]
+        self.assertEqual(len(aug_all), 1)
+        self.assertEqual(int(aug_all.iloc[0]["candidate_count"]), 1)
+        self.assertEqual(int(aug_all.iloc[0]["trades_closed"]), 1)
+
+
+# =====================================================================
 # リトライ/再実行時の非重複
 # =====================================================================
 
@@ -560,6 +688,7 @@ class BucketsShareSingleScanResult(unittest.TestCase):
                  patch.object(acp, "scan", fake_scan), \
                  patch.object(acp, "fetch_state", return_value=(acp.default_state(), "initialized_empty")), \
                  patch.object(acp, "promote_and_upload_state"), \
+                 patch.object(acp, "list_release_assets", return_value=[]), \
                  patch.object(acp, "append_trade_rows", return_value={}), \
                  patch.object(acp, "download_all_months", return_value=acp.rows_to_dataframe([])):
                 acp.run(now=datetime(2026, 9, 25, 15, 20, tzinfo=TZ), work_dir=work_dir)
