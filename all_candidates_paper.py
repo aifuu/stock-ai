@@ -153,10 +153,16 @@ def _curl_download_with_status(url, dest_path, timeout=30):
     http_statusがNoneなのはcurl自体が完走できなかった場合(ネットワーク断・
     タイムアウトなど)のみ。HTTPレベルの404/5xxはstatusとして返る
     (-fを付けないため、非2xxでもcurlの終了コードは0)。
+    -Lを付けてリダイレクトを追跡する: GitHub Releaseの既存アセットへの
+    downloadURLは常に署名付きの release-assets.githubusercontent.com へ
+    302リダイレクトするため、-Lが無いとstatusが302のまま返り(200でも
+    404でもない)、既存アセットのダウンロードが常に非404失敗として
+    リトライ→ハード失敗になってしまう。statusはリダイレクト追跡後の
+    最終ステータス。
     """
     try:
         proc = subprocess.run(
-            ["curl", "-sS", "--max-time", str(timeout), "-w", "%{http_code}",
+            ["curl", "-sS", "-L", "--max-time", str(timeout), "-w", "%{http_code}",
              "-o", dest_path, url],
             capture_output=True, text=True, check=False,
         )
@@ -215,15 +221,25 @@ def upload_release_asset(tag, local_path):
         raise RuntimeError(f"gh release upload失敗 ({local_path} -> {tag}): {proc.stderr.strip()}")
 
 
-def list_release_assets(tag):
-    """指定タグの既存アセット名一覧を返す。Releaseが無ければ空リスト。"""
-    proc = subprocess.run(
-        ["gh", "release", "view", tag, "--json", "assets", "-q", ".assets[].name"],
-        capture_output=True, text=True, check=False,
-    )
-    if proc.returncode != 0:
-        return []
-    return [line for line in proc.stdout.splitlines() if line.strip()]
+def list_release_assets(tag, retries=3, retry_wait=3):
+    """指定タグの既存アセット名一覧を返す。Releaseが無ければ空リスト。
+
+    defense-in-depth: gh CLI呼び出し自体の一時的な失敗や、GitHub側の
+    eventual-consistencyラグ(直前のアップロードがまだ一覧に反映されて
+    いない)に備えて数回リトライする。根本対策ではない -- 同一run内で
+    自分がアップロードした月をこの一覧で再取得することに依存しない
+    (run()側でメモリ上のデータを使う)のが本筋の修正。
+    """
+    for attempt in range(1, retries + 1):
+        proc = subprocess.run(
+            ["gh", "release", "view", tag, "--json", "assets", "-q", ".assets[].name"],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode == 0:
+            return [line for line in proc.stdout.splitlines() if line.strip()]
+        if attempt < retries:
+            time.sleep(retry_wait)
+    return []
 
 
 # =====================================================================
@@ -689,13 +705,36 @@ def run(now=None, work_dir=".", upload=True):
     known_ids = {p["trade_id"] for p in remaining} | {p["trade_id"] for p in closed}
     new_positions = build_new_positions(known_ids, candidates, today, policy, frozen_policy_file, policy_hash, trend_down_flag)
 
+    # ★決定(集計はこのrunの再リストに依存しない): list_release_assets()は
+    # このrunがまだ何もアップロードしていない、いま この時点で呼ぶ。
+    # これより後でRELEASE_TAG_DATAへアップロードする月は、GitHub側の
+    # eventual-consistencyでこの一覧に載らないことがあるため
+    # (=直前にアップロードした月が本人からすら見えない)、その月の集計には
+    # この一覧を使わない。
+    prior_month_assets = list_release_assets(RELEASE_TAG_DATA)
+    prior_months = sorted({
+        name[len("all_candidates_"):len("all_candidates_") + 7]
+        for name in prior_month_assets
+        if name.startswith("all_candidates_") and name.endswith(".csv.gz")
+    })
+
     new_state = {"positions": remaining + new_positions}
     promote_and_upload_state(new_state, work_dir=work_dir, upload=upload)
 
     rows_to_append = closed + remaining + new_positions
-    append_trade_rows(rows_to_append, work_dir=work_dir, upload=upload)
+    appended_by_month = append_trade_rows(rows_to_append, work_dir=work_dir, upload=upload)
 
-    all_trades = download_all_months(work_dir=work_dir)
+    # append_trade_rows()が返すDataFrameは、各月についてアップロード前に
+    # 取得した既存アセット + 今回の行 を既にメモリ上でマージ済みなので、
+    # 今回触った月はそれをそのまま使う(再ダウンロード不要=再リストの
+    # ラグの影響を受けない)。今回触っていない月だけ、run開始時に取得した
+    # prior_monthsに基づいてダウンロードする(このrunでは書き込んでいない
+    # ので再リストのレースは起きない)。
+    other_months = [m for m in prior_months if m not in appended_by_month]
+    other_trades = download_all_months(work_dir=work_dir, months=other_months)
+    all_trades = pd.concat(
+        list(appended_by_month.values()) + [other_trades], ignore_index=True,
+    ) if appended_by_month else other_trades
     daily_summary = compute_daily_summary(all_trades)
     monthly_summary = compute_monthly_summary(daily_summary)
     write_summary_csv(daily_summary, os.path.join(work_dir, DAILY_SUMMARY_FILE))
