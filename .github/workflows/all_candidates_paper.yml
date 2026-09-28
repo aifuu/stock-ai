@@ -4,13 +4,22 @@ name: All Candidates Paper Trading (Research Track)
 # とは完全に別のGitHub Releaseタグ/git管理ファイルにのみ書き込み、liveの
 # state/history/policyファイルには一切触れない。5分ループのliveと違い、
 # 決済判定は「日足の遡りチェック + 当日イントラデイ + HOLD_LIMIT」で完結する
-# ため、1日1回(大引け前)の実行で十分。
+# ため、1日1回(大引け後)の実行で十分。
 on:
   workflow_dispatch: {}
   schedule:
-    # JST 15:20 (UTC 06:20)。15:20 JSTは同日のUTC 06:20(日付またぎ無し)なので
-    # 曜日指定はUTC/JSTどちらでも月〜金でよい。
-    - cron: '20 6 * * 1-5'
+    # JST 16:05 (UTC 07:05)。東証の大引け(15:30 JST)より後に実行しなければ
+    # ならない: 決済判定(evaluate_exits)はliveのFORCED_EXIT=15:25以降の
+    # 5分足の有無でHOLD_LIMITを検知するため、15:30引け前に走ると当日の
+    # 5分足に15:25以降のバーが1本も存在せず、HOLD_LIMITが検知できないまま
+    # ポジションが無期限に持ち越されてしまう(修正前バグ)。以前は
+    # JST 15:20 (UTC 06:20)に設定されていたが、これは引け前であり、GitHub
+    # Actionsのcron実行が実際には数十分〜2時間程度遅延することが多いこの
+    # リポジトリの実運用に、結果の正しさが偶然依存してしまっていた。
+    # 16:05なら実行がGitHubの遅延でさらに後ろにずれても問題ない
+    # (遅れる分には常に安全側、早まることはない)。16:05 JSTは同日の
+    # UTC 07:05(日付またぎ無し)なので曜日指定はUTC/JSTどちらでも月〜金でよい。
+    - cron: '5 7 * * 1-5'
 
 permissions:
   contents: write
