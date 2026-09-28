@@ -301,6 +301,177 @@ class ExitLogicCrossCheckedAgainstLive(unittest.TestCase):
 
 
 # =====================================================================
+# HOLD_LIMIT修正: 15:20実行だと当日ループでは検知できず、rollback側も
+# TP/SLしか見ていなかったため無期限に持ち越されていたバグの回帰テスト。
+# ここでは実際のカレンダー(2026年9月、敬老の日9/21・国民の休日9/22・
+# 秋分の日9/23という実在の3連休を含む)を使う。
+# =====================================================================
+
+def _hold_limit_position(entry_date, hold_days, tp=999999.0, sl=-999999.0):
+    """TP/SLに絶対到達しない(数値的にあり得ない)水準のBUYポジション。
+    HOLD_LIMIT以外の決済理由が紛れ込まないようにするためのフィクスチャ。
+    """
+    return {
+        "ticker": "7203.T", "direction": "BUY", "entry_price": 3000.0,
+        "tp": tp, "sl": sl, "entry_date": entry_date, "hold_days": hold_days,
+        "score": 80.0, "up_probability": 60.0, "down_probability": 10.0,
+    }
+
+
+class HoldLimitRollbackFix(unittest.TestCase):
+    # (i) 16:05実行(修正後cron)なら、当日ループの15:25以降バーでHOLD_LIMITが
+    # 検知できる。
+    def test_i_run_at_1605_with_1525_bar_closes_hold_limit_today(self):
+        position = _hold_limit_position("2026-09-24", hold_days=1)  # limit day = 2026-09-25
+        now = datetime(2026, 9, 25, 16, 5, tzinfo=TZ)
+        intraday_idx = pd.to_datetime(["2026-09-25 09:05", "2026-09-25 15:25"])
+        intraday_df = pd.DataFrame({"High": [3010, 3010], "Low": [2995, 2995], "Close": [3005, 3012]}, index=intraday_idx)
+
+        remaining, closed = acp.evaluate_exits(
+            [dict(position)], now,
+            download_fn=lambda t, period=None: None,
+            download_5m_fn=lambda t: intraday_df,
+        )
+        self.assertEqual(remaining, [])
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["exit_reason"], "HOLD_LIMIT")
+        self.assertEqual(closed[0]["exit_price"], 3012.0)
+        self.assertEqual(closed[0]["exit_date"], "2026-09-25")
+        self.assertEqual(closed[0]["exit_time"], "15:25")
+
+    # (ii) 旧cron相当(15:20、バーは15:15までしか無い)だとその日は検知できず
+    # (=旧バグの再現)、翌営業日の実行でrollback側がHOLD_LIMITとして
+    # limit dayのCloseで決済する。
+    def test_ii_missed_today_bar_then_next_day_rollback_closes_hold_limit(self):
+        position = _hold_limit_position("2026-09-24", hold_days=1)  # limit day = 2026-09-25
+
+        old_cron_now = datetime(2026, 9, 25, 15, 20, tzinfo=TZ)
+        intraday_idx = pd.to_datetime(["2026-09-25 09:05", "2026-09-25 15:15"])
+        intraday_df = pd.DataFrame({"High": [3010, 3010], "Low": [2995, 2995], "Close": [3005, 3007]}, index=intraday_idx)
+        remaining, closed = acp.evaluate_exits(
+            [dict(position)], old_cron_now,
+            download_fn=lambda t, period=None: None,
+            download_5m_fn=lambda t: intraday_df,
+        )
+        self.assertEqual(len(closed), 0, "旧バグの再現: 15:25バーが無いので当日は検知できない")
+        self.assertEqual(len(remaining), 1)
+
+        next_run_now = datetime(2026, 9, 28, 16, 5, tzinfo=TZ)  # 9/26,27は週末
+        daily_df = _make_daily_df([("2026-09-25", 3010.0, 2995.0, 3008.0)])
+        remaining2, closed2 = acp.evaluate_exits(
+            remaining, next_run_now,
+            download_fn=lambda t, period=None: daily_df,
+            download_5m_fn=lambda t: (_ for _ in ()).throw(AssertionError("rollbackで決済済みのはずなのでintraday取得は不要")),
+        )
+        self.assertEqual(remaining2, [])
+        self.assertEqual(len(closed2), 1)
+        self.assertEqual(closed2[0]["exit_reason"], "HOLD_LIMIT")
+        self.assertEqual(closed2[0]["exit_price"], 3008.0)
+        self.assertEqual(closed2[0]["exit_date"], "2026-09-25", "exit_dateはlimit dayそのもの")
+        self.assertEqual(closed2[0]["exit_time"], "15:30")
+
+    # (iii) rollback対象日にTP/SLとHOLD_LIMITが両方成立する場合はTP/SLが勝つ
+    # (liveと同じ優先順位)。
+    def test_iii_tp_beats_hold_limit_on_same_rollback_day(self):
+        position = _hold_limit_position("2026-09-24", hold_days=1, tp=3100.0, sl=2000.0)
+        now = datetime(2026, 9, 28, 16, 5, tzinfo=TZ)
+        # 2026-09-25はHOLD_LIMIT到達日でもあり、TPも踏んでいる
+        daily_df = _make_daily_df([("2026-09-25", 3105.0, 2995.0, 3008.0)])
+        remaining, closed = acp.evaluate_exits(
+            [dict(position)], now,
+            download_fn=lambda t, period=None: daily_df,
+            download_5m_fn=lambda t: (_ for _ in ()).throw(AssertionError("TP/SLで決済済みのはずなのでintraday取得は不要")),
+        )
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["exit_reason"], "TP")
+        self.assertEqual(closed[0]["exit_price"], 3100.0)
+
+    # (iv) hold_days=1とhold_days=3で、上限に達するまでは開いたままであること。
+    def test_iv_hold_days_1_and_3_only_fire_at_their_own_limit(self):
+        with self.subTest(hold_days=1):
+            position = _hold_limit_position("2026-09-24", hold_days=1)
+            now = datetime(2026, 9, 24, 16, 5, tzinfo=TZ)  # entry当日 = held 0
+            intraday_df = pd.DataFrame({"High": [3010.0], "Low": [2995.0], "Close": [3005.0]},
+                                        index=pd.to_datetime(["2026-09-24 15:30"]))
+            remaining, closed = acp.evaluate_exits(
+                [dict(position)], now,
+                download_fn=lambda t, period=None: None,
+                download_5m_fn=lambda t: intraday_df,
+            )
+            self.assertEqual(len(closed), 0)
+            self.assertEqual(len(remaining), 1)
+
+        with self.subTest(hold_days=3):
+            position = _hold_limit_position("2026-09-17", hold_days=3)
+            # 実トレーディング日: 9/18(1), [9/19-23休場], 9/24(2), 9/25(3=上限)
+            now = datetime(2026, 9, 24, 16, 5, tzinfo=TZ)  # held=2、まだ上限に未到達
+            daily_df = _make_daily_df([("2026-09-18", 3010.0, 2995.0, 3005.0)])
+            intraday_df = pd.DataFrame({"High": [3010.0], "Low": [2995.0], "Close": [3005.0]},
+                                        index=pd.to_datetime(["2026-09-24 15:30"]))
+            remaining, closed = acp.evaluate_exits(
+                [dict(position)], now,
+                download_fn=lambda t, period=None: daily_df,
+                download_5m_fn=lambda t: intraday_df,
+            )
+            self.assertEqual(len(closed), 0, "held=2 < hold_limit=3 なのでまだ開いたまま")
+            self.assertEqual(len(remaining), 1)
+
+            now_at_limit = datetime(2026, 9, 25, 16, 5, tzinfo=TZ)  # held=3=上限
+            daily_df2 = _make_daily_df([("2026-09-18", 3010.0, 2995.0, 3005.0), ("2026-09-24", 3010.0, 2995.0, 3005.0)])
+            intraday_df2 = pd.DataFrame({"High": [3010.0], "Low": [2995.0], "Close": [3009.0]},
+                                         index=pd.to_datetime(["2026-09-25 15:30"]))
+            remaining2, closed2 = acp.evaluate_exits(
+                remaining, now_at_limit,
+                download_fn=lambda t, period=None: daily_df2,
+                download_5m_fn=lambda t: intraday_df2,
+            )
+            self.assertEqual(len(closed2), 1)
+            self.assertEqual(closed2[0]["exit_reason"], "HOLD_LIMIT")
+
+    # (v) ワークフローがまるまる1日飛ばされたケース(D実行・D+1未実行・D+2実行)
+    # -> H1ポジションはD+1(限界日)付でrollback決済される。
+    def test_v_skipped_day_then_rollback_closes_at_day_after_entry(self):
+        position = _hold_limit_position("2026-09-24", hold_days=1)  # D=9/24(entry), D+1=9/25(limit day, run skipped)
+        # D+2実行 = 2026-09-28(9/26,27は週末)
+        d_plus_2 = datetime(2026, 9, 28, 16, 5, tzinfo=TZ)
+        daily_df = _make_daily_df([("2026-09-25", 3010.0, 2995.0, 3011.0)])
+        remaining, closed = acp.evaluate_exits(
+            [dict(position)], d_plus_2,
+            download_fn=lambda t, period=None: daily_df,
+            download_5m_fn=lambda t: (_ for _ in ()).throw(AssertionError("rollbackで決済済みのはずなのでintraday取得は不要")),
+        )
+        self.assertEqual(remaining, [])
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["exit_reason"], "HOLD_LIMIT")
+        self.assertEqual(closed[0]["exit_date"], "2026-09-25", "exit_date = D+1(限界日)")
+        self.assertEqual(closed[0]["exit_price"], 3011.0)
+
+    # (vi) 実在の東証休日(2026年9月の敬老の日・国民の休日・秋分の日の3連休)を
+    # 保有期間が跨いでも、営業日ベースで正しくカウントされること。
+    # 素朴に暦日/土日のみ除外でカウントすると9/18,19,20,21,22の5日で
+    # H3が誤って早期発火してしまうが、祝日を正しく除外すれば実際の営業日は
+    # 9/18・9/24・9/25の3日でH3に到達する。
+    def test_vi_holiday_cluster_counted_correctly_via_rollback(self):
+        position = _hold_limit_position("2026-09-17", hold_days=3)
+        now = datetime(2026, 9, 28, 16, 5, tzinfo=TZ)  # 9/18,9/24,9/25の3営業日分をrollbackで遡る
+        daily_df = _make_daily_df([
+            ("2026-09-18", 3010.0, 2995.0, 3001.0),  # held=1
+            ("2026-09-24", 3010.0, 2995.0, 3002.0),  # held=2 (9/19-23はholidayとしてスキップされる)
+            ("2026-09-25", 3010.0, 2995.0, 3003.0),  # held=3=上限
+        ])
+        remaining, closed = acp.evaluate_exits(
+            [dict(position)], now,
+            download_fn=lambda t, period=None: daily_df,
+            download_5m_fn=lambda t: (_ for _ in ()).throw(AssertionError("rollbackで決済済みのはずなのでintraday取得は不要")),
+        )
+        self.assertEqual(remaining, [])
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["exit_reason"], "HOLD_LIMIT")
+        self.assertEqual(closed[0]["exit_date"], "2026-09-25", "9/18や9/24ではなく、正しく3営業日目の9/25で発火する")
+        self.assertEqual(closed[0]["exit_price"], 3003.0)
+
+
+# =====================================================================
 # Release I/O モック基盤
 # =====================================================================
 

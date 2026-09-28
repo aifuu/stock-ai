@@ -19,6 +19,19 @@ policyはlive の strategy_policy*.json ではなく、このリポジトリに
 (DOWN/フォールバックは常に正規の凍結policyへ倒す。将来liveに
 strategy_policy_down.jsonが実際に作られても、この研究トラックは
 6ヶ月間ずっとフォールバック=all_candidates_frozen_policy.jsonを使い続ける)。
+
+★設計メモ(エントリー価格は「引け値」): このワークフローは東証の大引け
+(15:30 JST)後、15:20ではなく16:05 JSTに実行される(理由は
+.github/workflows/all_candidates_paper.ymlのcronコメント参照:
+決済判定に必要な15:25以降の5分足が確実に存在するようにするため)。
+そのためscan()が返す候補価格は実質的に「その日の引け値」であり、
+live(profit_top10_paper.py、TOP1のみを寄り後の朝一セッションで
+約09:00に約定)のエントリー時刻とは異なる。ALL/TOP1/TOP3/TOP5は
+このトラック内で同じscan()呼び出し・同じ実行時刻から作られるため、
+バケット間の比較(このモジュールが本来比較したい対象)は内部的に
+一貫している。liveとこのトラックの絶対リターンを直接比較する場合は、
+エントリー時刻が異なる(このトラックは約引け値、liveは約始値)ことを
+踏まえること。
 """
 import gzip
 import hashlib
@@ -401,6 +414,25 @@ def evaluate_exits(positions, now, download_fn=None, download_5m_fn=None):
                             exit_price, reason = float(p["sl"]), "SL"
                     if reason:
                         exit_dt = ts
+                        break
+                    # ★決定(rollbackでのHOLD_LIMIT、liveのmark_and_closeとの
+                    # 意図的な小さな差分): liveは5分おきに走るため、HOLD_LIMITは
+                    # 常に「当日」の15:25以降の5分足で判定される。このトラックは
+                    # 1日1回(15:30引け後)しか走らないため、ワークフローがある日
+                    # 丸ごとスキップされると、その日の5分足はもう二度と取得でき
+                    # ず、当日ループのHOLD_LIMIT判定(下のforループ)では検知
+                    # できない。そのためここで、その日(ts)時点の保有営業日数が
+                    # 上限に達していれば、TP/SLがこの同じ日に成立していない
+                    # (=reasonがまだNone)ことを条件に、その日の日足Closeで
+                    # HOLD_LIMIT決済にする。liveは毎回当日ループを回せるため
+                    # この分岐は不要(=liveには存在しない、このトラック固有の
+                    # 差分)。exit_dtは15:25足のcloseの近似としてその日の15:30に
+                    # 固定する(liveのFORCED_EXIT=15:25の5分足closeにいちばん
+                    # 近い、このトラックで取得できる価格が日足Closeであるため)。
+                    held_at_ts = count_tse_trading_days(entry_date + pd.Timedelta(days=1), ts)
+                    if held_at_ts >= hold_limit:
+                        exit_price, reason = float(b["Close"]), "HOLD_LIMIT"
+                        exit_dt = pd.Timestamp.combine(pd.Timestamp(ts).date(), dtime(15, 30))
                         break
 
         held = count_tse_trading_days(entry_date + pd.Timedelta(days=1), pd.Timestamp(now.date()))
