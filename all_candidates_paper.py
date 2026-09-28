@@ -730,6 +730,10 @@ def run(now=None, work_dir=".", upload=True):
     state, state_source = fetch_state(work_dir)
     print(f"\U0001f4e5 state取得: source={state_source}")
 
+    if state.get("last_completed_run_date") == today:
+        print(f"⏭ all_candidates_paper {today}: 本日は既に実行済みのためスキップ")
+        return {"today": today, "skipped": "already_completed_today"}
+
     remaining, closed = evaluate_exits(state.get("positions", []), now)
 
     candidates, scanned = scan(policy, limit=None)
@@ -750,7 +754,7 @@ def run(now=None, work_dir=".", upload=True):
         if name.startswith("all_candidates_") and name.endswith(".csv.gz")
     })
 
-    new_state = {"positions": remaining + new_positions}
+    new_state = {"positions": remaining + new_positions, "last_completed_run_date": today}
     promote_and_upload_state(new_state, work_dir=work_dir, upload=upload)
 
     rows_to_append = closed + remaining + new_positions

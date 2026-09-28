@@ -888,6 +888,155 @@ class EqualWeightSimulationSanity(unittest.TestCase):
 
 
 # =====================================================================
+# 同日冪等化ガード(GitHub Actionsのcron遅延により同日中に2回runされうる
+# ケースの回帰防止。理由はall_candidates_paper.py run()内のコメント参照)
+# =====================================================================
+
+class SameDayIdempotencyGuard(unittest.TestCase):
+    def _patched_run(self, work_dir, state_holder, scan_mock, select_policy_return=("strategy_policy.json", {"trend": "up"})):
+        """fetch_state/promote_and_upload_stateをstate_holder(dict, key 'state')に
+        対する読み書きとして振る舞わせ、scanはscan_mockに差し替えたrun()呼び出しの
+        コンテキストマネージャを返す。append_trade_rows/download_all_monthsは
+        空データとして扱う(このテスト群の関心はstate/scan呼び出し回数のみ)。
+        """
+        def fake_fetch_state(wd):
+            return dict(state_holder["state"]), "primary"
+
+        def fake_promote(new_state, work_dir=None, upload=True):
+            state_holder["state"] = new_state
+            state_holder["uploaded_count"] = state_holder.get("uploaded_count", 0) + 1
+
+        return (
+            patch.object(acp, "select_policy_file", return_value=select_policy_return),
+            patch.object(acp, "scan", scan_mock),
+            patch.object(acp, "fetch_state", side_effect=fake_fetch_state),
+            patch.object(acp, "promote_and_upload_state", side_effect=fake_promote),
+            patch.object(acp, "list_release_assets", return_value=[]),
+            patch.object(acp, "append_trade_rows", return_value={}),
+            patch.object(acp, "download_all_months", return_value=acp.rows_to_dataframe([])),
+        )
+
+    def setUp(self):
+        self.work_dir_ctx = tempfile.TemporaryDirectory()
+        self.work_dir = self.work_dir_ctx.name
+        shutil.copyfile(os.path.join(REPO_ROOT, "all_candidates_frozen_policy.json"), os.path.join(self.work_dir, "all_candidates_frozen_policy.json"))
+        shutil.copyfile(os.path.join(REPO_ROOT, "all_candidates_frozen_policy_up.json"), os.path.join(self.work_dir, "all_candidates_frozen_policy_up.json"))
+
+    def tearDown(self):
+        self.work_dir_ctx.cleanup()
+
+    def test_second_run_same_day_makes_zero_scan_calls_and_skips(self):
+        candidates = [{"ticker": "7203.T", "direction": "BUY", "price": 3000.0, "tp": 3100.0, "sl": 2950.0,
+                       "score": 80.0, "up_probability": 60.0, "down_probability": 10.0, "data_date": "2026-09-25"}]
+        scan_mock = MagicMock(return_value=(candidates, 100))
+        state_holder = {"state": acp.default_state()}
+        patches = self._patched_run(self.work_dir, state_holder, scan_mock)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            first = acp.run(now=datetime(2026, 9, 25, 16, 10, tzinfo=TZ), work_dir=self.work_dir)
+            self.assertNotIn("skipped", first)
+            self.assertEqual(scan_mock.call_count, 1)
+            self.assertEqual(state_holder["state"].get("last_completed_run_date"), "2026-09-25")
+
+            daily_path = os.path.join(self.work_dir, acp.DAILY_SUMMARY_FILE)
+            monthly_path = os.path.join(self.work_dir, acp.MONTHLY_SUMMARY_FILE)
+            with open(daily_path, encoding="utf-8-sig") as f:
+                daily_before = f.read()
+            with open(monthly_path, encoding="utf-8-sig") as f:
+                monthly_before = f.read()
+            uploads_before = state_holder["uploaded_count"]
+
+            second = acp.run(now=datetime(2026, 9, 25, 21, 30, tzinfo=TZ), work_dir=self.work_dir)
+
+            self.assertEqual(second, {"today": "2026-09-25", "skipped": "already_completed_today"})
+            self.assertEqual(scan_mock.call_count, 1)  # still just the first run's call
+            self.assertEqual(state_holder["uploaded_count"], uploads_before)  # no second upload
+
+            with open(daily_path, encoding="utf-8-sig") as f:
+                daily_after = f.read()
+            with open(monthly_path, encoding="utf-8-sig") as f:
+                monthly_after = f.read()
+            self.assertEqual(daily_before, daily_after)
+            self.assertEqual(monthly_before, monthly_after)
+
+    def test_midway_failure_does_not_mark_day_done_second_run_proceeds(self):
+        state_holder = {"state": acp.default_state()}
+        scan_mock = MagicMock(side_effect=RuntimeError("boom"))
+        patches = self._patched_run(self.work_dir, state_holder, scan_mock)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            with self.assertRaises(RuntimeError):
+                acp.run(now=datetime(2026, 9, 25, 16, 10, tzinfo=TZ), work_dir=self.work_dir)
+            self.assertNotIn("last_completed_run_date", state_holder["state"])
+            self.assertEqual(state_holder.get("uploaded_count", 0), 0)
+
+            scan_mock.side_effect = None
+            scan_mock.return_value = ([], 0)
+            second = acp.run(now=datetime(2026, 9, 25, 21, 30, tzinfo=TZ), work_dir=self.work_dir)
+            self.assertNotIn("skipped", second)
+            self.assertEqual(scan_mock.call_count, 2)
+            self.assertEqual(state_holder["state"].get("last_completed_run_date"), "2026-09-25")
+
+    def test_next_trading_day_proceeds_normally(self):
+        state_holder = {"state": {"positions": [], "last_completed_run_date": "2026-09-25"}}
+        scan_mock = MagicMock(return_value=([], 0))
+        patches = self._patched_run(self.work_dir, state_holder, scan_mock)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = acp.run(now=datetime(2026, 9, 28, 16, 10, tzinfo=TZ), work_dir=self.work_dir)
+        self.assertNotIn("skipped", result)
+        self.assertEqual(scan_mock.call_count, 1)
+        self.assertEqual(state_holder["state"].get("last_completed_run_date"), "2026-09-28")
+
+    def test_state_without_field_backward_compat_proceeds(self):
+        # 実運用中のstate資産(2026-09-25時点)と同じ形: positionsキーのみで
+        # last_completed_run_dateフィールドが存在しない。
+        real_shape_state = {
+            "positions": [
+                {
+                    "trade_id": "2026-09-25|1721.T|BUY|2026-09-25|cfe6da4cc960baeda7f3d6e581a4937b059c96347255b2cd8a04c6438e1c07de",
+                    "date": "2026-09-25", "ticker": "1721.T", "direction": "BUY", "rank": 1,
+                    "score": 70.43253657525702, "up_probability": 34.95507933122712,
+                    "down_probability": 26.67643794681185, "nikkei_filter": False,
+                    "policy_file": "all_candidates_frozen_policy_up.json",
+                    "policy_hash": "cfe6da4cc960baeda7f3d6e581a4937b059c96347255b2cd8a04c6438e1c07de",
+                    "trend_down_flag": False, "entry_price": 5606.0, "tp": 6007.475772361155,
+                    "sl": 5472.174742546282, "hold_days": 3, "entry_date": "2026-09-25", "entry_time": "20:29",
+                },
+            ],
+        }
+        self.assertNotIn("last_completed_run_date", real_shape_state)
+        state_holder = {"state": real_shape_state}
+        scan_mock = MagicMock(return_value=([], 0))
+
+        def fake_fetch_state(wd):
+            return dict(state_holder["state"]), "primary"
+
+        def fake_promote(new_state, work_dir=None, upload=True):
+            state_holder["state"] = new_state
+
+        with patch.object(acp, "select_policy_file", return_value=("strategy_policy.json", {"trend": "up"})), \
+             patch.object(acp, "scan", scan_mock), \
+             patch.object(acp, "fetch_state", side_effect=fake_fetch_state), \
+             patch.object(acp, "promote_and_upload_state", side_effect=fake_promote), \
+             patch.object(acp, "evaluate_exits", return_value=([], [])), \
+             patch.object(acp, "list_release_assets", return_value=[]), \
+             patch.object(acp, "append_trade_rows", return_value={}), \
+             patch.object(acp, "download_all_months", return_value=acp.rows_to_dataframe([])):
+            result = acp.run(now=datetime(2026, 9, 28, 16, 10, tzinfo=TZ), work_dir=self.work_dir)
+
+        self.assertNotIn("skipped", result)
+        self.assertEqual(scan_mock.call_count, 1)
+        self.assertEqual(state_holder["state"].get("last_completed_run_date"), "2026-09-28")
+
+    def test_holiday_gate_still_skips_before_state_check(self):
+        scan_mock = MagicMock(return_value=([], 0))
+        with patch.object(acp, "scan", scan_mock), \
+             patch.object(acp, "fetch_state") as fetch_mock:
+            result = acp.run(now=datetime(2026, 9, 26, 16, 10, tzinfo=TZ), work_dir=self.work_dir)  # Saturday
+        self.assertEqual(result, {"today": "2026-09-26", "skipped": "not_a_trading_day"})
+        fetch_mock.assert_not_called()
+        scan_mock.assert_not_called()
+
+
+# =====================================================================
 # profit_top10_paper.py はゼロ差分であること
 # =====================================================================
 
