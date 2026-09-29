@@ -36,6 +36,16 @@ DISABLED_ALLOWLIST = {
     "_apply_hold_validator.yml",
 }
 
+# Deliberate concurrency-group collisions: a manual/dangerous repair workflow
+# that MUST share its group with the production workflow whose Release
+# assets it edits directly, so the two can never run concurrently and
+# corrupt each other's writes. This is the opposite of the accidental
+# "unrelated jobs serialized behind each other" collision this test guards
+# against, so it is explicitly allowlisted rather than treated as a bug.
+INTENTIONAL_GROUP_COLLISIONS = {
+    frozenset({"all_candidates_paper.yml", "all_candidates_repair.yml"}),
+}
+
 PUSH_RE = re.compile(r"git push\b")
 
 
@@ -119,7 +129,10 @@ class PushersHaveConcurrencyGroup(unittest.TestCase):
                 # dynamic groups (e.g. matrix-based) are out of scope here
                 continue
             groups.setdefault(group, []).append(path.name)
-        collisions = {g: files for g, files in groups.items() if len(files) > 1}
+        collisions = {
+            g: files for g, files in groups.items()
+            if len(files) > 1 and frozenset(files) not in INTENTIONAL_GROUP_COLLISIONS
+        }
         self.assertEqual(collisions, {}, msg=f"colliding concurrency groups: {collisions}")
 
     def test_ticker_performance_report_group_independent_of_live_jobs(self):
