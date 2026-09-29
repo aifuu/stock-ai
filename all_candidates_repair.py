@@ -301,10 +301,12 @@ def run_repair(trade_ids, reason, dry_run=True, work_dir="."):
         backup_and_verify_asset(tag, asset_name, local_path, suffix, work_dir)
 
     if state_changed:
-        state_path = os.path.join(work_dir, acp.STATE_ASSET_NAME)
-        with open(state_path, "w", encoding="utf-8") as f:
-            import json
-            f.write(json.dumps(new_state, ensure_ascii=False, indent=2))
+        # ★重要: state_path(まだ修復前の内容のまま)を先に上書きしては
+        # ならない。promote_and_upload_state()自身が「ディスク上の既存
+        # state.jsonを.bakへ昇格 → 新state.jsonを書き込み」の順で行う
+        # (これが2世代保存の仕組み)ため、ここで先に新state.jsonを書き込むと
+        # 昇格される内容が既に新state.jsonになってしまい、.bakが修復前の
+        # スナップショットにならない(=2世代保存が壊れる)。
         print("⬆️ 修復済みstateをアップロード中 (validate-then-promote)...")
         acp.promote_and_upload_state(new_state, work_dir=work_dir, upload=True)
 

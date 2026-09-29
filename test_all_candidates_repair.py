@@ -279,6 +279,37 @@ class SummariesRecomputedConsistently(TmpDirMixin, unittest.TestCase):
         self.assertTrue(os.path.exists(acp.MONTHLY_SUMMARY_FILE))
 
 
+class StateBakHoldsThePreRepairGenerationNotThePostRepairOne(TmpDirMixin, unittest.TestCase):
+    """回帰テスト: promote_and_upload_state()の2世代保存(ディスク上の既存
+    state.jsonを.bakへ昇格 -> 新state.jsonを書き込み)を機能させるには、
+    それを呼ぶ前にstate.jsonへ新内容を書き込んではならない。先に書き込むと
+    「昇格される内容」自体が新state.jsonになってしまい、.bakが修復前の
+    スナップショットではなく修復後と同じものになる(2026-09-29の実運用で
+    実際に発生したバグ)。
+    """
+
+    def test_bak_after_repair_still_has_the_original_six_position_state(self):
+        server = FakeReleaseServer()
+        others = [_position(f"good-{i}", ticker=f"T{i}", entry_date="2026-09-25") for i in range(5)]
+        bogus = _position("bogus-543A", ticker="543A.T", direction="SHORT", entry_date="2026-09-29")
+        positions = others + [bogus]
+        rows = [_trade_row(p["trade_id"], ticker=p["ticker"], direction=p["direction"], date=p["entry_date"])
+                for p in positions]
+        _seed_server(server, positions, {"2026-09": rows})
+
+        with patch("all_candidates_paper.subprocess.run", side_effect=server), \
+             patch("all_candidates_paper.time.sleep"):
+            acr.run_repair(["bogus-543A"], reason="test", dry_run=False, work_dir=".")
+
+        uploaded_bak = json.loads(server.tags[acp.RELEASE_TAG_STATE][acp.STATE_BAK_ASSET_NAME][1])
+        bak_ids = {p["trade_id"] for p in uploaded_bak["positions"]}
+        self.assertEqual(
+            bak_ids, {p["trade_id"] for p in positions},
+            "state.bak.jsonは修復前(bogusを含む6件)のスナップショットであること(修復後の5件になっていてはならない)",
+        )
+        self.assertIn("bogus-543A", bak_ids)
+
+
 class OnlyFoundInMonthlyDataNotState(TmpDirMixin, unittest.TestCase):
     def test_trade_id_only_in_closed_monthly_row_removes_without_touching_state(self):
         """既にstateから消えた(決済済みでpositionsに残っていない)トレードを
