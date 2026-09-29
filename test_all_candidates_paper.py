@@ -137,7 +137,7 @@ class ScanCalledWithFrozenPolicy(TmpDirMixin, unittest.TestCase):
              patch.object(acp, "list_release_assets", return_value=[]), \
              patch.object(acp, "append_trade_rows", return_value={}), \
              patch.object(acp, "download_all_months", return_value=acp.rows_to_dataframe([])):
-            acp.run(now=datetime(2026, 9, 25, 15, 20, tzinfo=TZ), work_dir=".")
+            acp.run(now=datetime(2026, 9, 25, 16, 10, tzinfo=TZ), work_dir=".")
 
         self.assertEqual(fake_scan.call_count, 1)
         called_policy = fake_scan.call_args[0][0]
@@ -700,7 +700,7 @@ class SummaryUsesInMemoryTodayDataNotStaleRelist(TmpDirMixin, unittest.TestCase)
              patch("all_candidates_paper.time.sleep"), \
              patch.object(acp, "select_policy_file", return_value=("strategy_policy.json", {"trend": "up"})), \
              patch.object(acp, "scan", return_value=(candidates, 100)):
-            result = acp.run(now=datetime(2026, 9, 25, 15, 20, tzinfo=TZ), work_dir=".")
+            result = acp.run(now=datetime(2026, 9, 25, 16, 10, tzinfo=TZ), work_dir=".")
 
         # gh release viewは呼ばれたが、常に空を返す(=一覧に依存していたら
         # 集計は0件になっていたはず)ことを確認したうえで、実際の集計結果を検証する
@@ -747,7 +747,7 @@ class SummaryUsesInMemoryTodayDataNotStaleRelist(TmpDirMixin, unittest.TestCase)
              patch.object(acp, "list_release_assets", return_value=[acp.month_asset_name("2026-08-01")]), \
              patch.object(acp, "select_policy_file", return_value=("strategy_policy.json", {"trend": "up"})), \
              patch.object(acp, "scan", return_value=([], 0)):
-            result = acp.run(now=datetime(2026, 9, 25, 15, 20, tzinfo=TZ), work_dir=".")
+            result = acp.run(now=datetime(2026, 9, 25, 16, 10, tzinfo=TZ), work_dir=".")
 
         daily = result["daily_summary"]
         aug_all = daily[(daily["date"] == "2026-08-20") & (daily["bucket"] == "ALL")]
@@ -862,7 +862,7 @@ class BucketsShareSingleScanResult(unittest.TestCase):
                  patch.object(acp, "list_release_assets", return_value=[]), \
                  patch.object(acp, "append_trade_rows", return_value={}), \
                  patch.object(acp, "download_all_months", return_value=acp.rows_to_dataframe([])):
-                acp.run(now=datetime(2026, 9, 25, 15, 20, tzinfo=TZ), work_dir=work_dir)
+                acp.run(now=datetime(2026, 9, 25, 16, 10, tzinfo=TZ), work_dir=work_dir)
         self.assertEqual(fake_scan.call_count, 1)
 
 
@@ -1031,6 +1031,102 @@ class SameDayIdempotencyGuard(unittest.TestCase):
         with patch.object(acp, "scan", scan_mock), \
              patch.object(acp, "fetch_state") as fetch_mock:
             result = acp.run(now=datetime(2026, 9, 26, 16, 10, tzinfo=TZ), work_dir=self.work_dir)  # Saturday
+        self.assertEqual(result, {"today": "2026-09-26", "skipped": "not_a_trading_day"})
+        fetch_mock.assert_not_called()
+        scan_mock.assert_not_called()
+
+
+# =====================================================================
+# 実行時刻ウィンドウガード(2026-09-29のインシデント回帰防止: schedule:の
+# 大幅遅延で日付をまたいで発火した場合に、翌営業日の寄り前を誤って
+# 「今日」として処理してしまうバグの再発防止)
+# =====================================================================
+
+class RunTimeWindowGuard(unittest.TestCase):
+    def setUp(self):
+        self.work_dir_ctx = tempfile.TemporaryDirectory()
+        self.work_dir = self.work_dir_ctx.name
+        shutil.copyfile(os.path.join(REPO_ROOT, "all_candidates_frozen_policy.json"), os.path.join(self.work_dir, "all_candidates_frozen_policy.json"))
+        shutil.copyfile(os.path.join(REPO_ROOT, "all_candidates_frozen_policy_up.json"), os.path.join(self.work_dir, "all_candidates_frozen_policy_up.json"))
+
+    def tearDown(self):
+        self.work_dir_ctx.cleanup()
+
+    def _run_with_guards(self, now, scan_mock=None):
+        scan_mock = scan_mock or MagicMock(return_value=([], 0))
+        with patch.object(acp, "select_policy_file", return_value=("strategy_policy.json", {"trend": "up"})), \
+             patch.object(acp, "scan", scan_mock), \
+             patch.object(acp, "fetch_state", return_value=(acp.default_state(), "initialized_empty")) as fetch_mock, \
+             patch.object(acp, "promote_and_upload_state") as promote_mock, \
+             patch.object(acp, "list_release_assets", return_value=[]), \
+             patch.object(acp, "append_trade_rows", return_value={}), \
+             patch.object(acp, "download_all_months", return_value=acp.rows_to_dataframe([])):
+            result = acp.run(now=now, work_dir=self.work_dir)
+        return result, scan_mock, fetch_mock, promote_mock
+
+    def test_post_midnight_run_is_skipped(self):
+        # 2026-09-29 00:18 JST -- 実際に発生したインシデントの発火時刻。
+        result, scan_mock, fetch_mock, promote_mock = self._run_with_guards(
+            datetime(2026, 9, 29, 0, 18, tzinfo=TZ)
+        )
+        self.assertEqual(result, {"today": "2026-09-29", "skipped": "outside_run_window"})
+        fetch_mock.assert_not_called()
+        scan_mock.assert_not_called()
+        promote_mock.assert_not_called()
+
+    def test_15_34_is_skipped_one_minute_before_window(self):
+        result, scan_mock, fetch_mock, promote_mock = self._run_with_guards(
+            datetime(2026, 9, 25, 15, 34, tzinfo=TZ)
+        )
+        self.assertEqual(result, {"today": "2026-09-25", "skipped": "outside_run_window"})
+        fetch_mock.assert_not_called()
+        scan_mock.assert_not_called()
+        promote_mock.assert_not_called()
+
+    def test_15_35_lower_boundary_proceeds(self):
+        result, scan_mock, fetch_mock, promote_mock = self._run_with_guards(
+            datetime(2026, 9, 25, 15, 35, tzinfo=TZ)
+        )
+        self.assertNotIn("skipped", result)
+        scan_mock.assert_called_once()
+
+    def test_23_59_upper_boundary_proceeds(self):
+        result, scan_mock, fetch_mock, promote_mock = self._run_with_guards(
+            datetime(2026, 9, 25, 23, 59, tzinfo=TZ)
+        )
+        self.assertNotIn("skipped", result)
+        scan_mock.assert_called_once()
+
+    def test_same_day_guard_still_applies_inside_window(self):
+        state_holder = {"state": acp.default_state()}
+
+        def fake_fetch_state(wd):
+            return dict(state_holder["state"]), "primary"
+
+        def fake_promote(new_state, work_dir=None, upload=True):
+            state_holder["state"] = new_state
+
+        scan_mock = MagicMock(return_value=([], 0))
+        with patch.object(acp, "select_policy_file", return_value=("strategy_policy.json", {"trend": "up"})), \
+             patch.object(acp, "scan", scan_mock), \
+             patch.object(acp, "fetch_state", side_effect=fake_fetch_state), \
+             patch.object(acp, "promote_and_upload_state", side_effect=fake_promote), \
+             patch.object(acp, "list_release_assets", return_value=[]), \
+             patch.object(acp, "append_trade_rows", return_value={}), \
+             patch.object(acp, "download_all_months", return_value=acp.rows_to_dataframe([])):
+            first = acp.run(now=datetime(2026, 9, 25, 15, 35, tzinfo=TZ), work_dir=self.work_dir)
+            self.assertNotIn("skipped", first)
+            second = acp.run(now=datetime(2026, 9, 25, 23, 59, tzinfo=TZ), work_dir=self.work_dir)
+        self.assertEqual(second, {"today": "2026-09-25", "skipped": "already_completed_today"})
+        self.assertEqual(scan_mock.call_count, 1)
+
+    def test_holiday_gate_runs_before_window_gate(self):
+        # 2026-09-26は土曜日かつウィンドウ外(00:18)。holidayガードが先に
+        # 判定される(=skipped理由がoutside_run_windowではなくnot_a_trading_day)
+        # ことを確認する。
+        result, scan_mock, fetch_mock, promote_mock = self._run_with_guards(
+            datetime(2026, 9, 26, 0, 18, tzinfo=TZ)
+        )
         self.assertEqual(result, {"today": "2026-09-26", "skipped": "not_a_trading_day"})
         fetch_mock.assert_not_called()
         scan_mock.assert_not_called()
