@@ -45,7 +45,53 @@ jobs:
           python -m py_compile daily_model_retrain.py
           python -m py_compile trade_feedback_engine.py
 
+      # ★決定(ライブセッション中の二重実行・モデル差し替え禁止、2026-09-29の
+      # インシデントを受けて): クラウド側ルーチンがJST 07:15にworkflow_dispatch
+      # する運用に一本化したが、このワークフロー自身のschedule('30 22 * * 0-4' =
+      # JST 07:30予定)も実運用遅延(実測1.5〜2.5時間程度)でJST 09:20〜10:00頃に
+      # 発火することがあり、ai-stock-scan.ymlのAMセッション(09:20〜12:35 JST、
+      # 5分ループでpullしながら売買判定)と重なってdirectional_model.pklを
+      # 差し替えてしまうと、ライブのペーパートレードセッション中にモデルが
+      # 入れ替わる事故になる。ジョブの最も早い段階(依存インストール直後)で、
+      # daily_model_retrain.pyのretrain_window_open()/already_retrained_today()
+      # (単体テストで境界値まで検証済み)と全く同じ判定関数をそのまま呼び、
+      # 以下いずれかならこの後の重い処理(feedback分析・再学習・出力検証)を
+      # すべてスキップする: (i) JST 08:40〜15:34(ライブセッション想定時間帯)、
+      # (ii) daily_retrain_report.csvに本日分の行が既にある(＝先に完走した
+      # 実行が既にある)。判定自体が失敗した場合はproceed出力が設定されず、
+      # 後続の `if: steps.retrain_gate.outputs.proceed == 'true'` は空文字列
+      # (≠'true')として安全側(スキップ)に倒れる。
+      - name: Check retrain window & same-day guard
+        id: retrain_gate
+        run: |
+          DECISION=$(python - <<'PY'
+          import sys
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          import daily_model_retrain as m
+
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          today = now.strftime("%Y-%m-%d")
+          if not m.retrain_window_open(now):
+              print(
+                  f"⏳ 実行時刻 {now:%H:%M} JSTはライブセッション想定時間帯"
+                  "(08:40〜15:34 JST)のため再学習ジョブ全体をスキップします",
+                  file=sys.stderr,
+              )
+              print("false")
+          elif m.already_retrained_today(today):
+              print(f"⏭ 本日({today})分の再学習は既に完了済みのためスキップします", file=sys.stderr)
+              print("false")
+          else:
+              print(f"▶ 再学習実行可({now:%H:%M} JST、本日分は未実施)", file=sys.stderr)
+              print("true")
+          PY
+          )
+          echo "proceed=$DECISION" >> "$GITHUB_OUTPUT"
+
       - name: Analyze paper-trade feedback
+        if: steps.retrain_gate.outputs.proceed == 'true'
         env:
           RETRAIN_HOLDOUT_DAYS: '90'
           FEEDBACK_LOOKBACK_DAYS: '180'
@@ -53,6 +99,7 @@ jobs:
         run: python trade_feedback_engine.py
 
       - name: Run daily model retraining
+        if: steps.retrain_gate.outputs.proceed == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           RETRAIN_HOLDOUT_DAYS: '90'
@@ -64,6 +111,7 @@ jobs:
         run: python daily_model_retrain.py
 
       - name: Verify retrain outputs
+        if: steps.retrain_gate.outputs.proceed == 'true'
         run: |
           test -s train_data.csv
           test -s daily_retrain_report.csv
