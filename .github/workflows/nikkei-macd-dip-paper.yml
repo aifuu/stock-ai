@@ -1,16 +1,36 @@
 name: Nikkei MACD Dip Paper Trade (Experimental, Separate Track)
 
 on:
-  schedule:
-    # 場中(JST 9:00〜15:20、昼休み11:30〜12:30は除く)に1日5回判定。
-    # 終値ベースのエントリーは実際には約定できない価格だったため、場中の
-    # 現在価格で売買判定するよう変更(UTC・JSTは同日内のため日またぎなし)。
-    - cron: '35 0 * * 1-5'  # JST 09:35
-    - cron: '15 2 * * 1-5'  # JST 11:15
-    - cron: '40 3 * * 1-5'  # JST 12:40
-    - cron: '0 5 * * 1-5'   # JST 14:00
-    - cron: '15 6 * * 1-5'  # JST 15:15
   workflow_dispatch: {}
+  # ★決定(schedule:トリガーは撤廃、2026-09-29のインシデントを受けて):
+  # 以前はここに5本のcron(JST 09:35/11:15/12:40/14:00/15:15を狙った
+  # UTC指定)があったが、このリポジトリの実運用ではGitHub Actionsの
+  # schedule実行が4.5〜7.8時間(中央値で約5時間45分)遅延することが実測で
+  # 判明している。is_trading_window()の場中判定ウィンドウ(JST 9:00〜15:20)
+  # は5本とも大きく外れた時刻に発火するため、ほぼ毎回「場中(平日 09:00〜
+  # 15:20 JST)以外のため判定スキップ」に自己スキップするだけの実質何もしない
+  # 実行になっていた(=このワークフローは実質ずっと停止していたのと同じ)。
+  # scheduleそのものが遅延の主因であり修正できないため、この枠のschedule
+  # トリガーは完全に撤廃する。実行はクラウド側のルーチンが本来の5チェック
+  # ポイント(JST 09:35/11:15/12:40/14:00/15:15)でworkflow_dispatchする運用
+  # に一本化した。
+  #
+  # nikkei_macd_dip_paper.py側の安全性(このスケジュール撤廃・dispatch一本化
+  # に伴う二重発火対策として確認済み):
+  #   - is_trading_window()はdatetime.now(ZoneInfo("Asia/Tokyo"))で計算した
+  #     JST時刻・曜日・common.is_tse_trading_day()の祝日判定を使っており、
+  #     常にJST基準(全チェックポイントがUTC・JST同日内でmidnightをまたがない
+  #     ため、all_candidates_paper.pyのような日付またぎ誤処理は起こらない)。
+  #   - 新規エントリーは「ポジション未保有 かつ その日まだ決済していない
+  #     (last_exit_date != today)」の場合のみ行われ、状態(position/
+  #     last_exit_date)はrunのたびにgit checkoutで最新のmainから読み直す。
+  #     下のconcurrencyグループ(cancel-in-progress: false)により同一
+  #     ワークフローの複数run(2回のdispatchが1分差で来た場合や手動runを
+  #     含む)は並走せず必ず直列実行される(1つ目が完了してから2つ目が
+  #     チェックアウトする)ため、直後に重複dispatchされても2つ目は1つ目が
+  #     コミットした最新state(position/last_exit_dateを含む)を読んでから
+  #     判定するので、同日中の二重エントリー・二重決済は起こらない
+  #     (test_nikkei_macd_dip_paper_duplicate_run.py で回帰テスト済み)。
 
 permissions:
   contents: write
