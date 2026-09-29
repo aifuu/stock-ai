@@ -47,7 +47,33 @@ jobs:
       # 後段にあったため、これらいずれかが失敗するとジョブ起動通知自体が届かず、
       # 「何時何分に起動したか」の監視目的を果たせなかった。checkout+依存インストール
       # 直後の最も早いタイミングに移動し、後続チェックの成否に関わらず必ず送信する。
+      #
+      # ★変更(2026-09、遅延発火対策): schedule発火がstock-ai-paper-trading
+      # concurrencyグループでクラウド側ルーチンのdispatch実行の後ろに並ぶと、
+      # 15:35 JST(大引け後)を過ぎてからAMジョブが起動することがあり、その
+      # まま通知すると「寄り前(AM)セッション開始」という誤解を招く通知が
+      # 大引け後に飛んでしまう。取引ロジック・ループ・concurrency・schedule
+      # 等は一切変更せず、この通知ステップだけをジョブ起動時刻(JST)が
+      # 08:00〜15:30の範囲外なら送信しないようにする。時刻判定自体が失敗した
+      # 場合もcontinue-on-errorで後続ジョブを止めず、outputs未設定=if条件
+      # 不成立により安全側(通知スキップ)に倒す。
+      - name: Compute JST notify window (AM)
+        id: notify_window_am
+        continue-on-error: true
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import sys
+          from datetime import datetime
+          from datetime import time as dtime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          in_window = dtime(8, 0) <= now.time() <= dtime(15, 30)
+          print(f"ℹ️ notify window判定(AM): {now:%H:%M} JST in_window={in_window}", file=sys.stderr)
+          print(f"in_window={'true' if in_window else 'false'}")
+          PY
+
       - name: Notify AM session start (Discord)
+        if: steps.notify_window_am.outputs.in_window == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python -c "import discord_progress; discord_progress.notify_start('AM')"
@@ -342,7 +368,27 @@ jobs:
 
       # ★変更(2026-09): AM側と同じ理由で、ユニバース検証・構文チェック・policy検証
       # より前の最も早いタイミングに移動(理由の詳細はAM側の同コメント参照)。
+      #
+      # ★変更(2026-09、遅延発火対策): AM側と同じ理由で、ジョブ起動時刻(JST)が
+      # 08:00〜15:30の範囲外ならこの通知だけをスキップする(詳細はAM側の同
+      # コメント参照)。
+      - name: Compute JST notify window (PM)
+        id: notify_window_pm
+        continue-on-error: true
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import sys
+          from datetime import datetime
+          from datetime import time as dtime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          in_window = dtime(8, 0) <= now.time() <= dtime(15, 30)
+          print(f"ℹ️ notify window判定(PM): {now:%H:%M} JST in_window={in_window}", file=sys.stderr)
+          print(f"in_window={'true' if in_window else 'false'}")
+          PY
+
       - name: Notify PM session start (Discord)
+        if: steps.notify_window_pm.outputs.in_window == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python -c "import discord_progress; discord_progress.notify_start('PM')"
