@@ -35,6 +35,7 @@ import json
 import os
 import time
 from datetime import datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import joblib
@@ -119,6 +120,53 @@ MIN_OOS_PF = float(os.getenv("RETRAIN_MIN_OOS_PF", "1.0"))
 MAX_OOS_DD_PCT = float(os.getenv("RETRAIN_MAX_OOS_DD_PCT", "30.0"))
 MIN_TRAIN_ROWS = int(os.getenv("RETRAIN_MIN_ROWS", "3000"))
 DOWNLOAD_SLEEP = float(os.getenv("RETRAIN_DOWNLOAD_SLEEP", "0.15"))
+
+# ★決定(ライブセッション中の再学習・モデル差し替え禁止、2026-09-29の
+# インシデントを受けて): daily-model-retrain.ymlはクラウド側ルーチンが
+# JST 07:15にworkflow_dispatchする運用に一本化したが、このスクリプト自身の
+# schedule('30 22 * * 0-4' = JST 07:30予定)もGitHub Actionsの実運用遅延
+# (実測で1.5〜2.5時間程度)によりJST 09:20〜10:00頃に発火してしまい、
+# ai-stock-scan.ymlのAMセッション(09:20〜12:35 JST、5分ループでpullしながら
+# 売買判定)と重なってdirectional_model.pklを差し替えてしまうと、ライブの
+# ペーパートレードセッション中にモデルが入れ替わるという事故になる。
+# scheduleそのものは撤廃せずフォールバックとして残す方針のため、ここで
+# 二重の安全策を設ける:
+#   (i) 時刻ウィンドウガード: JST 08:40〜15:34(ライブセッション想定時間帯、
+#       AMセッション開始08:30の少し後〜PMセッション終了15:35の直前)は
+#       いかなるトリガーでも再学習・モデル差し替えを行わない。
+#   (ii) 当日実施済みガード: daily_retrain_report.csv(このrunがコミット
+#       する唯一の「完走した」証跡)に本日日付の行が既にあれば、2回目以降の
+#       起動は何もせずスキップする。この行はmain()がOOSシミュレーション・
+#       学習・デプロイ判定まで完走した直後にのみ追記されるため、失敗/中断
+#       した実行は当日行を残さず、後続の有効な起動をブロックしない。
+RETRAIN_WINDOW_BLOCK_START = dtime(8, 40)
+RETRAIN_WINDOW_BLOCK_END = dtime(15, 35)
+
+
+def retrain_window_open(now):
+    """JST時刻がライブセッション想定時間帯(08:40〜15:34)の外ならTrue。
+    境界は「08:40以降15:35未満は禁止」= 08:39は許可・08:40は禁止、
+    15:34は禁止・15:35は許可。"""
+    t = now.time()
+    return t < RETRAIN_WINDOW_BLOCK_START or t >= RETRAIN_WINDOW_BLOCK_END
+
+
+def already_retrained_today(today_str, report_file=None):
+    """daily_retrain_report.csvに本日(today_str, 'YYYY-MM-DD')の行が
+    既にあればTrue。ファイルが無い/壊れている/date列が無い場合は「未実施」
+    として扱う(安全側=再学習を止めない側)。この行はmain()がOOSシミュレー
+    ションからデプロイ判定まで完走した最後にのみ追記されるため、失敗/中断
+    した実行はここでTrueにならず、後続の有効な起動をブロックしない。"""
+    path = report_file or RETRAIN_REPORT_FILE
+    if not os.path.exists(path):
+        return False
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return False
+    if df.empty or "date" not in df.columns:
+        return False
+    return bool((df["date"].astype(str) == today_str).any())
 
 
 def notify(msg):
@@ -444,8 +492,20 @@ def fit_rf(rows):
 
 
 def main():
-    today = datetime.now(JST).strftime("%Y-%m-%d")
+    now = datetime.now(JST)
+    today = now.strftime("%Y-%m-%d")
     print(f"=== 日次モデル再学習(Walk-Forward OOSゲート付き) {today} ===")
+
+    if not retrain_window_open(now):
+        print(
+            f"⏳ 実行時刻 {now.strftime('%H:%M')} JSTはライブセッション想定時間帯"
+            f"(08:40〜15:34 JST)のため再学習をスキップします(モデル差し替えなし・コミットなし)"
+        )
+        return
+
+    if already_retrained_today(today):
+        print(f"⏭ 本日({today})分の再学習は既に完了済みのためスキップします(コミットなし)")
+        return
 
     ticker_frames, nikkei = build_universe(trader.TICKERS)
     all_dates = sorted(set().union(*[set(x.index) for x in ticker_frames.values()]))
