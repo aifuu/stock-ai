@@ -712,6 +712,26 @@ def run(now=None, work_dir=".", upload=True):
         print(f"\U0001f4a4 all_candidates_paper {today}: 東証休場日のためスキップ")
         return {"today": today, "skipped": "not_a_trading_day"}
 
+    # ★決定(実行時刻ウィンドウガード、2026-09-29のインシデントを受けて):
+    # 起動トリガーがschedule/workflow_dispatchのどちらであっても、日付が
+    # またいで遅延発火した場合に「今日」を誤って翌営業日の寄り前として
+    # 処理してしまう事故があった(2026-09-28分がJST 00:18に発火し、
+    # 2026-09-29のコホートとして誤って処理された)。このトラックは大引け
+    # (15:30 JST)後の1日1回処理を前提にしており、決済判定
+    # (evaluate_exits)も15:25以降の5分足の存在に依存するため、
+    # 15:35 JSTより前、または日付が変わった後(翌日0:00〜15:34)に
+    # 走った場合は、その時点のnow.date()を「今日」として処理しては
+    # ならない。ここで弾けば、何がトリガーであっても、runは必ず
+    # 自分が処理すべき営業日(大引け後、日付が変わる前)を処理する
+    # ことが保証される。stateへは一切触れずに返す。
+    if not (dtime(15, 35) <= now.time() <= dtime(23, 59)):
+        print(
+            f"⏳ all_candidates_paper {today}: 実行時刻 {now.strftime('%H:%M')} JSTが"
+            "受付ウィンドウ(15:35〜23:59 JST)外のためスキップ"
+            "(大引け後・日付が変わる前にしか正しく処理できないため)"
+        )
+        return {"today": today, "skipped": "outside_run_window"}
+
     frozen_policies = {
         FROZEN_POLICY_FILE: load_frozen_policy(os.path.join(work_dir, FROZEN_POLICY_FILE)),
         FROZEN_POLICY_FILE_UP: load_frozen_policy(os.path.join(work_dir, FROZEN_POLICY_FILE_UP)),
