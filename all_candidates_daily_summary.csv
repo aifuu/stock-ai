@@ -4,7 +4,3 @@ date,bucket,candidate_count,trades_closed,win_rate,avg_return_pct,equal_weight_p
 2026-09-25,TOP1,1,0,,,
 2026-09-25,TOP3,3,0,,,
 2026-09-25,TOP5,5,0,,,
-2026-09-29,ALL,1,0,,,
-2026-09-29,TOP1,1,0,,,
-2026-09-29,TOP3,1,0,,,
-2026-09-29,TOP5,1,0,,,
