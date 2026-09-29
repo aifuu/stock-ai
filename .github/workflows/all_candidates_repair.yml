@@ -1,0 +1,96 @@
+name: All Candidates Paper Trading - Data Repair (manual, dangerous)
+
+# all_candidates_paper.py(独立6ヶ月データ収集トラック)のRelease資産
+# (state / 月次生データ)から、事故で紛れ込んだ特定のtrade_idだけを
+# 取り除くための手動ツール。all_candidates_repair.pyが実処理を行う
+# (バックアップ→検証→削除→再アップロード→集計再計算)。詳細はその
+# docstring参照。
+#
+# ★このワークフローはall_candidates_paper.yml(日次本番run)と同じ
+# concurrencyグループを使う。理由: state/月次データのRelease資産を
+# 直接書き換えるため、日次runと同時に走ると競合(片方の書き込みが
+# 他方に上書きされる)が起きる。同じグループにすることで、どちらかが
+# 実行中はもう片方は必ずキューで待たされ、絶対に同時実行されない。
+on:
+  workflow_dispatch:
+    inputs:
+      trade_ids:
+        description: "削除するtrade_id(カンマ区切り、最大5件)"
+        required: true
+      reason:
+        description: "修復理由(差分レポート・ログに記録される)"
+        required: true
+      dry_run:
+        description: "true(既定)なら何もアップロードせず差分表示のみ"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-ai-all-candidates-paper
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Syntax check
+        run: python -m py_compile all_candidates_repair.py all_candidates_paper.py
+
+      - name: Run repair
+        id: repair
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPAIR_TRADE_IDS: ${{ github.event.inputs.trade_ids }}
+          REPAIR_REASON: ${{ github.event.inputs.reason }}
+          REPAIR_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          python all_candidates_repair.py \
+            --trade-ids "$REPAIR_TRADE_IDS" \
+            --reason "$REPAIR_REASON" \
+            --dry-run "$REPAIR_DRY_RUN"
+
+      - name: Commit updated aggregate summaries
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          stage_and_commit() {
+            git add all_candidates_daily_summary.csv all_candidates_monthly_summary.csv 2>/dev/null || true
+            git diff --cached --quiet && exit 0
+            git commit -m 'chore: repair all-candidates paper trading data (remove bogus trade_ids) [skip ci]'
+          }
+          stage_and_commit
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
+              echo '✅ all-candidates repair summary push成功'
+              exit 0
+            fi
+            git rebase --abort || true
+            git reset origin/main
+            stage_and_commit
+            sleep $((i * 3))
+          done
+          echo '❌ all-candidates repair summary push失敗'
+          exit 1
