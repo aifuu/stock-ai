@@ -212,6 +212,10 @@ jobs:
             # では何もチェックしない、誤検知防止)。
             PKL_CHANGED_BEFORE_ADD=$(git status --porcelain -- directional_model.pkl)
             git add directional_model.pkl 2>/dev/null || true
+            # ★追加(③モデル記録サイドカー): directional_model_meta.jsonは常に
+            # directional_model.pklと対になって書かれるが、片方のgit add失敗が
+            # もう片方に波及しないよう(既知の落とし穴)、別のgit add行に分ける。
+            git add directional_model_meta.json 2>/dev/null || true
             # ★変更(2026-09): train_data.csvはもはやgit管理対象ではない
             # (Upload retrain artifactsステップでActions artifactとしてのみ保存)。
             # 古いorigin/mainがまだ追跡している場合に備えてgit rm --cachedし、
@@ -251,6 +255,7 @@ jobs:
           if-no-files-found: warn
           path: |
             directional_model.pkl
+            directional_model_meta.json
             daily_retrain_report.csv
             trade_feedback_policy.json
             trade_feedback_report.csv

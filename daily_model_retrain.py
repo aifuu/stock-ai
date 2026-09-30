@@ -31,6 +31,7 @@ directional_paper_history.csv(実際のペーパートレード結果)は学習
 に記録するだけに留める(自分の予測ミスを学習に混ぜて悪循環になるのを避けるため)。
 """
 
+import hashlib
 import json
 import os
 import time
@@ -44,6 +45,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
 import daily_directional_top1 as trader
+import safe_state
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -113,6 +115,13 @@ ATR_TARGET_MULTIPLIER = 1.0
 
 PREV_MODEL_FILE = "model_prev.pkl"
 RETRAIN_REPORT_FILE = "daily_retrain_report.csv"
+# ★追加(2026-09-30、チャンピオン/チャレンジャー方式の導入): 現行model.pklが
+# 「いつ時点までのデータで学習されたか(train_cutoff)」を記録するサイドカー。
+# これが無いと、次回以降の再学習が現行モデルを正しく評価できているか
+# (＝OOS区間が本当に現行モデル未学習の区間か)を判定できない。
+# 既存のdirectional_model.pkl(2026-09-12投入)にはこのファイルが無いため、
+# 「不明(leaky扱い)」として安全側にフォールバックする。
+MODEL_META_FILE = "directional_model_meta.json"
 
 HOLDOUT_DAYS = int(os.getenv("RETRAIN_HOLDOUT_DAYS", "90"))
 MIN_OOS_TRADES = int(os.getenv("RETRAIN_MIN_OOS_TRADES", "15"))
@@ -120,6 +129,12 @@ MIN_OOS_PF = float(os.getenv("RETRAIN_MIN_OOS_PF", "1.0"))
 MAX_OOS_DD_PCT = float(os.getenv("RETRAIN_MAX_OOS_DD_PCT", "30.0"))
 MIN_TRAIN_ROWS = int(os.getenv("RETRAIN_MIN_ROWS", "3000"))
 DOWNLOAD_SLEEP = float(os.getenv("RETRAIN_DOWNLOAD_SLEEP", "0.15"))
+# ★追加(2026-09-30): チャレンジャーが絶対ゲート(PF>=MIN_OOS_PF)に届かなくても、
+# 現行チャンピオンを明確に上回れば差し替える相対ゲートのマージン。
+# 「絶対ゲートは通らないが、今のモデルよりは明確にマシ」を拾うためのもので、
+# 僅差の入れ替え(ノイズによる無駄な差し替え)を避けるため一定のマージンを要求する。
+RETRAIN_CHAMPION_MARGIN_PF = float(os.getenv("RETRAIN_CHAMPION_MARGIN_PF", "0.10"))
+RETRAIN_CHAMPION_MAX_DD_WORSE_PCT = float(os.getenv("RETRAIN_CHAMPION_MAX_DD_WORSE_PCT", "5.0"))
 
 # ★決定(ライブセッション中の再学習・モデル差し替え禁止、2026-09-29の
 # インシデントを受けて): daily-model-retrain.ymlはクラウド側ルーチンが
@@ -450,6 +465,287 @@ def compute_pf_metrics(trades):
     return {"trades": int(len(df)), "pf": pf, "win_rate": win_rate, "max_dd_pct": max_dd}
 
 
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read())
+    return h.hexdigest()
+
+
+def compute_model_id(path=None):
+    """model_id = デプロイされたdirectional_model.pklのバイト列のsha256先頭16桁。"""
+    return sha256_file(path or MODEL_FILE)[:16]
+
+
+def compute_policy_hash():
+    """strategy_policy.json / strategy_policy_up.jsonのsha256先頭12桁
+    (cf106bdc4c56 / cfe6da4cc960 のように既存箇所で使われている桁数と揃える)。
+    存在しないファイルはキーごと省略する。
+    """
+    hashes = {}
+    for name in (POLICY_FILE, "strategy_policy_up.json"):
+        if os.path.exists(name):
+            hashes[name] = sha256_file(name)[:12]
+    return hashes
+
+
+def load_model_meta(path=None):
+    """MODEL_META_FILEを読む。無い/壊れている場合はNone(=不明扱い、安全側)。"""
+    p = path or MODEL_META_FILE
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict) or "train_cutoff" not in meta:
+            return None
+        return meta
+    except Exception:
+        return None
+
+
+def save_model_meta(
+    training_data_end_date,
+    today,
+    validation_metrics,
+    oos_cutoff=None,
+    deploy_reason=None,
+    previous_meta=None,
+    model_file=None,
+    path=None,
+):
+    """新たに本番投入したモデルのメタ情報(サイドカー、gitコミット対象)を保存する。
+
+    ★重要(validation_* と 実際にデプロイされる重みの違い):
+    validation_trades/validation_pf/validation_win_rate/validation_drawdownは、
+    OOS区間(training_data_end_dateより前で打ち切ったholdout-excluded fit=
+    oos_model)をtraining_data_end_date直後から評価した「未来を全く見ていない」
+    成績。しかし実際にmodel.pklとしてデプロイされる重みは、このOOS評価の後に
+    training_data_end_dateまでの全データ(OOS区間も含む)で再学習し直した
+    別モデル(final_model)であり、validation_*が示す精度とは厳密には別物
+    (walk_forward.pyと同じ「検証はholdout、本番投入は全データ再学習」という
+    設計。ファイル冒頭のモジュールdocstring参照)。
+
+    次回以降の再学習は、train_cutoff(=training_data_end_date)を見て、
+    このモデルに対する今回のOOS区間が未学習区間かどうか(incumbent_window_status)
+    を判定する。
+    """
+    model_id = compute_model_id(model_file)
+    meta = {
+        "model_id": model_id,
+        "training_date": today,
+        "training_data_end_date": str(pd.Timestamp(training_data_end_date).date()),
+        # ★後方互換: incumbent_window_status()はtrain_cutoffキーのみを見る。
+        "train_cutoff": str(pd.Timestamp(training_data_end_date).date()),
+        "deployed_date": today,
+        "validation_period": {
+            "start": str(pd.Timestamp(oos_cutoff).date()) if oos_cutoff is not None else None,
+            "end": str(pd.Timestamp(training_data_end_date).date()),
+        },
+        "validation_trades": validation_metrics["trades"],
+        "validation_pf": round(validation_metrics["pf"], 3) if np.isfinite(validation_metrics["pf"]) else "inf",
+        "validation_win_rate": round(validation_metrics["win_rate"], 2),
+        "validation_drawdown": round(validation_metrics["max_dd_pct"], 2),
+        # ★後方互換(旧キー、ModelMetaRoundTripTests等が参照): validation_*と同値。
+        "oos_pf": round(validation_metrics["pf"], 3) if np.isfinite(validation_metrics["pf"]) else "inf",
+        "oos_trades": validation_metrics["trades"],
+        "oos_max_dd_pct": round(validation_metrics["max_dd_pct"], 2),
+        "policy_hash": compute_policy_hash(),
+        "deploy_reason": deploy_reason,
+        "previous_model_id": (previous_meta or {}).get("model_id"),
+    }
+    safe_state.atomic_write_json(path or MODEL_META_FILE, meta)
+    return meta
+
+
+def incumbent_window_status(meta, oos_cutoff):
+    """現行モデル(チャンピオン)にとって、今回のOOS区間が本当に未学習区間か。
+    'safe'   : メタ情報があり、学習カットオフがOOS区間開始より前(重複無し)
+    'leaky'  : メタ情報はあるが、学習カットオフがOOS区間に重なる(リーク)
+    'unknown': メタ情報が無い(古いモデル、または初回)。安全側でleaky同様に扱う
+    """
+    if meta is None:
+        return "unknown"
+    try:
+        train_cutoff = pd.Timestamp(meta["train_cutoff"])
+    except Exception:
+        return "unknown"
+    return "safe" if train_cutoff < pd.Timestamp(oos_cutoff) else "leaky"
+
+
+def evaluate_incumbent(ticker_frames, oos_dates, nikkei_ff, model_file=None):
+    """現行model.pkl(チャンピオン)を、チャレンジャーと全く同じOOS区間・
+    シミュレーションルールで評価する。読み込み/評価に失敗した場合はNone
+    (=比較不能、呼び出し側で絶対ゲートのみにフォールバックする)。"""
+    path = model_file or MODEL_FILE
+    try:
+        incumbent_model = joblib.load(path)
+        trades = simulate_oos_top1(incumbent_model, ticker_frames, oos_dates, nikkei_ff)
+        return compute_pf_metrics(trades)
+    except Exception as e:
+        print(f"⚠ 現行モデルの評価に失敗、比較不能として扱います: {e}")
+        return None
+
+
+def load_registered_incumbent_evaluation(report_file=None):
+    """daily_retrain_report.csvの「最も新しいdeployed==True行」を、現行モデルが
+    本番投入された時点で登録された評価(登録時OOS評価)として返す。
+
+    現行モデルがevaluate_incumbent()で今回のOOS区間と同一条件で再評価できない
+    場合(サイドカー無し/リーク=window_status!='safe')に、代わりにこの
+    「投入した当時の記録」を参照するためのもの。行が無い/壊れている場合はNone。
+    """
+    path = report_file or RETRAIN_REPORT_FILE
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return None
+    if df.empty or "deployed" not in df.columns:
+        return None
+    deployed_mask = df["deployed"].astype(str).str.strip().str.lower().isin(("true", "1"))
+    deployed_rows = df[deployed_mask]
+    if deployed_rows.empty:
+        return None
+    deployed_rows = deployed_rows.copy()
+    deployed_rows["_date"] = pd.to_datetime(deployed_rows["date"], errors="coerce")
+    deployed_rows = deployed_rows.sort_values("_date")
+    row = deployed_rows.iloc[-1]
+    try:
+        trades = int(row["oos_trades"])
+        pf_raw = row["oos_pf"]
+        pf = float("inf") if str(pf_raw).strip().lower() == "inf" else float(pf_raw)
+        max_dd_pct = float(row["oos_max_dd_pct"])
+    except Exception:
+        return None
+    return {
+        "date": str(row["date"]),
+        "trades": trades,
+        "pf": pf,
+        "max_dd_pct": max_dd_pct,
+        "reason": str(row.get("reason", "")),
+    }
+
+
+def decide_deploy(
+    challenger_metrics,
+    incumbent_metrics,
+    window_status,
+    incumbent_exists,
+    registered_eval=None,
+    min_trades=None,
+    min_pf=None,
+    max_dd_pct=None,
+    margin_pf=None,
+    max_dd_worse_pct=None,
+):
+    """チャンピオン/チャレンジャーのデプロイ判定(main()から分離、単体テスト用)。
+
+    ・チャレンジャーの取引数が不足 → 既存挙動そのまま(現行モデル有りなら見送り、
+      無ければ参考採用として投入)
+    ・取引数は十分 →
+        - 絶対ゲート(PF>=min_pf かつ 最大DD<=max_dd_pct)を通過 → 投入
+        - 絶対ゲートは未通過でも、現行モデルの同一区間での成績と比較可能
+          (window_status=='safe') かつ PFがmargin_pf以上上回りDDがmax_dd_worse_pct
+          ポイント以上悪化していなければ → 投入(相対ゲート)
+        - 絶対ゲート未通過・window_status!='safe'(比較不能)でも、registered_eval
+          (現行モデルの投入時点の登録済みOOS評価)が渡された場合:
+            - 登録時取引数がmin_trades未満(=現行モデルは投入時点でそもそも
+              まともに評価されていなかった)なら、チャレンジャーが最低評価条件
+              (取引数>=min_trades・最大DD<=max_dd_pct)を満たし、かつ登録時PFを
+              厳密に上回れば投入(「PFがX改善」ではなく「現行が評価不能だった
+              ため最低条件を満たす新モデルへ更新」という理由文にする)。
+            - 登録時取引数がmin_trades以上なら、通常の相対ゲート(margin_pf/
+              max_dd_worse_pct)を登録時実績との比較で適用する。
+        - それ以外(現行モデルが無い/比較不能でregistered_evalも無い、または
+          相対ゲート・登録時比較のいずれも満たさない) → 見送り
+    """
+    min_trades = MIN_OOS_TRADES if min_trades is None else min_trades
+    min_pf = MIN_OOS_PF if min_pf is None else min_pf
+    max_dd_pct = MAX_OOS_DD_PCT if max_dd_pct is None else max_dd_pct
+    margin_pf = RETRAIN_CHAMPION_MARGIN_PF if margin_pf is None else margin_pf
+    max_dd_worse_pct = RETRAIN_CHAMPION_MAX_DD_WORSE_PCT if max_dd_worse_pct is None else max_dd_worse_pct
+
+    if challenger_metrics["trades"] < min_trades:
+        if incumbent_exists:
+            return False, f"OOS取引数不足({challenger_metrics['trades']}件<{min_trades}件)のため判定保留・前回モデルを継続使用"
+        return True, f"OOS取引数不足({challenger_metrics['trades']}件<{min_trades}件)のため判定不能だが、既存モデル無し(初回投入前)のため参考採用として投入"
+
+    absolute_pass = challenger_metrics["pf"] >= min_pf and abs(challenger_metrics["max_dd_pct"]) <= max_dd_pct
+
+    if window_status == "safe" and incumbent_metrics is not None:
+        beats_incumbent = (
+            challenger_metrics["pf"] >= incumbent_metrics["pf"] + margin_pf
+            and abs(challenger_metrics["max_dd_pct"]) <= abs(incumbent_metrics["max_dd_pct"]) + max_dd_worse_pct
+        )
+        if absolute_pass or beats_incumbent:
+            via = "絶対ゲート" if absolute_pass else f"相対ゲート(現行PF={incumbent_metrics['pf']:.2f}比+{margin_pf:.2f}以上)"
+            return True, (
+                f"チャレンジャーがチャンピオンと同一OOS区間で比較の上{via}通過"
+                f"(チャレンジャーPF={challenger_metrics['pf']:.2f} vs 現行PF={incumbent_metrics['pf']:.2f}, "
+                f"チャレンジャー最大DD={challenger_metrics['max_dd_pct']:.1f}% vs 現行最大DD={incumbent_metrics['max_dd_pct']:.1f}%)"
+            )
+        return False, (
+            f"チャレンジャーは絶対ゲート未通過かつチャンピオンを有意に上回れず、現行モデルを継続使用"
+            f"(チャレンジャーPF={challenger_metrics['pf']:.2f} vs 現行PF={incumbent_metrics['pf']:.2f}, "
+            f"チャレンジャー最大DD={challenger_metrics['max_dd_pct']:.1f}% vs 現行最大DD={incumbent_metrics['max_dd_pct']:.1f}%)"
+        )
+
+    if not absolute_pass and incumbent_exists and window_status != "safe" and registered_eval is not None:
+        reg_trades = registered_eval["trades"]
+        reg_pf = registered_eval["pf"]
+        if reg_trades < min_trades:
+            meets_min = (
+                challenger_metrics["trades"] >= min_trades
+                and abs(challenger_metrics["max_dd_pct"]) <= max_dd_pct
+                and challenger_metrics["pf"] > reg_pf
+            )
+            if meets_min:
+                return True, (
+                    f"現行モデルは評価不能(登録時{reg_trades}件<{min_trades}件)のため、"
+                    f"最低評価条件を満たす新モデルへ更新"
+                    f"(チャレンジャー取引数={challenger_metrics['trades']}件, "
+                    f"PF={challenger_metrics['pf']:.3f}, 最大DD={challenger_metrics['max_dd_pct']:.1f}% "
+                    f"vs 登録時PF={reg_pf:.3f}[{registered_eval['date']}登録・{reg_trades}件])"
+                )
+            return False, (
+                f"チャレンジャーは絶対ゲート未通過、現行モデルは評価不能(登録時{reg_trades}件<{min_trades}件)"
+                f"のため登録時実績と比較したが最低評価条件(取引数>={min_trades}件・最大DD<={max_dd_pct}%・"
+                f"登録時PF{reg_pf:.3f}超)を満たさず、現行モデルを継続使用"
+                f"(チャレンジャー取引数={challenger_metrics['trades']}件, PF={challenger_metrics['pf']:.3f}, "
+                f"最大DD={challenger_metrics['max_dd_pct']:.1f}%)"
+            )
+
+        beats_registered = (
+            challenger_metrics["pf"] >= reg_pf + margin_pf
+            and abs(challenger_metrics["max_dd_pct"]) <= abs(registered_eval["max_dd_pct"]) + max_dd_worse_pct
+        )
+        if beats_registered:
+            return True, (
+                f"チャレンジャーが現行モデルの登録時実績(投入時[{registered_eval['date']}]記録、"
+                f"直接比較不能[{window_status}]のため代用)を相対ゲート(+{margin_pf:.2f}以上)で上回るため更新"
+                f"(チャレンジャーPF={challenger_metrics['pf']:.3f} vs 登録時PF={reg_pf:.3f}, "
+                f"チャレンジャー最大DD={challenger_metrics['max_dd_pct']:.1f}% vs "
+                f"登録時最大DD={registered_eval['max_dd_pct']:.1f}%)"
+            )
+        return False, (
+            f"チャレンジャーは絶対ゲート未通過かつ現行モデルの登録時実績([{registered_eval['date']}]記録)を"
+            f"有意に上回れず、現行モデルを継続使用"
+            f"(チャレンジャーPF={challenger_metrics['pf']:.3f} vs 登録時PF={reg_pf:.3f}, "
+            f"チャレンジャー最大DD={challenger_metrics['max_dd_pct']:.1f}% vs "
+            f"登録時最大DD={registered_eval['max_dd_pct']:.1f}%)"
+        )
+
+    # 現行モデルが無い、または比較不能(leaky/unknown)でregistered_evalも無い → 絶対ゲートのみで判定
+    note = ""
+    if incumbent_exists and window_status != "safe":
+        note = f"(現行モデルはOOS区間が未学習と確認できず[{window_status}]比較不能のため絶対ゲートのみで判定)"
+    if absolute_pass:
+        return True, f"OOSゲート通過(PF={challenger_metrics['pf']:.2f}>={min_pf}, 最大DD={challenger_metrics['max_dd_pct']:.1f}%){note}"
+    return False, f"OOSゲート未通過(PF={challenger_metrics['pf']:.2f}, 最大DD={challenger_metrics['max_dd_pct']:.1f}%){note}"
+
+
 def recent_live_performance(days=30):
     if not os.path.exists(HISTORY_FILE):
         return None
@@ -534,27 +830,45 @@ def main():
         f"最大DD={metrics['max_dd_pct']:.2f}%"
     )
 
-    if metrics["trades"] < MIN_OOS_TRADES:
-        # ★修正(2026-09): 本ファイル冒頭の設計コメントでは「OOS取引数が少なすぎて
-        # 判定不能な場合は、参考採用として差し替える(判断材料が無いのに機械的に
-        # 止め続けないため)」と明記されていたが、実装は無条件でdeploy=False
-        # (=前回モデル継続)になっていた。既存のdirectional_model.pklが無い
-        # (初回投入前)の場合、この不一致により「有効なOOS実績が貯まるまで
-        # 永久にモデルが投入されず、ペーパートレードが1件も実行できない」
-        # というデッドロックになっていたため、コメント通りの挙動に修正する。
-        # 既にモデルが存在する場合は、従来通り安全側(前回モデル継続)を維持する。
-        if os.path.exists(MODEL_FILE):
-            deploy = False
-            reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定保留・前回モデルを継続使用"
+    # ★追加(2026-09-30、チャンピオン/チャレンジャー方式): 従来はチャレンジャー
+    # (今回学習したoos_model)を固定の絶対ゲート(PF>=MIN_OOS_PF)にのみ通す設計
+    # だったため、現行モデル(チャンピオン)がどれほど悪くても「チャレンジャーが
+    # 絶対ゲートを超えない限り現状維持」という比較が起きていた。現行model.pklを
+    # 同一OOS区間・同一シミュレーションで評価できる場合(=現行モデルの学習カット
+    # オフがOOS区間より前でリークが無い場合)は、その成績と比較した相対ゲートも
+    # 追加で見る。比較できない場合(現行モデルが無い/メタ情報が無い古いモデル/
+    # 学習カットオフがOOS区間に重なる)は、従来通り絶対ゲートのみで判定する。
+    incumbent_exists = os.path.exists(MODEL_FILE)
+    incumbent_meta = load_model_meta() if incumbent_exists else None
+    window_status = incumbent_window_status(incumbent_meta, oos_cutoff) if incumbent_exists else "no_incumbent"
+    incumbent_metrics = None
+    if incumbent_exists and window_status == "safe" and metrics["trades"] >= MIN_OOS_TRADES:
+        incumbent_metrics = evaluate_incumbent(ticker_frames, oos_dates, nikkei_ff)
+        if incumbent_metrics is not None:
+            print(
+                f"チャンピオン(現行model.pkl)同一OOS区間シミュレーション結果: "
+                f"取引数={incumbent_metrics['trades']} PF={incumbent_metrics['pf']:.3f} "
+                f"勝率={incumbent_metrics['win_rate']:.1f}% 最大DD={incumbent_metrics['max_dd_pct']:.2f}%"
+            )
         else:
-            deploy = True
-            reason = f"OOS取引数不足({metrics['trades']}件<{MIN_OOS_TRADES}件)のため判定不能だが、既存モデル無し(初回投入前)のため参考採用として投入"
-    elif metrics["pf"] >= MIN_OOS_PF and abs(metrics["max_dd_pct"]) <= MAX_OOS_DD_PCT:
-        deploy = True
-        reason = f"OOSゲート通過(PF={metrics['pf']:.2f}>={MIN_OOS_PF}, 最大DD={metrics['max_dd_pct']:.1f}%)"
-    else:
-        deploy = False
-        reason = f"OOSゲート未通過(PF={metrics['pf']:.2f}, 最大DD={metrics['max_dd_pct']:.1f}%)"
+            window_status = "unknown"
+
+    # ★追加(②モデル更新ルール): 現行モデルが同一OOS区間で直接比較できない
+    # (window_status != 'safe')場合、代わりに投入時点の登録済み評価
+    # (daily_retrain_report.csvの直近deployed==True行)を参照する。
+    registered_eval = None
+    if incumbent_exists and window_status != "safe":
+        registered_eval = load_registered_incumbent_evaluation()
+        if registered_eval is not None:
+            print(
+                f"チャンピオン登録時評価(daily_retrain_report.csv、{registered_eval['date']}投入分)を参照: "
+                f"取引数={registered_eval['trades']} PF={registered_eval['pf']:.3f} "
+                f"最大DD={registered_eval['max_dd_pct']:.2f}%"
+            )
+
+    deploy, reason = decide_deploy(
+        metrics, incumbent_metrics, window_status, incumbent_exists, registered_eval=registered_eval,
+    )
 
     full_rows = flatten_training_rows(ticker_frames, before_date=None)
     full_rows.drop(columns=["date"]).to_csv(TRAIN_FILE, index=False, encoding="utf-8-sig")
@@ -567,6 +881,10 @@ def main():
                 print(f"⚠ 旧model.pklの退避に失敗(続行): {e}")
         final_model = fit_rf(full_rows)
         joblib.dump(final_model, MODEL_FILE)
+        save_model_meta(
+            last_date, today, metrics,
+            oos_cutoff=oos_cutoff, deploy_reason=reason, previous_meta=incumbent_meta,
+        )
         print(f"✅ model.pkl 差し替え完了: {reason}")
     else:
         print(f"🟡 model.pkl 差し替え見送り: {reason}")
@@ -589,6 +907,17 @@ def main():
         "live_recent_trades": live["trades"] if live else 0,
         "live_recent_win_rate": round(live["win_rate"], 2) if live and live["win_rate"] is not None else "",
         "live_recent_pnl": round(live["pnl"], 2) if live else 0.0,
+        # ★追加(2026-09-30、チャンピオン/チャレンジャー方式、後方互換のため末尾に追加):
+        "incumbent_window_status": window_status,
+        "incumbent_oos_trades": incumbent_metrics["trades"] if incumbent_metrics else "",
+        "incumbent_oos_pf": (round(incumbent_metrics["pf"], 3) if incumbent_metrics and np.isfinite(incumbent_metrics["pf"]) else ("inf" if incumbent_metrics else "")),
+        "incumbent_oos_win_rate": round(incumbent_metrics["win_rate"], 2) if incumbent_metrics else "",
+        "incumbent_oos_max_dd_pct": round(incumbent_metrics["max_dd_pct"], 2) if incumbent_metrics else "",
+        # ★追加(②モデル更新ルール、後方互換のため末尾に追加): 登録時評価を参照した場合のみ埋まる。
+        "registered_eval_date": registered_eval["date"] if registered_eval else "",
+        "registered_eval_trades": registered_eval["trades"] if registered_eval else "",
+        "registered_eval_pf": (round(registered_eval["pf"], 3) if registered_eval and np.isfinite(registered_eval["pf"]) else ("inf" if registered_eval else "")),
+        "registered_eval_max_dd_pct": round(registered_eval["max_dd_pct"], 2) if registered_eval else "",
     })
 
     notify(
