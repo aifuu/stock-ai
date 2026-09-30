@@ -12,6 +12,8 @@ incumbent_window_status()という、実データ取得(yfinance)やモデル学
 標準ライブラリのみを使う)。evaluate_incumbent()はjoblib.load/simulate_oos_top1
 への薄いラッパーのため、それらをモンキーパッチして配線だけを確認する。
 """
+import csv
+import hashlib
 import json
 import os
 import shutil
@@ -117,6 +119,195 @@ class DecideDeployRelativeGateTests(unittest.TestCase):
         self.assertIn("絶対ゲート", reason)
 
 
+class DecideDeployRegisteredEvalTests(unittest.TestCase):
+    """②モデル更新ルール: 現行モデルが直接比較不能(window_status!='safe')な
+    場合の、登録時評価(daily_retrain_report.csvの投入時点の記録)を使った判定。
+
+    ちょうど今のdirectional_model.pkl(2026-09-12投入、メタ情報無し=unknown、
+    登録時PF0.218・5件<15件)のシナリオを厳密に再現する。
+    """
+
+    def _registered(self, date="2026-09-12", trades=5, pf=0.218, max_dd_pct=-26.08):
+        return {"date": date, "trades": trades, "pf": pf, "max_dd_pct": max_dd_pct, "reason": "参考採用"}
+
+    def test_2026_09_12_scenario_challenger_meets_minimum_and_beats_registered_pf_adopts(self):
+        # 現行モデルの登録時実績: PF0.218・5件(<15件)・DD-26.08。
+        # チャレンジャー: PF0.631・17件・DD-14.99 → 絶対ゲート(PF>=1.0)未通過だが、
+        # 最低評価条件(取引数>=15・DD<=30%)を満たしPFも登録時を上回るため更新。
+        registered = self._registered()
+        challenger = _metrics(trades=17, pf=0.631, win_rate=35.29, max_dd_pct=-14.99)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertTrue(deploy)
+        self.assertIn("評価不能", reason)
+        self.assertIn("登録時", reason)
+        self.assertIn("5件<15件", reason)
+        self.assertIn("最低評価条件を満たす新モデルへ更新", reason)
+        self.assertNotRegex(reason, r"改善")
+
+    def test_challenger_with_14_trades_is_too_few_trades_keeps_incumbent(self):
+        # 取引数不足(<15)は登録時評価云々の前に既存の「取引数不足」分岐で弾かれる。
+        registered = self._registered()
+        challenger = _metrics(trades=14, pf=5.0, max_dd_pct=-5.0)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertFalse(deploy)
+        self.assertIn("取引数不足", reason)
+
+    def test_challenger_dd_beyond_limit_keeps_incumbent(self):
+        registered = self._registered()
+        challenger = _metrics(trades=17, pf=0.631, max_dd_pct=-35.0)  # DD超過(>30%)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertFalse(deploy)
+        self.assertIn("最低評価条件", reason)
+        self.assertIn("継続使用", reason)
+
+    def test_challenger_pf_not_greater_than_registered_keeps_incumbent(self):
+        registered = self._registered()
+        challenger = _metrics(trades=17, pf=0.218, max_dd_pct=-15.0)  # PFが登録時と同値(strictly greaterでない)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertFalse(deploy)
+        self.assertIn("最低評価条件", reason)
+
+    def test_challenger_pf_strictly_less_than_registered_keeps_incumbent(self):
+        registered = self._registered()
+        challenger = _metrics(trades=17, pf=0.10, max_dd_pct=-15.0)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertFalse(deploy)
+
+    def test_absolute_gate_pass_deploys_without_needing_registered_eval(self):
+        registered = self._registered()
+        challenger = _metrics(trades=20, pf=1.5, max_dd_pct=-10.0)  # 絶対ゲート通過
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertTrue(deploy)
+        self.assertIn("OOSゲート通過", reason)
+
+    def test_leaky_window_also_uses_registered_eval(self):
+        registered = self._registered()
+        challenger = _metrics(trades=17, pf=0.631, max_dd_pct=-14.99)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "leaky", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertTrue(deploy)
+        self.assertIn("評価不能", reason)
+
+    def test_no_registered_eval_falls_back_to_absolute_gate_only(self):
+        # registered_evalが取得できない(report csv無し等)場合は従来通り絶対ゲートのみ。
+        challenger = _metrics(trades=17, pf=0.631, max_dd_pct=-14.99)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=None,
+        )
+        self.assertFalse(deploy)
+        self.assertIn("OOSゲート未通過", reason)
+
+    def test_registered_eval_with_enough_trades_uses_relative_margin_gate(self):
+        # 登録時取引数が最低基準以上(=投入時点でまともに評価されていた)なら、
+        # 通常の相対ゲート(margin_pf)を登録時実績との比較で適用する。
+        registered = self._registered(trades=20, pf=0.60, max_dd_pct=-10.0)
+        challenger = _metrics(trades=20, pf=0.90, max_dd_pct=-10.0)  # +0.30 >= margin(0.10)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertTrue(deploy)
+        self.assertIn("登録時実績", reason)
+
+    def test_registered_eval_with_enough_trades_within_margin_keeps_incumbent(self):
+        registered = self._registered(trades=20, pf=0.60, max_dd_pct=-10.0)
+        challenger = _metrics(trades=20, pf=0.65, max_dd_pct=-10.0)  # +0.05 < margin(0.10)
+        deploy, reason = m.decide_deploy(
+            challenger, None, "unknown", incumbent_exists=True, registered_eval=registered,
+        )
+        self.assertFalse(deploy)
+
+
+class LoadRegisteredIncumbentEvaluationTests(unittest.TestCase):
+    def setUp(self):
+        self._prev_cwd = os.getcwd()
+        self.tmp = tempfile.mkdtemp(prefix="daily_model_retrain_registered_eval_test_")
+        os.chdir(self.tmp)
+
+    def tearDown(self):
+        os.chdir(self._prev_cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_report(self, rows, path="daily_retrain_report.csv"):
+        fieldnames = [
+            "date", "train_rows", "oos_days", "oos_trades", "oos_pf",
+            "oos_win_rate", "oos_max_dd_pct", "deployed", "reason",
+            "live_recent_trades", "live_recent_win_rate", "live_recent_pnl",
+        ]
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for row in rows:
+                w.writerow(row)
+
+    def test_no_file_returns_none(self):
+        self.assertIsNone(m.load_registered_incumbent_evaluation())
+
+    def test_no_deployed_row_returns_none(self):
+        self._write_report([{
+            "date": "2026-09-28", "train_rows": 1, "oos_days": 1, "oos_trades": 19,
+            "oos_pf": 0.6, "oos_win_rate": 50.0, "oos_max_dd_pct": -10.0,
+            "deployed": False, "reason": "x", "live_recent_trades": 0,
+            "live_recent_win_rate": "", "live_recent_pnl": 0.0,
+        }])
+        self.assertIsNone(m.load_registered_incumbent_evaluation())
+
+    def test_picks_most_recent_deployed_row_by_date(self):
+        self._write_report([
+            {"date": "2026-09-03", "train_rows": 1, "oos_days": 1, "oos_trades": 15,
+             "oos_pf": 1.575, "oos_win_rate": 46.67, "oos_max_dd_pct": -10.0,
+             "deployed": True, "reason": "old", "live_recent_trades": 0,
+             "live_recent_win_rate": "", "live_recent_pnl": 0.0},
+            {"date": "2026-09-12", "train_rows": 1, "oos_days": 1, "oos_trades": 5,
+             "oos_pf": 0.218, "oos_win_rate": 20.0, "oos_max_dd_pct": -26.08,
+             "deployed": True, "reason": "参考採用", "live_recent_trades": 3,
+             "live_recent_win_rate": 0.0, "live_recent_pnl": -6673.11},
+            {"date": "2026-09-28", "train_rows": 1, "oos_days": 1, "oos_trades": 19,
+             "oos_pf": 0.6, "oos_win_rate": 50.0, "oos_max_dd_pct": -10.0,
+             "deployed": False, "reason": "not deployed", "live_recent_trades": 0,
+             "live_recent_win_rate": "", "live_recent_pnl": 0.0},
+        ])
+        reg = m.load_registered_incumbent_evaluation()
+        self.assertEqual(reg["date"], "2026-09-12")
+        self.assertEqual(reg["trades"], 5)
+        self.assertEqual(reg["pf"], 0.218)
+        self.assertEqual(reg["max_dd_pct"], -26.08)
+        self.assertIn("参考採用", reg["reason"])
+
+    def test_inf_pf_parses_as_infinity(self):
+        self._write_report([{
+            "date": "2026-09-12", "train_rows": 1, "oos_days": 1, "oos_trades": 20,
+            "oos_pf": "inf", "oos_win_rate": 100.0, "oos_max_dd_pct": -1.0,
+            "deployed": True, "reason": "x", "live_recent_trades": 0,
+            "live_recent_win_rate": "", "live_recent_pnl": 0.0,
+        }])
+        reg = m.load_registered_incumbent_evaluation()
+        self.assertTrue(reg["pf"] == float("inf"))
+
+    def test_custom_report_file_path_is_honored(self):
+        self._write_report([{
+            "date": "2026-09-12", "train_rows": 1, "oos_days": 1, "oos_trades": 5,
+            "oos_pf": 0.218, "oos_win_rate": 20.0, "oos_max_dd_pct": -26.08,
+            "deployed": True, "reason": "参考採用", "live_recent_trades": 0,
+            "live_recent_win_rate": "", "live_recent_pnl": 0.0,
+        }], path="custom_report.csv")
+        self.assertIsNone(m.load_registered_incumbent_evaluation())
+        reg = m.load_registered_incumbent_evaluation(report_file="custom_report.csv")
+        self.assertEqual(reg["trades"], 5)
+
+
 class IncumbentWindowStatusTests(unittest.TestCase):
     def test_no_metadata_is_unknown(self):
         self.assertEqual(m.incumbent_window_status(None, "2026-07-01"), "unknown")
@@ -153,13 +344,51 @@ class ModelMetaRoundTripTests(unittest.TestCase):
         self.assertIsNone(m.load_model_meta())
 
     def test_save_then_load_round_trips(self):
+        with open("dummy_model.pkl", "wb") as f:
+            f.write(b"dummy-model-bytes-v1")
         challenger = _metrics(trades=18, pf=1.234, win_rate=44.4, max_dd_pct=-12.34)
-        m.save_model_meta("2026-09-30", "2026-09-30", challenger)
+        saved = m.save_model_meta(
+            "2026-09-30", "2026-09-30", challenger,
+            oos_cutoff="2026-07-01", deploy_reason="test-deploy-reason",
+            model_file="dummy_model.pkl",
+        )
         meta = m.load_model_meta()
         self.assertEqual(meta["train_cutoff"], "2026-09-30")
+        self.assertEqual(meta["training_data_end_date"], "2026-09-30")
         self.assertEqual(meta["deployed_date"], "2026-09-30")
         self.assertEqual(meta["oos_pf"], 1.234)
+        self.assertEqual(meta["validation_pf"], 1.234)
         self.assertEqual(meta["oos_trades"], 18)
+        self.assertEqual(meta["validation_trades"], 18)
+        self.assertEqual(meta["validation_win_rate"], 44.4)
+        self.assertEqual(meta["validation_drawdown"], -12.34)
+        self.assertEqual(meta["validation_period"], {"start": "2026-07-01", "end": "2026-09-30"})
+        self.assertEqual(meta["deploy_reason"], "test-deploy-reason")
+        self.assertIsNone(meta["previous_model_id"])
+        self.assertEqual(meta["model_id"], saved["model_id"])
+        self.assertEqual(len(meta["model_id"]), 16)
+        expected_id = hashlib.sha256(b"dummy-model-bytes-v1").hexdigest()[:16]
+        self.assertEqual(meta["model_id"], expected_id)
+        self.assertIsInstance(meta["policy_hash"], dict)
+
+    def test_previous_model_id_chains_from_prior_meta(self):
+        with open("dummy_model.pkl", "wb") as f:
+            f.write(b"dummy-model-bytes-v2")
+        challenger = _metrics(trades=18, pf=1.234)
+        prior_meta = {"model_id": "aaaa1111bbbb2222"}
+        saved = m.save_model_meta(
+            "2026-09-30", "2026-09-30", challenger, previous_meta=prior_meta, model_file="dummy_model.pkl",
+        )
+        self.assertEqual(saved["previous_model_id"], "aaaa1111bbbb2222")
+
+    def test_infinite_pf_serializes_as_inf_string(self):
+        with open("dummy_model.pkl", "wb") as f:
+            f.write(b"dummy-model-bytes-v3")
+        challenger = _metrics(trades=18, pf=float("inf"))
+        m.save_model_meta("2026-09-30", "2026-09-30", challenger, model_file="dummy_model.pkl")
+        meta = m.load_model_meta()
+        self.assertEqual(meta["oos_pf"], "inf")
+        self.assertEqual(meta["validation_pf"], "inf")
 
     def test_corrupt_file_returns_none(self):
         with open(m.MODEL_META_FILE, "w", encoding="utf-8") as f:

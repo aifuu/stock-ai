@@ -20,6 +20,31 @@ policyはlive の strategy_policy*.json ではなく、このリポジトリに
 strategy_policy_down.jsonが実際に作られても、この研究トラックは
 6ヶ月間ずっとフォールバック=all_candidates_frozen_policy.jsonを使い続ける)。
 
+★研究モデル凍結(承認ベース、run()冒頭): git管理下のresearch_model_freeze_
+approval.json(approved=true・expected_model_id指定)があり、現行の
+directional_model_meta.json(2026-09-12投入のレガシーモデルには無い)の
+model_idがそれと一致し、参考採用型のdeploy_reasonでなくvalidation_trades
+が最低基準を満たす場合にのみ、その時点のdirectional_model.pklをGitHub
+Release(タグ all-candidates-research-model)へ凍結保存する。一度凍結
+したら自動では二度と変更しない。凍結後は毎回そのRelease資産をダウンロード
+してsha256を検証し、profit_top10_paper.load_modelをこのプロセス内だけ
+一時的に差し替えてscan()に使う(profit_top10_paper.pyは変更しない)。
+ダウンロード/検証に失敗した場合はliveモデルへフォールバックせず必ず
+例外で停止する。承認ファイルはこのタスクでは作成しない(＝当面は凍結
+されず、現行liveモデルでデータ収集を続ける)。
+
+★モデル識別(全trade行にmodel_id/model_versionを記録): 各ポジション/
+トレード行には、その候補選定に実際に使われたモデルのmodel_id(sha256
+先頭16桁、凍結中は凍結モデルのそれ)とmodel_version(directional_model_
+meta.jsonのtraining_date、凍結中は凍結時点のtraining_date)を記録する。
+directional_model_meta.jsonが無い/model_idが現行pklと一致しない場合
+(＝2026-09-12投入のレガシーモデル)はmodel_version="legacy-20260912"と
+定義する。過去に記録済みの行(この列が導入される前の行)はこれらの列が
+欠損(NaN)のままになるが、それらは全て定義上このレガシー2026-09-12モデル
+によるものとして扱う(rewriteはしない)。dedupキー(trade_id)は従来通り
+date|ticker|direction|data_date|policy_hashのままで、model_id/model_version
+はキーに含めない。
+
 ★設計メモ(エントリー価格は「引け値」): このワークフローは東証の大引け
 (15:30 JST)後、15:20ではなく16:05 JSTに実行される(理由は
 .github/workflows/all_candidates_paper.ymlのcronコメント参照:
@@ -45,6 +70,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+import daily_model_retrain as dmr
+import profit_top10_paper as live_p10
 from common import count_tse_trading_days, is_tse_trading_day, tse_trading_days_between
 from daily_directional_top1 import download
 from profit_top10_paper import scan, select_policy_file
@@ -73,7 +100,13 @@ SUMMARY_HEADER_COMMENT = (
     "each bucket and summing weight*return_pct/100 for the ones that have closed "
     "so far. It is NOT a true continuous equity curve (holds span multiple days, "
     "there is no shared/compounding capital pool), and rows for cohorts with "
-    "still-open positions update on later runs as those trades close."
+    "still-open positions update on later runs as those trades close. "
+    "Underlying trade rows (all_candidates_YYYY-MM.csv.gz) carry model_id/"
+    "model_version identifying which directional model produced each candidate; "
+    "rows predating that column (or with it blank) are defined as the legacy "
+    "2026-09-12 model and are never rewritten. Once a research model is frozen "
+    "(see all_candidates_paper.py docstring), later rows keep using the frozen "
+    "model_id even after the live model changes."
 )
 
 BUCKETS = ("ALL", "TOP1", "TOP3", "TOP5")
@@ -87,6 +120,14 @@ EQUAL_WEIGHT_CAPITAL = 1_000_000.0
 # 一致するようにする。
 FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
 FORCED_EXIT = dtime(15, 25)
+
+# ★④研究モデル凍結(承認ベース)関連定数。モジュールdocstring参照。
+RESEARCH_MODEL_FREEZE_APPROVAL_FILE = "research_model_freeze_approval.json"
+RELEASE_TAG_RESEARCH_MODEL = "all-candidates-research-model"
+LIVE_MODEL_FILE = "directional_model.pkl"
+LIVE_MODEL_META_FILE = "directional_model_meta.json"
+# ★⑤モデル識別: directional_model_meta.jsonが無い/model_id不一致の場合の定義上のバージョン名。
+LEGACY_MODEL_VERSION = "legacy-20260912"
 
 
 class StateCorruptError(RuntimeError):
@@ -102,6 +143,42 @@ def sha256_file(path):
     with open(path, "rb") as f:
         h.update(f.read())
     return h.hexdigest()
+
+
+def compute_model_id(path):
+    """model_id = 指定パスのモデルファイルのバイト列のsha256先頭16桁。
+    daily_model_retrain.compute_model_id()と同じ桁数(16桁)で揃える。"""
+    return sha256_file(path)[:16]
+
+
+def current_model_identity(state, work_dir="."):
+    """今回のscan()候補が実際に使うモデルの(model_id, model_version)を返す。
+
+    ・凍結済み(state['frozen_model_id']あり) → 凍結モデルのid/training_dateを
+      常に優先する(④: liveが後で変わっても凍結モデルを使い続けるため)。
+    ・未凍結 → 現行のdirectional_model.pklを直接ハッシュしたものをmodel_idとし、
+      directional_model_meta.jsonが存在してそのmodel_idと一致すればtraining_
+      dateをmodel_versionとする。メタが無い/不一致(2026-09-12投入のレガシー
+      モデル)ならLEGACY_MODEL_VERSIONとする。
+    """
+    if state.get("frozen_model_id"):
+        return state["frozen_model_id"], state.get("frozen_model_training_date") or LEGACY_MODEL_VERSION
+
+    live_path = os.path.join(work_dir, LIVE_MODEL_FILE)
+    if not os.path.exists(live_path):
+        return None, LEGACY_MODEL_VERSION
+    model_id = compute_model_id(live_path)
+    model_version = LEGACY_MODEL_VERSION
+    meta_path = os.path.join(work_dir, LIVE_MODEL_META_FILE)
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            if isinstance(meta, dict) and meta.get("model_id") == model_id and meta.get("training_date"):
+                model_version = meta["training_date"]
+        except Exception:
+            pass
+    return model_id, model_version
 
 
 def load_frozen_policy(path):
@@ -253,6 +330,192 @@ def list_release_assets(tag, retries=3, retry_wait=3):
         if attempt < retries:
             time.sleep(retry_wait)
     return []
+
+
+# =====================================================================
+# ④研究モデル凍結(承認ベース)。モジュールdocstring参照。
+# =====================================================================
+
+def _load_freeze_approval(path=None):
+    p = path or RESEARCH_MODEL_FREEZE_APPROVAL_FILE
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _load_live_model_meta(path=None):
+    p = path or LIVE_MODEL_META_FILE
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or "model_id" not in data:
+        return None
+    return data
+
+
+def evaluate_freeze_eligibility(state, work_dir=".", min_validation_trades=None):
+    """凍結の4条件をすべて評価する。(eligible: bool, reason: str, meta: dict|None)を返す。
+
+    条件(すべて満たす場合のみeligible=True):
+      (1) 承認ファイル(RESEARCH_MODEL_FREEZE_APPROVAL_FILE)がgit管理下に存在し、
+          approved=true かつ expected_model_id指定
+      (2) 現行のdirectional_model_meta.jsonが存在する(＝2026-09-12投入の
+          レガシーモデルではない)、かつそのmodel_idが(1)のexpected_model_idと一致
+      (3) その投入理由(deploy_reason)が'参考採用'型ではなく、validation_tradesが
+          最低評価基準(RETRAIN_MIN_OOS_TRADES)以上
+      (4) stateにまだ凍結済みモデルが無い(re-freeze禁止)
+    どれか1つでも欠ければeligible=Falseで、失敗した条件を明記したreasonを返す。
+    """
+    min_validation_trades = (
+        dmr.MIN_OOS_TRADES if min_validation_trades is None else min_validation_trades
+    )
+
+    if state.get("frozen_model_id"):
+        return False, "既に研究モデルを凍結済みのため対象外(re-freezeは行わない)", None
+
+    approval = _load_freeze_approval(os.path.join(work_dir, RESEARCH_MODEL_FREEZE_APPROVAL_FILE))
+    if approval is None or not approval.get("approved") or not approval.get("expected_model_id"):
+        return (
+            False,
+            f"承認ファイル({RESEARCH_MODEL_FREEZE_APPROVAL_FILE})が無い/approved=trueでない/"
+            "expected_model_id未指定のため対象外",
+            None,
+        )
+
+    meta = _load_live_model_meta(os.path.join(work_dir, LIVE_MODEL_META_FILE))
+    if meta is None:
+        return (
+            False,
+            f"現行モデルに{LIVE_MODEL_META_FILE}(サイドカー)が無く"
+            "(2026-09-12投入のレガシーモデル相当)、model_idを確認できないため対象外",
+            None,
+        )
+
+    if meta.get("model_id") != approval.get("expected_model_id"):
+        return (
+            False,
+            f"承認ファイルのexpected_model_id({approval.get('expected_model_id')})と"
+            f"現行モデルのmodel_id({meta.get('model_id')})が不一致のため対象外",
+            None,
+        )
+
+    deploy_reason = str(meta.get("deploy_reason") or "")
+    if "参考採用" in deploy_reason:
+        return False, f"現行モデルの投入理由が参考採用型('{deploy_reason}')のため対象外", None
+
+    try:
+        validation_trades = int(meta.get("validation_trades"))
+    except (TypeError, ValueError):
+        return False, "現行モデルのvalidation_trades情報が不正/欠損のため対象外", None
+    if validation_trades < min_validation_trades:
+        return (
+            False,
+            f"現行モデルのvalidation_trades({validation_trades})が"
+            f"最低評価基準({min_validation_trades})未満のため対象外",
+            None,
+        )
+
+    return True, "全条件を満たすため凍結対象", meta
+
+
+def freeze_research_model(meta, work_dir=".", upload=True, now=None):
+    """evaluate_freeze_eligibility()でeligible=Trueと判定されたmetaを元に、
+    現行directional_model.pklをGitHub Release(all-candidates-research-model)
+    へアップロードし、アップロード後に再ダウンロード・sha256照合して初めて
+    成功とする(all_candidates_repair.pyのbackup_and_verify_assetと同じ
+    validate-then-promoteスタイル)。戻り値はstateへマージするフィールドのdict。
+    """
+    now = now or datetime.now(TZ)
+    model_id = meta["model_id"]
+    date_str = now.strftime("%Y%m%d")
+    asset_name = f"research_model_{date_str}_{model_id}.joblib"
+    meta_asset_name = f"research_model_{date_str}_{model_id}.meta.json"
+
+    live_pkl_path = os.path.join(work_dir, LIVE_MODEL_FILE)
+    expected_sha = sha256_file(live_pkl_path)
+    local_asset_path = os.path.join(work_dir, asset_name)
+    shutil.copyfile(live_pkl_path, local_asset_path)
+
+    local_meta_path = os.path.join(work_dir, meta_asset_name)
+    with open(local_meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    if upload:
+        ensure_release_exists(
+            RELEASE_TAG_RESEARCH_MODEL, RELEASE_TAG_RESEARCH_MODEL,
+            "Machine-frozen research model snapshot (not a software release). "
+            "Managed by all_candidates_paper.py. Frozen once, approval-gated, "
+            "and never re-frozen automatically.",
+        )
+        upload_release_asset(RELEASE_TAG_RESEARCH_MODEL, local_asset_path)
+        upload_release_asset(RELEASE_TAG_RESEARCH_MODEL, local_meta_path)
+
+        verify_path = os.path.join(work_dir, f"_verify_{asset_name}")
+        verify_result = download_release_asset(RELEASE_TAG_RESEARCH_MODEL, asset_name, verify_path)
+        if verify_result != "ok":
+            raise RuntimeError(f"凍結モデル{asset_name}の再ダウンロード検証に失敗しました(status={verify_result})")
+        actual_sha = sha256_file(verify_path)
+        if actual_sha != expected_sha:
+            raise RuntimeError(
+                f"凍結モデル{asset_name}のsha256不一致: expected={expected_sha} actual={actual_sha}"
+            )
+        print(f"✅ 研究モデル凍結完了・検証済み: {asset_name} (sha256={expected_sha[:12]}...)")
+
+    return {
+        "frozen_model_id": model_id,
+        "frozen_model_asset": asset_name,
+        "frozen_model_meta_asset": meta_asset_name,
+        "frozen_model_training_date": meta.get("training_date"),
+        "frozen_model_sha256": expected_sha,
+        "frozen_at": now.isoformat(),
+    }
+
+
+def load_frozen_model(state, work_dir="."):
+    """凍結済みモデルをReleaseからダウンロードしsha256を検証してロードする。
+
+    ダウンロード失敗・sha256不一致は必ず例外を送出する(liveモデルへの
+    フォールバックは絶対に行わない、という④の要件)。
+    """
+    import joblib
+
+    asset_name = state["frozen_model_asset"]
+    expected_sha = state.get("frozen_model_sha256")
+    local_path = os.path.join(work_dir, f"_frozen_{asset_name}")
+    result = download_release_asset(RELEASE_TAG_RESEARCH_MODEL, asset_name, local_path)
+    if result != "ok":
+        raise RuntimeError(
+            f"凍結モデル{asset_name}のダウンロードに失敗しました(status={result})。"
+            "liveモデルへのフォールバックは行いません"
+        )
+    actual_sha = sha256_file(local_path)
+    if expected_sha and actual_sha != expected_sha:
+        raise RuntimeError(
+            f"凍結モデル{asset_name}のsha256不一致: expected={expected_sha} actual={actual_sha}。"
+            "liveモデルへのフォールバックは行いません"
+        )
+    return joblib.load(local_path)
+
+
+def _scan_with_model(policy, model):
+    """指定モデルを使ってscan()を呼ぶ。profit_top10_paper.load_model()を
+    このプロセス内だけ一時的に差し替える(profit_top10_paper.pyは変更しない)。
+    """
+    original = live_p10.load_model
+    live_p10.load_model = lambda: model
+    try:
+        return scan(policy, limit=None)
+    finally:
+        live_p10.load_model = original
 
 
 # =====================================================================
@@ -494,7 +757,7 @@ def build_trade_id(entry_date, ticker, direction, data_date, policy_hash):
 
 
 def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
-                         policy_hash, trend_down_flag):
+                         policy_hash, trend_down_flag, model_id=None, model_version=None):
     """scan()が返した全候補(既にexpected_value_pct,score降順=rankそのもの)から、
     まだ持っていないtrade_idの分だけ新規ポジションを作る。
 
@@ -506,6 +769,10 @@ def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
     同一営業日中は再実行しても不変)をentry_timestamp相当として使う。
     実行時刻そのものは参考情報としてentry_time列に残すが、dedupキーには
     含めない。
+
+    ★⑤モデル識別: model_id/model_versionは今回のcandidates(scan()呼び出し)が
+    実際に使ったモデルを示す(current_model_identity()参照)。dedupキー
+    (trade_id)には含めない。
     """
     new_positions = []
     for rank, c in enumerate(candidates, start=1):
@@ -532,6 +799,8 @@ def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
             "hold_days": int(policy["hold_days"]),
             "entry_date": today,
             "entry_time": datetime.now(TZ).strftime("%H:%M"),
+            "model_id": model_id,
+            "model_version": model_version,
         })
     return new_positions
 
@@ -545,6 +814,9 @@ TRADE_COLUMNS = [
     "up_probability", "down_probability", "nikkei_filter", "policy_file",
     "policy_hash", "trend_down_flag", "entry_price", "tp", "sl", "hold_days",
     "entry_time", "exit_price", "exit_time", "exit_date", "exit_reason", "return_pct",
+    # ★⑤追加(モデル識別): 欠損(NaN)の行はレガシー2026-09-12モデル扱い
+    # (モジュールdocstring・SUMMARY_HEADER_COMMENT参照)。過去行は書き換えない。
+    "model_id", "model_version",
 ]
 
 
@@ -754,12 +1026,37 @@ def run(now=None, work_dir=".", upload=True):
         print(f"⏭ all_candidates_paper {today}: 本日は既に実行済みのためスキップ")
         return {"today": today, "skipped": "already_completed_today"}
 
+    # ★④研究モデル凍結(承認ベース)。trading-day/window/same-dayゲート・state
+    # 取得の直後、scan()より前に評価する。凍結済みなら毎回その凍結モデルを
+    # ダウンロード・sha256検証して使う(失敗時はハード失敗、liveへのフォール
+    # バックはしない)。未凍結なら4条件を評価し、満たせば今回のみ凍結する。
+    frozen_model = None
+    if state.get("frozen_model_id"):
+        frozen_model = load_frozen_model(state, work_dir=work_dir)
+        print(f"🧊 凍結済み研究モデルを使用: {state['frozen_model_asset']}")
+    else:
+        eligible, freeze_note, freeze_meta = evaluate_freeze_eligibility(state, work_dir=work_dir)
+        if eligible:
+            freeze_fields = freeze_research_model(freeze_meta, work_dir=work_dir, upload=upload, now=now)
+            state.update(freeze_fields)
+            print(f"🧊 研究モデルを新規凍結しました: {freeze_fields['frozen_model_asset']}")
+        else:
+            print(f"ℹ️ 研究モデル凍結見送り({freeze_note})、現行liveモデルでデータ収集を継続")
+
+    model_id, model_version = current_model_identity(state, work_dir=work_dir)
+
     remaining, closed = evaluate_exits(state.get("positions", []), now)
 
-    candidates, scanned = scan(policy, limit=None)
+    if frozen_model is not None:
+        candidates, scanned = _scan_with_model(policy, frozen_model)
+    else:
+        candidates, scanned = scan(policy, limit=None)
 
     known_ids = {p["trade_id"] for p in remaining} | {p["trade_id"] for p in closed}
-    new_positions = build_new_positions(known_ids, candidates, today, policy, frozen_policy_file, policy_hash, trend_down_flag)
+    new_positions = build_new_positions(
+        known_ids, candidates, today, policy, frozen_policy_file, policy_hash, trend_down_flag,
+        model_id=model_id, model_version=model_version,
+    )
 
     # ★決定(集計はこのrunの再リストに依存しない): list_release_assets()は
     # このrunがまだ何もアップロードしていない、いま この時点で呼ぶ。
@@ -774,7 +1071,16 @@ def run(now=None, work_dir=".", upload=True):
         if name.startswith("all_candidates_") and name.endswith(".csv.gz")
     })
 
+    # ★state.update()ではなく明示的なdictにする(positions/last_completed_run_date
+    # 以外の未知フィールドを無限に引きずらないため)。frozen_model_*フィールドは
+    # 凍結済み/今回凍結した場合のみstateに存在するので、それだけ明示的に引き継ぐ。
     new_state = {"positions": remaining + new_positions, "last_completed_run_date": today}
+    for key in (
+        "frozen_model_id", "frozen_model_asset", "frozen_model_meta_asset",
+        "frozen_model_training_date", "frozen_model_sha256", "frozen_at",
+    ):
+        if key in state:
+            new_state[key] = state[key]
     promote_and_upload_state(new_state, work_dir=work_dir, upload=upload)
 
     rows_to_append = closed + remaining + new_positions
