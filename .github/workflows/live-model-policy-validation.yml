@@ -1,0 +1,122 @@
+name: Live Model Policy Validation
+
+# 研究専用(workflow_dispatchのみ)。live_model_policy_validation.pyを実行し、
+# 「ライブが実際に取引している組み合わせ(daily_model_retrain.pyの学習パイプライン
+# ×profit_top10_paper.scan()の選定ロジック×承認済みpolicy)」をWalk-Forward・
+# リークなしで検証する。
+#
+# ★重要: このワークフローはdaily_directional_top1.py・daily_model_retrain.py・
+# profit_top10_paper.py・all_candidates_paper.py・futures_trend.py・
+# strategy_policy*.json・directional_model.pkl を一切変更しない(読み取り専用
+# importのみ)。state/history/policy/モデルへの書き込みは行わず、コミットも
+# 一切行わない(Guard: live files unchangedステップで保証)。
+on:
+  workflow_dispatch:
+    inputs:
+      n_folds:
+        description: '均等分割するメインフォールド数(直近60営業日フォールドは別途追加)'
+        required: false
+        default: '4'
+      recent_days:
+        description: '直近フォールドの営業日数'
+        required: false
+        default: '60'
+      tickers_limit:
+        description: 'テスト用に銘柄数を絞る場合の件数(空欄=全225銘柄)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stock-ai-live-model-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests scikit-learn joblib jpholiday
+
+      - name: Syntax check
+        run: |
+          python -m py_compile live_model_policy_validation.py
+          python -m py_compile daily_directional_top1.py daily_model_retrain.py profit_top10_paper.py
+          python -m py_compile all_candidates_paper.py futures_trend.py common.py
+
+      - name: Record pre-run state of live/runtime files
+        run: |
+          git status --porcelain > /tmp/pre_run_status.txt
+          echo '--- pre-run git status (should be empty) ---'
+          cat /tmp/pre_run_status.txt
+
+      - name: Run live_model_policy_validation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '============================================================'
+          echo '🔬 LIVE MODEL POLICY VALIDATION (研究専用・workflow_dispatchのみ)'
+          echo '目的: ライブ学習パイプライン×scan()選定ロジック×承認済みpolicyに'
+          echo '実際にエッジがあるかをWalk-Forward検証する。live/runtime/policy/'
+          echo 'モデルファイルは一切変更しない。'
+          echo '============================================================'
+          ARGS=(--n-folds "${{ github.event.inputs.n_folds }}" --recent-days "${{ github.event.inputs.recent_days }}")
+          if [ -n "${{ github.event.inputs.tickers_limit }}" ]; then
+            ARGS+=(--tickers-limit "${{ github.event.inputs.tickers_limit }}")
+          fi
+          python live_model_policy_validation.py "${ARGS[@]}"
+
+      - name: Guard - live/runtime files unchanged
+        if: always()
+        run: |
+          echo '--- diffing tracked live/runtime files against checked-out HEAD ---'
+          git diff --exit-code -- \
+            daily_directional_top1.py daily_model_retrain.py profit_top10_paper.py \
+            all_candidates_paper.py futures_trend.py common.py \
+            strategy_policy.json strategy_policy_up.json \
+            all_candidates_frozen_policy.json all_candidates_frozen_policy_up.json \
+            directional_model.pkl directional_model_meta.json \
+            daily_retrain_report.csv
+
+          if [ -f research_model_freeze_approval.json ]; then
+            echo '::error::research_model_freeze_approval.json が作成されています。この検証は作成禁止'
+            exit 1
+          fi
+
+          echo '--- checking for unexpected new/modified files beyond known outputs ---'
+          git status --porcelain > /tmp/post_run_status.txt
+          ALLOWED_RE='^\?\? (live_model_policy_validation_results\.json|all_candidates_2026-09\.csv\.gz|walk_forward_all_candidates\.csv\.gz)$'
+          UNEXPECTED=$(comm -13 <(sort /tmp/pre_run_status.txt) <(sort /tmp/post_run_status.txt) | grep -Ev "$ALLOWED_RE" || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo '::error::unexpected working-tree changes after validation run:'
+            echo "$UNEXPECTED"
+            exit 1
+          fi
+          echo '✅ live/runtime files unchanged, no unexpected new files, no freeze-approval file created'
+
+      - name: Upload results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-model-policy-validation-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 90
+          path: |
+            live_model_policy_validation_results.json
+            all_candidates_2026-09.csv.gz
+            walk_forward_all_candidates.csv.gz
