@@ -72,6 +72,23 @@ import pandas as pd
 
 import daily_model_retrain as dmr
 import profit_top10_paper as live_p10
+import run_profit_loop as live_loop
+
+# run_profit_loop.pyをimportすると、そのモジュール自身のトップレベルで
+# profit_top10_paper.scan/mark_and_close/open_positions/load_modelが
+# monkeypatchされる(run_profit_loop.pyの設計: liveのpaper_fast_entrypoint.py
+# 経由で使われることを前提とした副作用)。このトラックはprofit_priority/
+# _passes_policyという2つの純粋関数だけを再利用したいのであり、scan()の
+# 挙動(特にload_model)を変えてはならない(「liveのscan()/select_policy_
+# file()以外は一切変更しない」という既存方針の延長)。importの副作用を
+# このプロセス内で直ちに打ち消す。★順序が重要: 下のcommonモジュールimportより
+# 前に打ち消しておかないと、次の`from profit_top10_paper import scan`が
+# monkeypatch後のscan_candidates_fixed(別シグネチャ)を束縛してしまう。
+live_p10.scan = live_loop._original_scan
+live_p10.mark_and_close = live_loop._original_close
+live_p10.open_positions = live_loop._original_open
+live_p10.load_model = live_loop._original_load_model
+
 from common import count_tse_trading_days, is_tse_trading_day, tse_trading_days_between
 from daily_directional_top1 import download
 from profit_top10_paper import scan, select_policy_file
@@ -106,11 +123,63 @@ SUMMARY_HEADER_COMMENT = (
     "rows predating that column (or with it blank) are defined as the legacy "
     "2026-09-12 model and are never rewritten. Once a research model is frozen "
     "(see all_candidates_paper.py docstring), later rows keep using the frozen "
-    "model_id even after the live model changes."
+    "model_id even after the live model changes. "
+    "rank_method='live_profit_priority_v2' rows carry a live_rank matching "
+    "run_profit_loop.profit_priority()'s regime-aware TOP1 ordering (ev_rank, "
+    "the legacy 'rank' column, is also kept); TOP1/TOP3/TOP5 buckets use "
+    "live_rank for these rows. Rows with no rank_method (or any other value) "
+    "predate this and are defined as rank_method='scan_ev_v1' (legacy, "
+    "bucketed by ev_rank); they are never rewritten. profit_priority/"
+    "feedback_weight depend on trade_feedback_policy.json, which "
+    "trade_feedback_engine.py updates daily, so the same candidate can get a "
+    "different live_rank on a different run date."
 )
 
 BUCKETS = ("ALL", "TOP1", "TOP3", "TOP5")
 EQUAL_WEIGHT_CAPITAL = 1_000_000.0
+
+# ★⑥ランキングをliveのTOP1ルールに整合(2026-10): このトラックは長らく
+# scan()自身の(expected_value_pct, score)降順(=ev_rank、下のRANK_METHOD_
+# LEGACY行が使う)でTOP1/TOP3/TOP5バケットを切っていたが、live
+# (profit_top10_paper.py経由でrun_profit_loop.scan_candidates_fixedが
+# 呼ぶ)が実際にTOP1として選ぶのはrun_profit_loop.profit_priority()の
+# 順序(score/期待値/レジームボーナス/フィードバック重みを合成した
+# profit_priority降順)であり、さらにrun_profit_loop.open_top1_only()が
+# 日経レジーム(bullish→BUY限定/bearish→SHORT限定)で絞り込んだ後の
+# 1位だけを取引する。そのため従来のev_rankによるTOP1は、liveが実際には
+# 選ばない銘柄を含んでいることがあった。
+#
+# ここからは以下の手順でライブのルールと整合させる:
+#   1. 候補集合 = scan()の戻り値のうちrun_profit_loop._passes_policy()を
+#      満たすもの(=liveの「適合候補集合」と同じ判定)。scan()自身の内部
+#      ok条件(up/down閾値・score・flat<50)とほぼ同じだが、SHORT方向は
+#      scan()側だけがSHORT_ENABLED環境変数も見る(_passes_policyは見ない)。
+#      この差が実際に現れるのはSHORT_ENABLED=0の日だけで、本番workflow
+#      ではSHORT_ENABLED未設定(既定1=有効)のため通常は一致する。
+#   2. この適合候補集合をrun_profit_loop.profit_priority()にそのまま渡す
+#      (レジームによる方向フィルタ+優先順位の計算をliveと完全に同じ関数で
+#      行う。profit_top10_paper.pyもrun_profit_loop.pyも一切変更しない)。
+#   3. 返ってきた順序がlive_rank(1始まり)。レジームにより除外された
+#      候補はregime_eligible=False・live_rank=NaNとして残す(ALLバケットの
+#      集計対象には含めるが、TOP1/TOP3/TOP5には入らない)。
+#   4. 従来のev_rank(列名は後方互換のため'rank'のまま)も引き続き記録する。
+#
+# rank_method列: 新しい行は常に'live_profit_priority_v2'。この列が無い/
+# 空の行(=このリリース前に書かれた全ての既存行)は定義上'scan_ev_v1'
+# (レガシー、ev_rankでバケット分けされていた)として扱い、過去データは
+# 一切書き換えない。_bucket_frame()はrank_methodごとに使う列
+# (live_rank or rank)を切り替える。
+#
+# ★注意(trade_feedback_policy.jsonは毎日変わる): run_profit_loop.
+# profit_priority()はtrade_feedback_engine.pyが日次更新するtrade_feedback_
+# policy.jsonのdirection_weightsを読む。つまりprofit_priorityは「固定の
+# frozen policyに対する純粋関数」ではなく、実行日によってfeedback_weight
+# (=profit_priority算出に使う重み)が変わる。各行にfeedback_weight/
+# profit_priority/market_regime/regime_bonusを記録しているのは、後から
+# 「その日時点で何がlive_rank計算に使われたか」を追跡できるようにする
+# ためで、同じ候補でも実行日が違えばlive_rankが変わり得ることの注記。
+RANK_METHOD_LIVE_V2 = "live_profit_priority_v2"
+RANK_METHOD_LEGACY = "scan_ev_v1"
 
 # ★決定(ライブと独立に再実装。mark_and_closeは再利用しない): このトラックは
 # 銘柄ごとに独立した想定元本を使う(共有資本の奪い合いをしない)ため、
@@ -756,8 +825,48 @@ def build_trade_id(entry_date, ticker, direction, data_date, policy_hash):
     return f"{entry_date}|{ticker}|{direction}|{data_date}|{policy_hash}"
 
 
+def compute_live_ranking(qualified_candidates):
+    """liveのTOP1選定ルールでqualified_candidates(_passes_policy適合済み)を
+    ランキングする。run_profit_loop.profit_priority()をそのまま再利用する
+    (profit_top10_paper.py/run_profit_loop.pyは一切変更しない)。
+
+    戻り値: {(ticker, direction): {live_rank, regime_eligible, profit_priority,
+    feedback_weight, market_regime, regime_bonus}}。
+    profit_priority()は現在の日経レジームでは逆方向(bullish時のSHORT等)を
+    内部でドロップするため、ドロップされた候補はregime_eligible=False・
+    live_rank=Noneとして記録する(=ALLバケットの集計には残るが、live_rankが
+    無いのでTOP1/TOP3/TOP5には入らない)。
+
+    空リストならネットワーク呼び出し(日経レジーム取得)を一切行わず{}を返す。
+    """
+    rank_info = {}
+    if not qualified_candidates:
+        return rank_info
+    ranked = live_loop.profit_priority(qualified_candidates)
+    for i, item in enumerate(ranked, start=1):
+        key = (str(item.get("ticker", "")), str(item.get("direction", "BUY")).upper())
+        rank_info[key] = {
+            "live_rank": i,
+            "regime_eligible": True,
+            "profit_priority": item.get("profit_priority"),
+            "feedback_weight": item.get("feedback_weight"),
+            "market_regime": item.get("market_regime"),
+            "regime_bonus": item.get("regime_bonus"),
+        }
+    regime = ranked[0]["market_regime"] if ranked else live_loop._market_regime()[0]
+    for c in qualified_candidates:
+        key = (str(c.get("ticker", "")), str(c.get("direction", "BUY")).upper())
+        if key not in rank_info:
+            rank_info[key] = {
+                "live_rank": None, "regime_eligible": False, "profit_priority": None,
+                "feedback_weight": None, "market_regime": regime, "regime_bonus": None,
+            }
+    return rank_info
+
+
 def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
-                         policy_hash, trend_down_flag, model_id=None, model_version=None):
+                         policy_hash, trend_down_flag, model_id=None, model_version=None,
+                         live_rank_map=None, rank_method=None):
     """scan()が返した全候補(既にexpected_value_pct,score降順=rankそのもの)から、
     まだ持っていないtrade_idの分だけ新規ポジションを作る。
 
@@ -773,6 +882,13 @@ def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
     ★⑤モデル識別: model_id/model_versionは今回のcandidates(scan()呼び出し)が
     実際に使ったモデルを示す(current_model_identity()参照)。dedupキー
     (trade_id)には含めない。
+
+    ★⑥live_rank(モジュールdocstring参照): "rank"(ev_rank、scan()の渡された
+    順=enumerate順)は従来通り常に記録する。live_rank_mapが渡された場合のみ、
+    (ticker,direction)ごとにlive_rank/regime_eligible/profit_priority/
+    feedback_weight/market_regime/regime_bonusとrank_methodも記録する。
+    live_rank_map省略時(既存呼び出し・テスト)はこれらの列がNoneになり、
+    rank_method=Noneの行は定義上RANK_METHOD_LEGACYとして集計される。
     """
     new_positions = []
     for rank, c in enumerate(candidates, start=1):
@@ -780,6 +896,8 @@ def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
         trade_id = build_trade_id(today, c["ticker"], c["direction"], data_date, policy_hash)
         if trade_id in known_trade_ids:
             continue
+        key = (str(c.get("ticker", "")), str(c.get("direction", "BUY")).upper())
+        info = (live_rank_map or {}).get(key, {})
         new_positions.append({
             "trade_id": trade_id,
             "date": today,
@@ -801,6 +919,13 @@ def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
             "entry_time": datetime.now(TZ).strftime("%H:%M"),
             "model_id": model_id,
             "model_version": model_version,
+            "live_rank": info.get("live_rank"),
+            "regime_eligible": info.get("regime_eligible"),
+            "profit_priority": info.get("profit_priority"),
+            "feedback_weight": info.get("feedback_weight"),
+            "market_regime": info.get("market_regime"),
+            "regime_bonus": info.get("regime_bonus"),
+            "rank_method": rank_method,
         })
     return new_positions
 
@@ -817,6 +942,12 @@ TRADE_COLUMNS = [
     # ★⑤追加(モデル識別): 欠損(NaN)の行はレガシー2026-09-12モデル扱い
     # (モジュールdocstring・SUMMARY_HEADER_COMMENT参照)。過去行は書き換えない。
     "model_id", "model_version",
+    # ★⑥追加(liveのTOP1ルールに整合したランキング、モジュールdocstring参照):
+    # 欠損(NaN)/rank_methodが'live_profit_priority_v2'でない行は定義上
+    # RANK_METHOD_LEGACY('rank'=ev_rankでバケット分けされていた)として
+    # 扱い、過去行は一切書き換えない。
+    "live_rank", "regime_eligible", "profit_priority", "feedback_weight",
+    "market_regime", "regime_bonus", "rank_method",
 ]
 
 
@@ -899,11 +1030,27 @@ def download_all_months(work_dir=".", months=None):
 # 集計(ALL/TOP1/TOP3/TOP5、日次・月次)
 # =====================================================================
 
+def _effective_rank(df):
+    """TOP1/TOP3/TOP5判定に使う実効rank(モジュールdocstring★⑥参照)。
+    rank_method=='live_profit_priority_v2'の行はlive_rankを、それ以外
+    (欠損含む=RANK_METHOD_LEGACY、過去に書かれた全ての行)はev_rank
+    ('rank'列、列名は後方互換のため変更していない)を使う。
+    古い月次アセットにlive_rank/rank_method列そのものが無い場合(この
+    変更より前にコミットされたデータ)はev_rankのみにフォールバックする。
+    """
+    ev_rank = pd.to_numeric(df["rank"], errors="coerce")
+    if "rank_method" not in df.columns or "live_rank" not in df.columns:
+        return ev_rank
+    is_v2 = df["rank_method"].astype(object).fillna("") == RANK_METHOD_LIVE_V2
+    live_rank = pd.to_numeric(df["live_rank"], errors="coerce")
+    return live_rank.where(is_v2, ev_rank)
+
+
 def _bucket_frame(df, bucket):
     if bucket == "ALL":
         return df
     n = int(bucket[len("TOP"):])
-    return df[df["rank"] <= n]
+    return df[_effective_rank(df) <= n]
 
 
 def compute_daily_summary(all_trades_df):
@@ -1052,10 +1199,24 @@ def run(now=None, work_dir=".", upload=True):
     else:
         candidates, scanned = scan(policy, limit=None)
 
+    # ★⑥liveの適合候補集合に整合(モジュールdocstring参照): scan()の戻り値を
+    # そのまま「ALL」バケットにするのではなく、run_profit_loop._passes_policy()
+    # を通過したものだけを候補集合として使う。scan()がcand(自身のok条件適合)を
+    # 1件も作れなかった日はfallback(無条件・全件)を返すため、その日は
+    # ここで改めて絞り込まれる(=ALLバケットが未適合候補で汚染されなくなる)。
+    qualified = [c for c in candidates if live_loop._passes_policy(c, policy)]
+    if len(qualified) != len(candidates):
+        print(
+            f"ℹ️ scan()自身のok条件とは異なる適合候補集合: scan={len(candidates)}件 → "
+            f"_passes_policy適合={len(qualified)}件(差分の説明はモジュールdocstring★⑥参照)"
+        )
+    rank_info = compute_live_ranking(qualified)
+
     known_ids = {p["trade_id"] for p in remaining} | {p["trade_id"] for p in closed}
     new_positions = build_new_positions(
-        known_ids, candidates, today, policy, frozen_policy_file, policy_hash, trend_down_flag,
+        known_ids, qualified, today, policy, frozen_policy_file, policy_hash, trend_down_flag,
         model_id=model_id, model_version=model_version,
+        live_rank_map=rank_info, rank_method=RANK_METHOD_LIVE_V2,
     )
 
     # ★決定(集計はこのrunの再リストに依存しない): list_release_assets()は
@@ -1104,11 +1265,11 @@ def run(now=None, work_dir=".", upload=True):
 
     print(
         f"✅ all_candidates_paper {today}: scanned={scanned} candidates={len(candidates)} "
-        f"opened={len(new_positions)} closed={len(closed)} open_total={len(new_state['positions'])} "
-        f"policy={frozen_policy_file}"
+        f"qualified={len(qualified)} opened={len(new_positions)} closed={len(closed)} "
+        f"open_total={len(new_state['positions'])} policy={frozen_policy_file}"
     )
     return {
-        "today": today, "candidates": candidates, "opened": new_positions, "closed": closed,
+        "today": today, "candidates": qualified, "opened": new_positions, "closed": closed,
         "state": new_state, "daily_summary": daily_summary, "monthly_summary": monthly_summary,
     }
 
