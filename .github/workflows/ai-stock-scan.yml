@@ -96,7 +96,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py
+          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py daytrade_tp5000_sl8000_paper.py
 
       - name: Verify Nikkei 225 tickers
         run: |
@@ -265,7 +265,9 @@ jobs:
 
             python profit_top10_monthly_performance.py
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_paper_history.recovery.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json; do
+            timeout 90 python daytrade_tp5000_sl8000_paper.py || echo '⚠️ daytrade別枠tick失敗(無視してliveループを継続)'
+
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_paper_history.recovery.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json daytrade_tp5000_sl8000_state.json daytrade_tp5000_sl8000_history.csv daytrade_tp5000_sl8000_history.recovery.csv daytrade_tp5000_sl8000_daily.csv; do
               if [ -f "$f" ]; then git add "$f"; fi
             done
 
@@ -338,6 +340,9 @@ jobs:
             intraday_scheduler_state.json
             daily_retrain_report.csv
             trade_feedback_report.csv
+            daytrade_tp5000_sl8000_state.json
+            daytrade_tp5000_sl8000_history.csv
+            daytrade_tp5000_sl8000_daily.csv
 
   session_pm:
     needs: [session_am]
@@ -411,7 +416,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py
+          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py daytrade_tp5000_sl8000_paper.py
 
       - name: Verify Nikkei 225 tickers
         run: |
@@ -577,7 +582,9 @@ jobs:
 
             python profit_top10_monthly_performance.py
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_paper_history.recovery.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json; do
+            timeout 90 python daytrade_tp5000_sl8000_paper.py || echo '⚠️ daytrade別枠tick失敗(無視してliveループを継続)'
+
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_paper_history.recovery.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json daytrade_tp5000_sl8000_state.json daytrade_tp5000_sl8000_history.csv daytrade_tp5000_sl8000_history.recovery.csv daytrade_tp5000_sl8000_daily.csv; do
               if [ -f "$f" ]; then git add "$f"; fi
             done
 
@@ -650,3 +657,6 @@ jobs:
             intraday_scheduler_state.json
             daily_retrain_report.csv
             trade_feedback_report.csv
+            daytrade_tp5000_sl8000_state.json
+            daytrade_tp5000_sl8000_history.csv
+            daytrade_tp5000_sl8000_daily.csv
