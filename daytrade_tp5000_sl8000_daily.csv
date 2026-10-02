@@ -1,2 +1,2 @@
-﻿date,trades,wins,losses,net_pnl,win_rate_pct
-2026-10-02,2,1,1,-2999.999999999748,50.0
+﻿date,trades,wins,losses,net_pnl,win_rate_pct,v2_trades,v1_legacy_trades
+2026-10-02,3,1,2,-12800.268603057608,33.33333333333333,0.0,3.0
