@@ -32,6 +32,7 @@
       "current_price": 508.1000061035156
     }
   ],
+  "pending": null,
   "trade_date": "2026-10-02",
   "trades_today": 3,
   "last_exit_by_ticker": {
