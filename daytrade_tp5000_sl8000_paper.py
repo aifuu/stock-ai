@@ -182,6 +182,20 @@ FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
 COOLDOWN_MINUTES = 30
 MAX_TRADES_PER_DAY = 30
 
+# Change A: this track's TOP10 must be the SAME TOP10 the live tick already
+# selected this iteration -- never its own re-scan. ai-stock-scan.yml deletes
+# scan_candidates_cache.json at the start of every loop iteration, then runs
+# the live tick (which writes it via paper_fast_entrypoint.cached_scan()),
+# then this script -- so the file can only ever hold this iteration's live
+# result. fast.scan_progressive_with_prefilter()'s own disk-cache check
+# (fast._load_disk_scan_cache) enforces a 300s TTL and silently re-scans
+# (its own, possibly different, TOP10) past that; this track reads the file
+# directly instead, with a looser safety bound (<=15min old, same JST date)
+# since staleness here only risks ranking against a slightly-older pool, not
+# a wrong one -- and refuses to scan on its own when that bound isn't met.
+TOP10_SOURCE_LIVE_TICK_CACHE = "live_tick_cache"
+LIVE_TICK_CACHE_MAX_AGE_SECONDS = 15 * 60
+
 ENTRY_WINDOW_START = dtime(9, 30)
 ENTRY_WINDOW_END = dtime(14, 50)  # no NEW entries from this time onward
 FORCED_EXIT_TIME = dtime(15, 20)
@@ -213,7 +227,8 @@ def discord_send(message):
 
 def default_state():
     return {"positions": [], "pending": None, "trade_date": None, "trades_today": 0,
-            "last_exit_by_ticker": {}}
+            "last_exit_by_ticker": {}, "live_cache_miss_notice_date": None,
+            "daily_summary_sent_date": None}
 
 
 def load_state():
@@ -301,6 +316,73 @@ def choose_policy_file_reusing_live_tick(now=None, history_path="futures_trend_h
     policy_file, _ = live_p10.select_policy_file()
     print(f"ℹ️ daytrade: 本日の行がないためselect_policy_file()を直接呼び出し: policy={policy_file}")
     return policy_file, "fallback_select_policy_file"
+
+
+def _load_live_tick_cache(now):
+    """Reads paper_fast_entrypoint.SCAN_CACHE_FILE directly (bypassing its
+    own 300s-TTL disk-cache check) and returns (raw, scanned) only if it is
+    this same trading day's live tick result within a safety bound:
+    age<=LIVE_TICK_CACHE_MAX_AGE_SECONDS and its timestamp's JST date ==
+    today. Returns None (missing/corrupt/too old/other date) otherwise --
+    the caller must not scan on its own in that case."""
+    path = fast.SCAN_CACHE_FILE
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        ts = float(payload.get("timestamp", 0))
+        age = now.timestamp() - ts
+        if age < 0 or age > LIVE_TICK_CACHE_MAX_AGE_SECONDS:
+            return None
+        cache_date = datetime.fromtimestamp(ts, TZ).strftime("%Y-%m-%d")
+        if cache_date != now.astimezone(TZ).strftime("%Y-%m-%d"):
+            return None
+        raw = payload.get("raw")
+        if raw is None:
+            return None
+        return raw, payload.get("scanned")
+    except Exception as exc:
+        print(f"⚠️ daytrade: live tick cache読込失敗: {exc}")
+        return None
+
+
+def _notify_live_cache_miss_once(state, now):
+    """At most one Discord notice per day for the 'live TOP10 unavailable'
+    condition, to avoid spamming every 5-minute tick when the cache stays
+    stale/missing for a stretch."""
+    today = now.strftime("%Y-%m-%d")
+    if state.get("live_cache_miss_notice_date") != today:
+        state["live_cache_miss_notice_date"] = today
+        discord_send("⏸ daytrade: live TOP10未取得のため見送り")
+
+
+def _rank_via_live_pipeline(raw, scanned, policy):
+    """Feeds the live tick's raw candidate pool through the exact same
+    live ranking (run_profit_loop.scan_candidates_fixed(), itself
+    profit_priority()'s regime-aware ordering) with no network download:
+    paper_fast_entrypoint.cached_scan() returns fast._cache['result']
+    immediately when it is already set, before it would otherwise fall
+    back to its own disk-cache check or a full re-scan."""
+    previous = fast._cache.get("result")
+    fast._cache["result"] = (raw, scanned)
+    try:
+        return fast.scan_progressive_with_prefilter(policy)
+    finally:
+        fast._cache["result"] = previous
+
+
+def _get_live_tick_top10(policy, now, state):
+    """Returns (top10, scanned) ranked from this iteration's live tick
+    cache, or None if that cache is unavailable (caller must skip entry
+    this tick rather than scanning on its own)."""
+    cache = _load_live_tick_cache(now)
+    if cache is None:
+        print("⏸ daytrade: live TOP10未取得のため見送り")
+        _notify_live_cache_miss_once(state, now)
+        return None
+    raw, scanned = cache
+    return _rank_via_live_pipeline(raw, scanned, policy)
 
 
 def _tp_sl_prices(entry_price, direction, shares):
@@ -417,10 +499,15 @@ def _vwap_deviation_pct(bars, price, window=78):
 def _select_top1(top10, cooldowns, now, budget=BUDGET_JPY):
     """Walks the already regime-filtered, profit_priority-ordered TOP10
     (run_profit_loop.scan_candidates_fixed()'s output -- the exact same
-    ranking run_profit_loop.open_top1_only() uses) and returns the first
-    candidate that is both out of this track's own cooldown and affordable
-    in at least one 100-share lot, or None.
+    ranking run_profit_loop.open_top1_only() uses) and returns
+    (candidate, skipped) where candidate is the first one that is both out
+    of this track's own cooldown and affordable in at least one 100-share
+    lot (or None if none qualify), and skipped is the ordered list of
+    (ticker, reason) pairs for every higher-ranked candidate walked past
+    before it (reason is one of 'cooldown', 'no_price', 'budget') -- kept
+    for audit on the pending/history row.
     """
+    skipped = []
     for c in top10:
         ticker = str(c.get("ticker", "")).strip()
         if not ticker:
@@ -432,14 +519,34 @@ def _select_top1(top10, cooldowns, now, budget=BUDGET_JPY):
             except Exception:
                 remaining = 0.0
             if remaining > 0:
+                skipped.append((ticker, "cooldown"))
                 continue
         price = float(c.get("price", 0) or 0)
         if price <= 0:
+            skipped.append((ticker, "no_price"))
             continue
         if (int(budget // price) // LOT_SIZE) * LOT_SIZE <= 0:
+            skipped.append((ticker, "budget"))
             continue
-        return c
-    return None
+        return c, skipped
+    return None, skipped
+
+
+def _format_top10_compact(top10, chosen_ticker, skipped):
+    """Compact 'rank.ticker price tag' listing of the live TOP10 this
+    decision chose from, for the PENDING Discord message (auditability)."""
+    skip_map = dict(skipped)
+    parts = []
+    for c in top10:
+        ticker = str(c.get("ticker", "")).strip()
+        rank = c.get("top10_rank", "?")
+        price = float(c.get("price", 0) or 0)
+        if ticker == chosen_ticker:
+            tag = "選択"
+        else:
+            tag = skip_map.get(ticker, "-")
+        parts.append(f"{rank}.{ticker}{price:,.0f}円{tag}")
+    return "TOP10(live): " + " ".join(parts)
 
 
 def _try_entry(state, now, today):
@@ -450,12 +557,15 @@ def _try_entry(state, now, today):
     becomes available."""
     policy_file, policy_source = choose_policy_file_reusing_live_tick(now)
     policy = live_p10.load_policy(policy_file)
-    top10, scanned = fast.scan_progressive_with_prefilter(policy)
+    result = _get_live_tick_top10(policy, now, state)
+    if result is None:
+        return None
+    top10, scanned = result
     if not top10:
         print("⏸ daytrade: TOP10候補なし")
         return None
 
-    chosen = _select_top1(top10, state.setdefault("last_exit_by_ticker", {}), now)
+    chosen, skipped = _select_top1(top10, state.setdefault("last_exit_by_ticker", {}), now)
     if chosen is None:
         print("⏸ daytrade: cooldown/予算により新規エントリ可能な候補なし")
         return None
@@ -468,6 +578,7 @@ def _try_entry(state, now, today):
 
     now_naive = now.replace(tzinfo=None)
     fill_bar_time = _ceil_bar_time(now_naive)
+    skipped_str = ",".join(f"{t}:{r}" for t, r in skipped)
 
     pending = {
         "ticker": ticker, "direction": direction,
@@ -476,15 +587,18 @@ def _try_entry(state, now, today):
         "score": chosen.get("score"), "up_probability": chosen.get("up_probability"),
         "down_probability": chosen.get("down_probability"), "market_regime": chosen.get("market_regime"),
         "top10_rank": chosen.get("top10_rank"),
+        "top10_source": TOP10_SOURCE_LIVE_TICK_CACHE, "skipped": skipped_str,
         "policy_file": policy_file, "policy_source": policy_source, "policy_hash": policy_hash,
         "model_id": model_id, "model_version": model_version,
         "budget": BUDGET_JPY,
     }
     state["pending"] = pending
     print(f"⏳ daytrade PENDING: {direction} {ticker} decision={now_naive} fill_bar_time>={fill_bar_time}")
+    top10_compact = _format_top10_compact(top10, ticker, skipped)
     return (
         f"⏳ 判断(ペンディング)｜{ticker}｜{'買い' if direction == 'BUY' else '空売り'}\n"
-        f"判断時刻 {now_naive.strftime('%H:%M:%S')}｜約定予定バー {fill_bar_time.strftime('%H:%M')}(Open約定)"
+        f"判断時刻 {now_naive.strftime('%H:%M:%S')}｜約定予定バー {fill_bar_time.strftime('%H:%M')}(Open約定)\n"
+        f"{top10_compact}"
     )
 
 
@@ -500,6 +614,13 @@ def _cancel_pending(state, reason, now):
     append_cancelled_log(row)
     state["pending"] = None
     print(f"\U0001f6ab daytrade CANCELLED_NO_FILL: {pending.get('ticker')} reason={reason}")
+    direction = str(pending.get("direction", "BUY")).upper()
+    decision_time = pending.get("decision_time")
+    decision_str = pd.Timestamp(decision_time).strftime("%H:%M:%S") if decision_time else "?"
+    discord_send(
+        f"\U0001f6ab ペンディング取消｜{pending.get('ticker')}｜{'買い' if direction == 'BUY' else '空売り'}\n"
+        f"理由 {reason}｜判断時刻 {decision_str}"
+    )
     return row
 
 
@@ -554,6 +675,7 @@ def _check_pending_fill(state, now, today):
         "score": pending.get("score"), "up_probability": pending.get("up_probability"),
         "down_probability": pending.get("down_probability"), "market_regime": pending.get("market_regime"),
         "top10_rank": pending.get("top10_rank"),
+        "top10_source": pending.get("top10_source"), "skipped": pending.get("skipped"),
         "policy_file": pending.get("policy_file"), "policy_source": pending.get("policy_source"),
         "policy_hash": pending.get("policy_hash"),
         "model_id": pending.get("model_id"), "model_version": pending.get("model_version"),
@@ -615,6 +737,9 @@ def _close_position(state, now, exit_price, reason, exit_ts):
         "price_bar_time": pos.get("price_bar_time"), "data_delay_minutes": pos.get("data_delay_minutes"),
         "fill_method": pos.get("fill_method"), "decision_time": pos.get("decision_time"),
         "fill_bar_time": pos.get("fill_bar_time"),
+        # new columns appended at the end -- see safe_state.safe_append_history
+        # (pd.concat unions columns; existing rows get empty values for these)
+        "top10_source": pos.get("top10_source"), "skipped": pos.get("skipped"),
     }
     append_history(row)
     state.setdefault("last_exit_by_ticker", {})[pos["ticker"]] = pd.Timestamp(now).isoformat()
@@ -761,6 +886,127 @@ def _update_daily_summary(today):
     df.to_csv(DAILY_FILE, index=False, encoding="utf-8-sig")
 
 
+def _split_for_discord(text, limit=1900):
+    """Splits text into <=limit-char chunks on line boundaries (never mid-
+    line) so every Discord message this module sends stays under the
+    1950-char cap (discord_send() also prefixes a short label, hence the
+    headroom below 1950 here)."""
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit and current:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _build_daily_summary_messages(today):
+    """Builds the once-per-day Discord summary (owner's number-before-unit
+    display format: '4件 2勝2敗 勝率50.0%' etc, never 'label-then-number').
+    Reads HISTORY_FILE/CANCELLED_LOG_FILE directly rather than DAILY_FILE
+    (DAILY_FILE only carries the aggregate row, not the v1/v2 split or the
+    per-trade lines this message needs)."""
+    label = "\U0001f4c5 デイトレ別枠 本日サマリー"
+
+    hist = None
+    if os.path.exists(HISTORY_FILE):
+        try:
+            hist = pd.read_csv(HISTORY_FILE)
+        except Exception as exc:
+            print(f"⚠️ daytrade daily summary: history読込失敗: {exc}")
+
+    todays = hist[hist["exit_date"] == today] if hist is not None and "exit_date" in hist.columns else pd.DataFrame()
+
+    cancelled_today = 0
+    if os.path.exists(CANCELLED_LOG_FILE):
+        try:
+            canc = pd.read_csv(CANCELLED_LOG_FILE)
+            if "decision_date" in canc.columns:
+                cancelled_today = int((canc["decision_date"] == today).sum())
+        except Exception as exc:
+            print(f"⚠️ daytrade daily summary: cancelled読込失敗: {exc}")
+
+    lines = [label]
+    trades = len(todays)
+    if trades == 0:
+        lines.append("本日取引なし")
+    else:
+        pnl = pd.to_numeric(todays["pnl"], errors="coerce").fillna(0.0)
+        wins = int((pnl > 0).sum())
+        losses = trades - wins
+        win_rate = wins / trades * 100.0
+        net_total = float(pnl.sum())
+        results = todays["result"].astype(str) if "result" in todays.columns else pd.Series([""] * trades)
+        tp_n = int((results == "TP").sum())
+        sl_n = int((results == "SL").sum())
+        forced_n = int(results.isin(["FORCED_EXIT", "FORCED_LATE"]).sum())
+        fill_method = (
+            todays["fill_method"].astype(str) if "fill_method" in todays.columns else pd.Series([""] * trades)
+        )
+        is_v2 = fill_method == FILL_METHOD_V2
+        v2_n = int(is_v2.sum())
+        v1_n = trades - v2_n
+
+        lines.append(f"{trades}件 {wins}勝{losses}敗 勝率{win_rate:.1f}%")
+        lines.append(f"利確{tp_n}回 損切{sl_n}回 強制決済{forced_n}回")
+        lines.append(f"合計 {net_total:+,.0f}円")
+        for _, row in todays.iterrows():
+            direction = "買い" if str(row.get("direction", "")).upper() == "BUY" else "空売り"
+            method = row.get("fill_method")
+            method = method if isinstance(method, str) and method.strip() else LEGACY_FILL_METHOD_LABEL
+            rpnl = float(row.get("pnl", 0) or 0)
+            lines.append(
+                f"・{row.get('ticker', '')} {direction} {row.get('entry_time', '')}→{row.get('exit_time', '')} "
+                f"{row.get('result', '')} {rpnl:+,.0f}円 [{method}]"
+            )
+        lines.append(f"v2(新方式){v2_n}件 v1(旧方式・参考値){v1_n}件")
+
+    lines.append(f"本日キャンセル {cancelled_today}件")
+
+    if hist is not None and "fill_method" in hist.columns and not hist.empty:
+        v2_hist = hist[hist["fill_method"].astype(str) == FILL_METHOD_V2]
+        v2_trades_cum = len(v2_hist)
+        if v2_trades_cum:
+            v2_pnl = pd.to_numeric(v2_hist["pnl"], errors="coerce").fillna(0.0)
+            v2_wins_cum = int((v2_pnl > 0).sum())
+            v2_win_rate_cum = v2_wins_cum / v2_trades_cum * 100.0
+            v2_net_cum = float(v2_pnl.sum())
+            breakeven_pct = -SL_NET_JPY / (TP_NET_JPY - SL_NET_JPY) * 100.0
+            lines.append(
+                f"累計v2 {v2_trades_cum}件 {v2_wins_cum}勝{v2_trades_cum - v2_wins_cum}敗 "
+                f"勝率{v2_win_rate_cum:.1f}%(損益分岐{breakeven_pct:.1f}%) 合計{v2_net_cum:+,.0f}円"
+            )
+
+    return _split_for_discord("\n".join(lines))
+
+
+def _maybe_send_daily_summary(state, now, today):
+    """Sends the once-per-trading-day Discord summary on the first tick
+    with now>=15:20 JST and no open position and no pending entry
+    (including right after a same-tick forced exit, since that already
+    clears state['positions'] earlier in the same run() call). The
+    daily_summary_sent_date flag is set right after the one send attempt
+    regardless of webhook emptiness/failure (discord_send() never raises),
+    so a send failure can never crash the tick nor cause a resend."""
+    if now.time() < FORCED_EXIT_TIME:
+        return
+    if state["positions"] or state.get("pending"):
+        return
+    if state.get("daily_summary_sent_date") == today:
+        return
+    for m in _build_daily_summary_messages(today):
+        discord_send(m)
+    state["daily_summary_sent_date"] = today
+    save_state(state)
+
+
 def run(now=None):
     now = now or datetime.now(TZ)
     today = now.strftime("%Y-%m-%d")
@@ -813,6 +1059,8 @@ def run(now=None):
 
     for m in messages:
         discord_send(m)
+
+    _maybe_send_daily_summary(state, now, today)
 
 
 def main():
