@@ -211,6 +211,54 @@ class GapFillShort(unittest.TestCase):
 
 
 # =====================================================================
+# 約定バー自身の判定(_fill_bar_exit): openに対するギャップ判定はなし、
+# High/Lowのみ。TP/SL同時タッチはSL優先。
+# =====================================================================
+
+class FillBarExit(unittest.TestCase):
+    def test_buy_sl_priority_when_both_touched_in_fill_bar(self):
+        bar = {"Open": 100.0, "High": 106.0, "Low": 94.0, "_tp": 105.0, "_sl": 95.0}
+        self.assertEqual(dt._fill_bar_exit("BUY", bar), (95.0, "SL"))
+
+    def test_buy_tp_only(self):
+        bar = {"Open": 100.0, "High": 106.0, "Low": 97.0, "_tp": 105.0, "_sl": 95.0}
+        self.assertEqual(dt._fill_bar_exit("BUY", bar), (105.0, "TP"))
+
+    def test_buy_no_exit(self):
+        bar = {"Open": 100.0, "High": 103.0, "Low": 98.0, "_tp": 105.0, "_sl": 95.0}
+        self.assertEqual(dt._fill_bar_exit("BUY", bar), (None, None))
+
+    def test_buy_open_beyond_tp_is_not_treated_as_a_gap(self):
+        # Unlike _gap_fill_exit, the fill bar's own Open is the entry price
+        # itself -- it must never be compared to tp/sl as a "gap".
+        bar = {"Open": 110.0, "High": 112.0, "Low": 109.0, "_tp": 105.0, "_sl": 95.0}
+        self.assertEqual(dt._fill_bar_exit("BUY", bar), (105.0, "TP"))
+
+    def test_short_sl_priority_when_both_touched_in_fill_bar(self):
+        bar = {"Open": 100.0, "High": 106.0, "Low": 94.0, "_tp": 95.0, "_sl": 105.0}
+        self.assertEqual(dt._fill_bar_exit("SHORT", bar), (105.0, "SL"))
+
+    def test_short_tp_only(self):
+        bar = {"Open": 100.0, "High": 103.0, "Low": 94.0, "_tp": 95.0, "_sl": 105.0}
+        self.assertEqual(dt._fill_bar_exit("SHORT", bar), (95.0, "TP"))
+
+
+# =====================================================================
+# _ceil_bar_time: 判断時刻Tの直後(start>=T)の最初の5分バー境界
+# =====================================================================
+
+class CeilBarTime(unittest.TestCase):
+    def test_non_boundary_rounds_up_to_next_5min(self):
+        self.assertEqual(dt._ceil_bar_time("2026-09-25 09:31:00"), pd.Timestamp("2026-09-25 09:35:00"))
+
+    def test_mid_bar_seconds_rounds_up_to_next_5min(self):
+        self.assertEqual(dt._ceil_bar_time("2026-09-25 09:35:20"), pd.Timestamp("2026-09-25 09:40:00"))
+
+    def test_exact_boundary_maps_to_itself(self):
+        self.assertEqual(dt._ceil_bar_time("2026-09-25 09:35:00"), pd.Timestamp("2026-09-25 09:35:00"))
+
+
+# =====================================================================
 # TP/SL価格は厳密にnet±5000/-8000円になるように解かれている
 # =====================================================================
 
@@ -286,10 +334,11 @@ class PolicyChoiceReusesLiveTick(unittest.TestCase):
 
 
 # =====================================================================
-# エントリー基準: 直近5分足の終値 / price_bar_time / data_delay_minutes
+# エントリー判断: 即時約定しない。PENDINGを作成し、decision_time/
+# fill_bar_timeを記録する(_try_entry)
 # =====================================================================
 
-class EntryUsesLatest5mCloseNotScanPrice(TmpCwdMixin, unittest.TestCase):
+class EntryCreatesPendingNotImmediateFill(TmpCwdMixin, unittest.TestCase):
     POLICY = {"up_threshold": 20.0, "min_score_for_buy": 40.0, "nikkei_filter": False,
               "atr_tp_multiplier": 1.0, "atr_sl_multiplier": 1.0, "hold_days": 1, "status": "PENDING"}
 
@@ -298,48 +347,186 @@ class EntryUsesLatest5mCloseNotScanPrice(TmpCwdMixin, unittest.TestCase):
         with open("strategy_policy.json", "w", encoding="utf-8") as f:
             f.write('{"status": "PENDING"}')
 
-    def test_entry_price_is_latest_5m_close_and_records_bar_time_and_delay(self):
-        candidates = [{"ticker": "7203.T", "direction": "BUY", "price": 3000.0, "score": 80.0,
-                        "up_probability": 60.0, "down_probability": 10.0, "top10_rank": 1,
-                        "market_regime": "neutral"}]
-        bars = _bars([3010.0, 3012.0, 3015.0], start="2026-09-25 10:00")
+    def _try_entry(self, now, candidates=None):
+        candidates = candidates or [{"ticker": "7203.T", "direction": "BUY", "price": 3000.0, "score": 80.0,
+                                      "up_probability": 60.0, "down_probability": 10.0, "top10_rank": 1,
+                                      "market_regime": "neutral"}]
         state = dt.default_state()
         with patch.object(dt, "choose_policy_file_reusing_live_tick",
                            return_value=("strategy_policy.json", "reused_today_row")), \
              patch.object(live_p10, "load_policy", return_value=self.POLICY), \
-             patch.object(dt.fast, "scan_progressive_with_prefilter", return_value=(candidates, 225)), \
-             patch.object(live_p10, "download_5m", return_value=bars):
-            now = datetime(2026, 9, 25, 10, 16, tzinfo=TZ)
-            msg = dt._try_entry(state, now, "2026-09-25")
+             patch.object(dt.fast, "scan_progressive_with_prefilter", return_value=(candidates, 225)):
+            msg = dt._try_entry(state, now, now.strftime("%Y-%m-%d"))
+        return state, msg
 
+    def test_decision_creates_pending_not_a_position(self):
+        now = datetime(2026, 9, 25, 9, 31, tzinfo=TZ)
+        state, msg = self._try_entry(now)
         self.assertIsNotNone(msg)
-        self.assertEqual(len(state["positions"]), 1)
-        pos = state["positions"][0]
-        self.assertEqual(pos["entry_price"], 3015.0)  # latest 5m close, NOT scan's price=3000.0
-        self.assertEqual(pd.Timestamp(pos["price_bar_time"]), bars.index[-1])
-        self.assertAlmostEqual(pos["data_delay_minutes"], 6.0)  # 10:16 - 10:10
-        self.assertEqual(pos["shares"], 300)  # floor(1_000_000/3015/100)*100
-        self.assertFalse(hasattr(pos, "validation_eligible"))  # not set on the position itself
+        self.assertEqual(state["positions"], [])  # no immediate fill
+        pending = state["pending"]
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["ticker"], "7203.T")
+        self.assertEqual(pending["direction"], "BUY")
+        self.assertEqual(pd.Timestamp(pending["decision_time"]), pd.Timestamp("2026-09-25 09:31:00"))
+        # ceil(09:31) -> 09:35 bar, per _ceil_bar_time()
+        self.assertEqual(pd.Timestamp(pending["fill_bar_time"]), pd.Timestamp("2026-09-25 09:35:00"))
+        self.assertEqual(pending["decision_date"], "2026-09-25")
 
-    def test_delayed_data_records_larger_delay(self):
-        candidates = [{"ticker": "7203.T", "direction": "BUY", "price": 3000.0, "score": 80.0,
-                        "up_probability": 60.0, "down_probability": 10.0, "top10_rank": 1,
-                        "market_regime": "neutral"}]
-        bars = _bars([3010.0], start="2026-09-25 10:00")  # stale: only one bar at 10:00
+    def test_decision_exactly_on_5min_boundary_targets_same_bar(self):
+        now = datetime(2026, 9, 25, 9, 30, tzinfo=TZ)
+        _, msg = self._try_entry(now)
         state = dt.default_state()
         with patch.object(dt, "choose_policy_file_reusing_live_tick",
                            return_value=("strategy_policy.json", "reused_today_row")), \
              patch.object(live_p10, "load_policy", return_value=self.POLICY), \
-             patch.object(dt.fast, "scan_progressive_with_prefilter", return_value=(candidates, 225)), \
-             patch.object(live_p10, "download_5m", return_value=bars):
-            now = datetime(2026, 9, 25, 10, 32, tzinfo=TZ)  # 32 minutes after the only bar
+             patch.object(dt.fast, "scan_progressive_with_prefilter",
+                           return_value=([{"ticker": "7203.T", "direction": "BUY", "price": 3000.0,
+                                            "score": 80.0, "up_probability": 60.0, "down_probability": 10.0,
+                                            "top10_rank": 1, "market_regime": "neutral"}], 225)):
             dt._try_entry(state, now, "2026-09-25")
-        self.assertAlmostEqual(state["positions"][0]["data_delay_minutes"], 32.0)
+        self.assertEqual(pd.Timestamp(state["pending"]["fill_bar_time"]), pd.Timestamp("2026-09-25 09:30:00"))
 
 
 # =====================================================================
-# 退出判定: price_bar_time**より後**のバーから開始、15:20強制決済、
-# ヒストリー行のtrack/validation_eligible
+# PENDING約定確認(_check_pending_fill): fill_bar_timeのバーがデータに
+# 現れた「後のtick」で約定し、約定価格(Open)から株数/TP/SLを再計算する
+# =====================================================================
+
+class PendingFillConfirmation(TmpCwdMixin, unittest.TestCase):
+    def _pending(self, decision_time="2026-09-25 09:31:00", direction="BUY", ticker="7203.T", budget=1_000_000.0):
+        decision_time = pd.Timestamp(decision_time)
+        return {
+            "ticker": ticker, "direction": direction,
+            "decision_date": "2026-09-25", "decision_time": decision_time.isoformat(),
+            "fill_bar_time": dt._ceil_bar_time(decision_time).isoformat(),
+            "score": 80.0, "up_probability": 60.0, "down_probability": 10.0, "market_regime": "neutral",
+            "top10_rank": 1, "policy_file": "strategy_policy.json", "policy_source": "reused_today_row",
+            "policy_hash": "abc123", "model_id": None, "model_version": "legacy-20260912",
+            "budget": budget,
+        }
+
+    def test_fill_bar_not_yet_available_stays_pending(self):
+        state = dt.default_state()
+        state["pending"] = self._pending()
+        bars = _bars([3010.0], start="2026-09-25 09:30")  # only the 09:30 bar so far
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 36, tzinfo=TZ), "2026-09-25")
+        self.assertEqual(msgs, [])
+        self.assertIsNotNone(state["pending"])  # still pending
+        self.assertEqual(state["positions"], [])
+
+    def test_fills_on_a_later_tick_once_fill_bar_appears(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 09:31:00")  # fill_bar_time = 09:35
+        bars = _bars([3010.0, 3020.0], start="2026-09-25 09:30")  # 09:30, 09:35 bars now present
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
+        self.assertEqual(len(msgs), 1)
+        self.assertIsNone(state["pending"])
+        self.assertEqual(len(state["positions"]), 1)
+        pos = state["positions"][0]
+        self.assertEqual(pos["entry_price"], 3020.0)  # Open of the 09:35 bar
+        self.assertEqual(pd.Timestamp(pos["price_bar_time"]), pd.Timestamp("2026-09-25 09:35:00"))
+        self.assertEqual(pd.Timestamp(pos["fill_bar_time"]), pd.Timestamp("2026-09-25 09:35:00"))
+        self.assertEqual(pd.Timestamp(pos["decision_time"]), pd.Timestamp("2026-09-25 09:31:00"))
+        self.assertEqual(pos["fill_method"], dt.FILL_METHOD_V2)
+        self.assertEqual(pos["entry_datetime"], pd.Timestamp("2026-09-25 09:35:00").isoformat())
+        self.assertEqual(state["trades_today"], 1)
+
+    def test_shares_are_recomputed_from_fill_price_not_scan_price(self):
+        # fill price (3020, bar Open) differs from whatever the original
+        # scan/decision price was -- shares must come from the fill price.
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 09:31:00", budget=1_000_000.0)
+        bars = _bars([3010.0, 3020.0], start="2026-09-25 09:30")
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
+        pos = state["positions"][0]
+        self.assertEqual(pos["shares"], 300)  # floor(1_000_000 / 3020 / 100) * 100
+
+    def test_tp_sl_solved_from_fill_price(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 09:31:00")
+        bars = _bars([3010.0, 3020.0], start="2026-09-25 09:30")
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
+        pos = state["positions"][0]
+        self.assertAlmostEqual(dt.net_pnl(pos["entry_price"], pos["tp"], pos["shares"], "BUY"), dt.TP_NET_JPY, places=4)
+        self.assertAlmostEqual(dt.net_pnl(pos["entry_price"], pos["sl"], pos["shares"], "BUY"), dt.SL_NET_JPY, places=4)
+
+    def test_cancelled_when_100_shares_exceed_budget(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 09:31:00", budget=1_000_000.0)
+        # Open of the fill bar is far above what 1,000,000 JPY can buy even one lot of
+        bars = _bars([3010.0, 20_000_000.0], start="2026-09-25 09:30")
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
+        self.assertEqual(msgs, [])
+        self.assertIsNone(state["pending"])
+        self.assertEqual(state["positions"], [])
+        log = pd.read_csv(dt.CANCELLED_LOG_FILE)
+        self.assertEqual(log.iloc[-1]["reason"], "CANCELLED_NO_FILL_BUDGET")
+        self.assertFalse(os.path.exists(dt.HISTORY_FILE))  # never a trade row
+
+    def test_cancelled_when_fill_bar_would_start_at_or_after_1520(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 15:17:00")  # ceil -> 15:20 bar
+        with patch.object(live_p10, "download_5m") as dl:
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 25, 15, 18, tzinfo=TZ), "2026-09-25")
+        dl.assert_not_called()  # cancelled before even trying to fetch data
+        self.assertEqual(msgs, [])
+        self.assertIsNone(state["pending"])
+        log = pd.read_csv(dt.CANCELLED_LOG_FILE)
+        self.assertEqual(log.iloc[-1]["reason"], "CANCELLED_NO_FILL_TOO_LATE")
+
+    def test_cancelled_when_data_never_arrives_by_1520(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 14:49:00")  # fill_bar_time=14:50
+        bars = _bars([3010.0], start="2026-09-25 09:30")  # data stalled, 14:50 bar never shows up
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 25, 15, 20, tzinfo=TZ), "2026-09-25")
+        self.assertEqual(msgs, [])
+        self.assertIsNone(state["pending"])
+        log = pd.read_csv(dt.CANCELLED_LOG_FILE)
+        self.assertEqual(log.iloc[-1]["reason"], "CANCELLED_NO_FILL_DATA_DELAY")
+
+    def test_still_waiting_before_1520_even_without_data_is_not_cancelled(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 14:49:00")
+        bars = _bars([3010.0], start="2026-09-25 09:30")
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 25, 15, 19, tzinfo=TZ), "2026-09-25")
+        self.assertEqual(msgs, [])
+        self.assertIsNotNone(state["pending"])  # not yet 15:20 -> still waiting
+
+    def test_cancelled_on_new_trading_day(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 14:49:00")
+        with patch.object(live_p10, "download_5m") as dl:
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 26, 9, 5, tzinfo=TZ), "2026-09-26")
+        dl.assert_not_called()
+        self.assertEqual(msgs, [])
+        self.assertIsNone(state["pending"])
+        log = pd.read_csv(dt.CANCELLED_LOG_FILE)
+        self.assertEqual(log.iloc[-1]["reason"], "CANCELLED_NO_FILL_NEW_DAY")
+
+    def test_fill_bar_invariant_holds(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 09:31:00")
+        bars = _bars([3010.0, 3020.0], start="2026-09-25 09:30")
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
+        pos = state["positions"][0]
+        self.assertGreaterEqual(pd.Timestamp(pos["fill_bar_time"]), pd.Timestamp(pos["decision_time"]))
+
+
+# =====================================================================
+# 退出判定(レガシーv1, fill_methodなし): price_bar_time**より後**のバー
+# から開始、15:20強制決済、ヒストリー行のtrack/validation_eligible。
+# これは _evaluate_exit() が fill_method のないポジション(=このfix以前
+# に開いた実ポジション)を旧ロジックのまま動かし続けることの検証でもある
+# (後方互換パス)。
 # =====================================================================
 
 class EvaluateExitStartsAfterPriceBarTime(TmpCwdMixin, unittest.TestCase):
@@ -351,6 +538,10 @@ class EvaluateExitStartsAfterPriceBarTime(TmpCwdMixin, unittest.TestCase):
             "tp_pct": 5.0, "sl_pct": -5.0, "mfe_yen": 0.0, "mae_yen": 0.0,
             "current_price": entry_price, "price_bar_time": price_bar_time,
         }
+
+    def test_position_has_no_fill_method_and_uses_legacy_path(self):
+        pos = self._open_position()
+        self.assertIsNone(pos.get("fill_method"))  # legacy shape: no fill_method key at all
 
     def test_does_not_trigger_on_the_entry_bar_itself(self):
         # The price_bar_time bar's own High/Low would trip the TP if it were
@@ -411,6 +602,7 @@ class EvaluateExitStartsAfterPriceBarTime(TmpCwdMixin, unittest.TestCase):
         history = pd.read_csv(dt.HISTORY_FILE)
         self.assertEqual(history.iloc[-1]["track"], dt.TRACK)
         self.assertEqual(bool(history.iloc[-1]["validation_eligible"]), False)
+        self.assertTrue(pd.isna(history.iloc[-1]["fill_method"]))  # legacy row: no fill_method
 
     def test_same_ticker_cooldown_recorded_on_exit(self):
         pos = self._open_position(entry_price=3000.0, price_bar_time="2026-09-25 09:30:00")
@@ -420,6 +612,93 @@ class EvaluateExitStartsAfterPriceBarTime(TmpCwdMixin, unittest.TestCase):
         with patch.object(live_p10, "download_5m", return_value=bars):
             dt._evaluate_exit(state, datetime(2026, 9, 25, 9, 40, tzinfo=TZ))
         self.assertIn("7203.T", state["last_exit_by_ticker"])
+
+
+# =====================================================================
+# 退出判定(v2, fill_method=decision_next_bar_open_v2): 約定バー自身
+# (price_bar_time==fill_bar_time)はopenへのギャップ判定なしで
+# High/Lowのみ判定(SL優先)、次のバーからは通常のギャップ判定。
+# =====================================================================
+
+class EvaluateExitV2(TmpCwdMixin, unittest.TestCase):
+    def _v2_position(self, entry_price=3000.0, direction="BUY", fill_bar_time="2026-09-25 09:35:00",
+                      decision_time="2026-09-25 09:31:00", shares=300):
+        fill_bar_time = pd.Timestamp(fill_bar_time)
+        return {
+            "ticker": "7203.T", "direction": direction, "entry_date": "2026-09-25",
+            "entry_time": fill_bar_time.strftime("%H:%M"), "entry_datetime": fill_bar_time.isoformat(),
+            "entry_price": entry_price, "shares": shares, "invested_amount": entry_price * shares,
+            "tp": entry_price * 1.05, "sl": entry_price * 0.95, "tp_pct": 5.0, "sl_pct": -5.0,
+            "mfe_yen": 0.0, "mae_yen": 0.0, "current_price": entry_price,
+            "price_bar_time": fill_bar_time.isoformat(), "fill_bar_time": fill_bar_time.isoformat(),
+            "decision_time": pd.Timestamp(decision_time).isoformat(), "fill_method": dt.FILL_METHOD_V2,
+        }
+
+    def test_fill_bar_sl_priority_when_both_touched(self):
+        pos = self._v2_position(entry_price=3000.0, fill_bar_time="2026-09-25 09:35:00")
+        pos["tp"], pos["sl"] = 3050.0, 2950.0
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        # the fill bar itself touches both tp and sl -> SL must win, and the
+        # bar's Open (3000, far from either) must never be checked as a gap
+        bars = _bars([3000.0, 3000.0], start="2026-09-25 09:30")
+        bars.loc[pd.Timestamp("2026-09-25 09:35:00"), ["Open", "High", "Low"]] = [3000.0, 3060.0, 2940.0]
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._evaluate_exit(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ))
+        self.assertEqual(len(msgs), 1)
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertEqual(history.iloc[-1]["result"], "SL")
+        self.assertEqual(history.iloc[-1]["exit_time"], "09:35")  # fires on the fill bar, not later
+        self.assertEqual(history.iloc[-1]["fill_method"], dt.FILL_METHOD_V2)
+
+    def test_no_exit_on_fill_bar_moves_to_gap_rule_on_next_bar(self):
+        pos = self._v2_position(entry_price=3000.0, fill_bar_time="2026-09-25 09:35:00")
+        pos["tp"], pos["sl"] = 3050.0, 2950.0
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        bars = _bars([3000.0, 3000.0, 3060.0], start="2026-09-25 09:30")  # 09:40 bar gaps up through TP
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._evaluate_exit(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ))
+        self.assertEqual(len(msgs), 1)
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertEqual(history.iloc[-1]["result"], "TP")
+        self.assertEqual(history.iloc[-1]["exit_time"], "09:40")
+
+    def test_forced_exit_at_1520(self):
+        pos = self._v2_position(entry_price=3000.0, fill_bar_time="2026-09-25 09:35:00")
+        pos["tp"], pos["sl"] = 4000.0, 2000.0
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        idx = pd.date_range("2026-09-25 09:35", "2026-09-25 15:25", freq="5min")
+        closes = [3000.0] * len(idx)
+        bars = pd.DataFrame({"Open": closes, "High": closes, "Low": closes, "Close": closes,
+                              "Volume": [1000] * len(idx)}, index=idx)
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._evaluate_exit(state, datetime(2026, 9, 25, 15, 30, tzinfo=TZ))
+        self.assertEqual(len(msgs), 1)
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertEqual(history.iloc[-1]["result"], "FORCED_EXIT")
+        self.assertEqual(history.iloc[-1]["exit_time"], "15:20")
+
+    def test_hold_minutes_computed_from_fill_time_not_decision_time(self):
+        pos = self._v2_position(entry_price=3000.0, fill_bar_time="2026-09-25 09:35:00",
+                                 decision_time="2026-09-25 09:31:00")
+        pos["tp"], pos["sl"] = 3050.0, 2950.0
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        bars = _bars([3000.0, 3000.0, 3060.0], start="2026-09-25 09:30")
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            dt._evaluate_exit(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ))
+        history = pd.read_csv(dt.HISTORY_FILE)
+        # exit at 09:40, fill (entry_datetime) at 09:35 -> 5 minutes, NOT from decision_time 09:31
+        self.assertAlmostEqual(float(history.iloc[-1]["hold_minutes"]), 5.0)
+
+    def test_invariant_violation_raises_assertion_error(self):
+        # decision_time AFTER fill_bar_time must never happen; _close_position
+        # asserts the invariant rather than silently writing a bad row.
+        pos = self._v2_position(entry_price=3000.0, fill_bar_time="2026-09-25 09:35:00",
+                                 decision_time="2026-09-25 09:40:00")  # decision after fill -- invalid
+        pos["tp"], pos["sl"] = 3050.0, 2950.0
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        with self.assertRaises(AssertionError):
+            dt._close_position(state, datetime(2026, 9, 25, 9, 45, tzinfo=TZ), 3010.0, "TP",
+                                pd.Timestamp("2026-09-25 09:45:00"))
 
 
 # =====================================================================
