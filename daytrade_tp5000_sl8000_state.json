@@ -1,0 +1,38 @@
+{
+  "positions": [
+    {
+      "ticker": "5301.T",
+      "direction": "BUY",
+      "entry_date": "2026-10-02",
+      "entry_time": "09:31",
+      "entry_datetime": "2026-10-02T09:31:06.710598",
+      "entry_price": 2304.0,
+      "shares": 400,
+      "invested_amount": 921600.0,
+      "tp": 2319.042673470409,
+      "sl": 2286.524788633749,
+      "tp_pct": 0.6528938138198449,
+      "sl_pct": -0.7584727155490967,
+      "score": 70.37843204085175,
+      "up_probability": 33.87298864312183,
+      "down_probability": 29.72727819841923,
+      "market_regime": "bullish",
+      "top10_rank": 2,
+      "policy_file": "strategy_policy_up.json",
+      "policy_source": "reused_today_row",
+      "policy_hash": "cfe6da4cc960",
+      "model_id": "a679143b199e6cec",
+      "model_version": "2026-10-02",
+      "price_bar_time": "2026-10-02T09:15:00",
+      "data_delay_minutes": 16.1118433,
+      "atr_pct": 0.30846974206349204,
+      "vwap_deviation_pct": -0.20900568944292602,
+      "mfe_yen": 0.0,
+      "mae_yen": 0.0,
+      "current_price": 2304.0
+    }
+  ],
+  "trade_date": "2026-10-02",
+  "trades_today": 1,
+  "last_exit_by_ticker": {}
+}
