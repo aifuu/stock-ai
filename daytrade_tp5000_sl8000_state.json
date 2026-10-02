@@ -27,9 +27,9 @@
       "data_delay_minutes": 16.17416605,
       "atr_pct": 0.3219251581086326,
       "vwap_deviation_pct": 2.690997147211275,
-      "mfe_yen": 0.0,
+      "mfe_yen": 900.0,
       "mae_yen": -2800.0,
-      "current_price": 6257.0
+      "current_price": 6248.0
     }
   ],
   "trade_date": "2026-10-02",
