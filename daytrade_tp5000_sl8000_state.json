@@ -1,6 +1,23 @@
 {
   "positions": [],
-  "pending": null,
+  "pending": {
+    "ticker": "6752.T",
+    "direction": "BUY",
+    "decision_date": "2026-10-02",
+    "decision_time": "2026-10-02T12:50:49.983251",
+    "fill_bar_time": "2026-10-02T12:55:00",
+    "score": 72.69332741685568,
+    "up_probability": 35.17089616320065,
+    "down_probability": 29.343190982226165,
+    "market_regime": "bullish",
+    "top10_rank": 3,
+    "policy_file": "strategy_policy_up.json",
+    "policy_source": "reused_today_row",
+    "policy_hash": "cfe6da4cc960",
+    "model_id": "a679143b199e6cec",
+    "model_version": "2026-10-02",
+    "budget": 1000000.0
+  },
   "trade_date": "2026-10-02",
   "trades_today": 3,
   "last_exit_by_ticker": {
