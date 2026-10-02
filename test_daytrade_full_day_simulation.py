@@ -27,6 +27,7 @@ entry point, so requests.post and yfinance.download are stubbed to raise
 before anything is imported (same pattern as the other daytrade/
 run_profit_loop test files).
 """
+import json
 import os
 import tempfile
 import time
@@ -56,6 +57,7 @@ import pandas as pd  # noqa: E402
 
 import daytrade_tp5000_sl8000_paper as dt  # noqa: E402
 import profit_top10_paper as live_p10  # noqa: E402
+import run_profit_loop as live_loop  # noqa: E402
 
 TZ = ZoneInfo("Asia/Tokyo")
 DAY = "2026-09-25"
@@ -106,15 +108,27 @@ def _build_day_bars():
     return {"7203.T": bars_7203, "9984.T": bars_9984}
 
 
-def _simulate_live_tick(tick_no):
+def _simulate_live_tick(tick_no, now):
     """Stand-in for the real live tick (paper_fast_entrypoint.py calling
     into profit_top10_paper.py). Content depends only on tick_no, never on
     whether daytrade ran, so the two simulated days are directly
-    comparable byte-for-byte."""
+    comparable byte-for-byte.
+
+    Also mirrors the real ai-stock-scan.yml loop's
+    `rm -f scan_candidates_cache.json` (at the start of the iteration) then
+    the live tick writing a fresh one -- Change A has daytrade read this
+    file directly (instead of re-scanning) for this same iteration's TOP10,
+    so the file must exist with this tick's timestamp by the time
+    dt.run() is called below."""
     with open(live_p10.STATE_FILE, "w", encoding="utf-8") as f:
         f.write(f'{{"tick": {tick_no}, "capital": 1000000.0}}\n')
     with open(live_p10.HISTORY_FILE, "a", encoding="utf-8") as f:
         f.write(f"{tick_no},live_row\n")
+    if os.path.exists(dt.fast.SCAN_CACHE_FILE):
+        os.remove(dt.fast.SCAN_CACHE_FILE)
+    payload = {"timestamp": now.timestamp(), "raw": list(CANDS), "scanned": 225}
+    with open(dt.fast.SCAN_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
 
 
 def _run_simulated_day(work_dir, with_daytrade):
@@ -140,18 +154,16 @@ def _run_simulated_day(work_dir, with_daytrade):
             sliced = df[df.index <= cutoff]
             return sliced if not sliced.empty else None
 
-        def fake_scan(policy):
-            return list(CANDS), 225
-
         runtimes = []
         with patch.object(live_p10, "download_5m", side_effect=fake_download_5m), \
-             patch.object(dt.fast, "scan_progressive_with_prefilter", side_effect=fake_scan), \
+             patch.object(live_loop, "_market_regime", return_value=("neutral", 0.0, 0.0)), \
+             patch.object(live_loop, "_load_feedback_weights", return_value={"BUY": 1.0, "SHORT": 1.0}), \
              patch.object(dt, "choose_policy_file_reusing_live_tick",
                            return_value=("strategy_policy.json", "reused_today_row")), \
              patch.object(live_p10, "load_policy", return_value=POLICY):
             for i, tick in enumerate(_tick_range()):
                 now_holder["now"] = tick
-                _simulate_live_tick(i)
+                _simulate_live_tick(i, tick)
                 if with_daytrade:
                     t0 = time.monotonic()
                     dt.run(now=tick)

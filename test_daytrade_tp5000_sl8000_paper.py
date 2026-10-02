@@ -6,6 +6,7 @@ entry point (yfinance, Discord), so requests.post and yfinance.download are
 stubbed to raise before anything is imported (same pattern as
 test_run_profit_loop_cooldown.py), and DISCORD_WEBHOOK is forced unset.
 """
+import json
 import os
 import tempfile
 import unittest
@@ -126,15 +127,16 @@ class Top1MatchesLiveOpenTop1Only(unittest.TestCase):
         with _RegimeAndFeedbackPatched("neutral"):
             top10, _ = self._top10_via_scan_candidates_fixed()
             live_ticker, live_direction = self._live_choice(top10)
-            chosen = dt._select_top1(top10, {}, datetime(2026, 9, 25, 9, 35, tzinfo=TZ))
+            chosen, skipped = dt._select_top1(top10, {}, datetime(2026, 9, 25, 9, 35, tzinfo=TZ))
         self.assertIsNotNone(chosen)
         self.assertEqual((chosen["ticker"], chosen["direction"]), (live_ticker, live_direction))
+        self.assertEqual(skipped, [])  # top-ranked candidate chosen directly, nothing skipped
 
     def test_daytrade_select_top1_matches_live_bearish_regime(self):
         with _RegimeAndFeedbackPatched("bearish"):
             top10, _ = self._top10_via_scan_candidates_fixed()
             live_ticker, live_direction = self._live_choice(top10)
-            chosen = dt._select_top1(top10, {}, datetime(2026, 9, 25, 9, 35, tzinfo=TZ))
+            chosen, _ = dt._select_top1(top10, {}, datetime(2026, 9, 25, 9, 35, tzinfo=TZ))
         self.assertEqual(live_direction, "SHORT")  # bearish regime must pick a SHORT
         self.assertEqual((chosen["ticker"], chosen["direction"]), (live_ticker, live_direction))
 
@@ -145,12 +147,15 @@ class Top1MatchesLiveOpenTop1Only(unittest.TestCase):
             # the top-ranked ticker is still in this track's own cooldown
             top_ticker = top10[0]["ticker"]
             cooldowns = {top_ticker: (now - loop.timedelta(minutes=5)).isoformat()}
-            chosen = dt._select_top1(top10, cooldowns, now)
+            chosen, skipped = dt._select_top1(top10, cooldowns, now)
         self.assertIsNotNone(chosen)
         self.assertNotEqual(chosen["ticker"], top_ticker)
+        self.assertEqual(skipped, [(top_ticker, "cooldown")])
 
     def test_empty_top10_returns_none(self):
-        self.assertIsNone(dt._select_top1([], {}, datetime(2026, 9, 25, 9, 35, tzinfo=TZ)))
+        chosen, skipped = dt._select_top1([], {}, datetime(2026, 9, 25, 9, 35, tzinfo=TZ))
+        self.assertIsNone(chosen)
+        self.assertEqual(skipped, [])
 
     def test_unaffordable_candidate_is_skipped(self):
         with _RegimeAndFeedbackPatched("neutral"):
@@ -158,8 +163,10 @@ class Top1MatchesLiveOpenTop1Only(unittest.TestCase):
         # make every candidate's price exceed the budget for even one lot
         for c in top10:
             c["price"] = 20_000_000.0
-        chosen = dt._select_top1(top10, {}, datetime(2026, 9, 25, 9, 35, tzinfo=TZ))
+        chosen, skipped = dt._select_top1(top10, {}, datetime(2026, 9, 25, 9, 35, tzinfo=TZ))
         self.assertIsNone(chosen)
+        self.assertEqual([t for t, _ in skipped], [c["ticker"] for c in top10])
+        self.assertTrue(all(r == "budget" for _, r in skipped))
 
 
 # =====================================================================
@@ -347,10 +354,20 @@ class EntryCreatesPendingNotImmediateFill(TmpCwdMixin, unittest.TestCase):
         with open("strategy_policy.json", "w", encoding="utf-8") as f:
             f.write('{"status": "PENDING"}')
 
+    def _write_live_cache(self, now, raw=None):
+        """Stands in for the live tick having just written
+        scan_candidates_cache.json this same iteration (Change A reads it
+        directly instead of scanning on its own)."""
+        raw = raw if raw is not None else [{"ticker": "placeholder"}]
+        payload = {"timestamp": now.timestamp(), "raw": raw, "scanned": 225}
+        with open(dt.fast.SCAN_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
     def _try_entry(self, now, candidates=None):
         candidates = candidates or [{"ticker": "7203.T", "direction": "BUY", "price": 3000.0, "score": 80.0,
                                       "up_probability": 60.0, "down_probability": 10.0, "top10_rank": 1,
                                       "market_regime": "neutral"}]
+        self._write_live_cache(now)
         state = dt.default_state()
         with patch.object(dt, "choose_policy_file_reusing_live_tick",
                            return_value=("strategy_policy.json", "reused_today_row")), \
@@ -372,10 +389,12 @@ class EntryCreatesPendingNotImmediateFill(TmpCwdMixin, unittest.TestCase):
         # ceil(09:31) -> 09:35 bar, per _ceil_bar_time()
         self.assertEqual(pd.Timestamp(pending["fill_bar_time"]), pd.Timestamp("2026-09-25 09:35:00"))
         self.assertEqual(pending["decision_date"], "2026-09-25")
+        self.assertEqual(pending["top10_source"], dt.TOP10_SOURCE_LIVE_TICK_CACHE)
+        self.assertEqual(pending["skipped"], "")
 
     def test_decision_exactly_on_5min_boundary_targets_same_bar(self):
         now = datetime(2026, 9, 25, 9, 30, tzinfo=TZ)
-        _, msg = self._try_entry(now)
+        self._write_live_cache(now)
         state = dt.default_state()
         with patch.object(dt, "choose_policy_file_reusing_live_tick",
                            return_value=("strategy_policy.json", "reused_today_row")), \
