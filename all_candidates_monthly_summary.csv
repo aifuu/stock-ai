@@ -1,10 +1,10 @@
 ﻿# equal_weight_pnl_jpy is an APPROXIMATION: it simulates splitting a fixed ¥1,000,000 equally across that day's/month's entry-cohort candidates in each bucket and summing weight*return_pct/100 for the ones that have closed so far. It is NOT a true continuous equity curve (holds span multiple days, there is no shared/compounding capital pool), and rows for cohorts with still-open positions update on later runs as those trades close. Underlying trade rows (all_candidates_YYYY-MM.csv.gz) carry model_id/model_version identifying which directional model produced each candidate; rows predating that column (or with it blank) are defined as the legacy 2026-09-12 model and are never rewritten. Once a research model is frozen (see all_candidates_paper.py docstring), later rows keep using the frozen model_id even after the live model changes. rank_method='live_profit_priority_v2' rows carry a live_rank matching run_profit_loop.profit_priority()'s regime-aware TOP1 ordering (ev_rank, the legacy 'rank' column, is also kept); TOP1/TOP3/TOP5 buckets use live_rank for these rows. Rows with no rank_method (or any other value) predate this and are defined as rank_method='scan_ev_v1' (legacy, bucketed by ev_rank); they are never rewritten. profit_priority/feedback_weight depend on trade_feedback_policy.json, which trade_feedback_engine.py updates daily, so the same candidate can get a different live_rank on a different run date.
 month,bucket,candidate_count,trades_closed,win_rate,avg_return_pct,equal_weight_pnl_jpy
-2026-09,ALL,28,17,0.058823529411764705,-1.4357719715024992,-29648.77553142966
+2026-09,ALL,28,19,0.10526315789473684,-1.3705344759397255,-30358.35445634805
 2026-09,TOP1,2,2,0.5,5.981065150672164,119621.30301344328
-2026-09,TOP3,6,4,0.25,1.7476206354279564,23301.608472372747
-2026-09,TOP5,10,6,0.16666666666666666,0.3828450672389104,4594.140806866919
-2026-10,ALL,23,2,0.0,-2.9565335545200915,-2687.7577768364467
-2026-10,TOP1,2,0,,,
-2026-10,TOP3,4,0,,,
-2026-10,TOP5,6,1,0.0,-3.721025108362282,-7442.050216724564
+2026-09,TOP3,6,5,0.4,1.81579768230181,30263.294705030166
+2026-09,TOP5,10,8,0.25,0.08312985951514618,1330.0777522423268
+2026-10,ALL,25,6,0.0,-2.9601957141156436,-8073.261038497209
+2026-10,TOP1,3,0,,,
+2026-10,TOP3,6,0,,,
+2026-10,TOP5,8,1,0.0,-3.721025108362282,-7442.050216724564
