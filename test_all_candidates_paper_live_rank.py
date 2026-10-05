@@ -220,16 +220,29 @@ class BackwardCompatibilityWithRealCurrentState(unittest.TestCase):
         positions = state.get("positions", [])
         self.assertGreater(len(positions), 0, "expected at least one real position to validate against")
 
-        # 既存の本番行はこの変更より前に書かれているので、rank_method列を
-        # 持たない -> 後方互換のレガシー定義(ev_rankでバケット分け)になる。
+        # 2026-10-02(commit 614f18a)以降、研究トラックは新しい行に
+        # rank_method='live_profit_priority_v2'を書き込む(設計通り)。
+        # それより前の行はrank_method列自体を持たない(レガシー)。両方が
+        # 混在していてよいが、v2以外の値は想定しない。
         for p in positions:
-            self.assertNotIn("rank_method", p)
+            rank_method = p.get("rank_method")
+            self.assertIn(rank_method, (None, "", acp.RANK_METHOD_LIVE_V2))
 
         df = acp.rows_to_dataframe(positions)
-        self.assertTrue((df["rank_method"].isna()).all())
-        # _effective_rank/_bucket_frameが例外を出さずev_rankにフォールバックすること。
-        top1 = acp._bucket_frame(df, "TOP1")
-        self.assertTrue((pd.to_numeric(top1["rank"], errors="coerce") <= 1).all())
+        legacy_mask = df["rank_method"].isna()
+        v2_mask = df["rank_method"] == acp.RANK_METHOD_LIVE_V2
+        self.assertTrue((legacy_mask | v2_mask).all())
+        self.assertEqual(int(legacy_mask.sum()) + int(v2_mask.sum()), len(df))
+
+        # _effective_rank/_bucket_frameが例外を出さず、rank_methodごとに
+        # live_rank(v2)/ev_rank(レガシー)へ正しくフォールバックすること。
+        effective_rank = acp._effective_rank(df)
+        for bucket in acp.BUCKETS:
+            if bucket == "ALL":
+                continue
+            n = int(bucket[len("TOP"):])
+            b = acp._bucket_frame(df, bucket)
+            self.assertTrue((effective_rank.loc[b.index] <= n).all())
 
 
 if __name__ == "__main__":
