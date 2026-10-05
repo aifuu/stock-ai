@@ -25,7 +25,7 @@ _evaluate_exit() for the exact mechanics):
     exceed the budget
   - budget: up to 1,000,000 JPY, in 100-share lots (candidates needing
     more than one lot's worth of budget per share are skipped)
-  - decisions only allowed 09:30-14:50 JST; forced exit at 15:20 JST
+  - decisions only allowed 09:55-14:50 JST; forced exit at 15:20 JST
     regardless of price; no carry-over across days (a leftover position
     or pending decision found at the start of a new day -- should not
     happen given the 15:20 forced exit, but is a safety net for a
@@ -86,6 +86,12 @@ decision). That is unrealistic and flatters results, so it is now:
   6. Every v2 row carries fill_method='decision_next_bar_open_v2',
      decision_time, and fill_bar_time. MFE/MAE are measured from the
      fill price over bars from the fill bar onward.
+  7. Every pending/history/cancelled row also carries entry_window_start
+     (ENTRY_WINDOW_START as 'HH:MM'), appended as a new LAST column via the
+     same safe column-extension mechanism as top10_source/skipped (see
+     append_history()); rows written before this field existed are never
+     rewritten and read back with an empty value, which is defined to mean
+     '09:30' (the entry window start in effect before this field was added).
 
 Rows with no fill_method value (blank/NaN) are legacy v1 rows (see
 below) written before this fix; past data is never rewritten.
@@ -196,8 +202,9 @@ MAX_TRADES_PER_DAY = 30
 TOP10_SOURCE_LIVE_TICK_CACHE = "live_tick_cache"
 LIVE_TICK_CACHE_MAX_AGE_SECONDS = 15 * 60
 
-ENTRY_WINDOW_START = dtime(9, 30)
+ENTRY_WINDOW_START = dtime(9, 55)
 ENTRY_WINDOW_END = dtime(14, 50)  # no NEW entries from this time onward
+ENTRY_WINDOW_START_STR = ENTRY_WINDOW_START.strftime("%H:%M")
 FORCED_EXIT_TIME = dtime(15, 20)
 SESSION_START = dtime(9, 0)
 SESSION_HARD_STOP = dtime(15, 35)
@@ -591,6 +598,7 @@ def _try_entry(state, now, today):
         "policy_file": policy_file, "policy_source": policy_source, "policy_hash": policy_hash,
         "model_id": model_id, "model_version": model_version,
         "budget": BUDGET_JPY,
+        "entry_window_start": ENTRY_WINDOW_START_STR,
     }
     state["pending"] = pending
     print(f"⏳ daytrade PENDING: {direction} {ticker} decision={now_naive} fill_bar_time>={fill_bar_time}")
@@ -684,6 +692,7 @@ def _check_pending_fill(state, now, today):
         "fill_method": FILL_METHOD_V2,
         "atr_pct": _simple_atr_pct(bars, fill_price), "vwap_deviation_pct": _vwap_deviation_pct(bars, fill_price),
         "mfe_yen": 0.0, "mae_yen": 0.0, "current_price": fill_price,
+        "entry_window_start": pending.get("entry_window_start"),
     }
     assert pd.Timestamp(position["fill_bar_time"]) >= pd.Timestamp(position["decision_time"]), (
         "invariant violated: fill_bar_time < decision_time"
@@ -740,6 +749,7 @@ def _close_position(state, now, exit_price, reason, exit_ts):
         # new columns appended at the end -- see safe_state.safe_append_history
         # (pd.concat unions columns; existing rows get empty values for these)
         "top10_source": pos.get("top10_source"), "skipped": pos.get("skipped"),
+        "entry_window_start": pos.get("entry_window_start"),
     }
     append_history(row)
     state.setdefault("last_exit_by_ticker", {})[pos["ticker"]] = pd.Timestamp(now).isoformat()

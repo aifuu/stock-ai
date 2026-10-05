@@ -391,6 +391,7 @@ class EntryCreatesPendingNotImmediateFill(TmpCwdMixin, unittest.TestCase):
         self.assertEqual(pending["decision_date"], "2026-09-25")
         self.assertEqual(pending["top10_source"], dt.TOP10_SOURCE_LIVE_TICK_CACHE)
         self.assertEqual(pending["skipped"], "")
+        self.assertEqual(pending["entry_window_start"], "09:55")
 
     def test_decision_exactly_on_5min_boundary_targets_same_bar(self):
         now = datetime(2026, 9, 25, 9, 30, tzinfo=TZ)
@@ -422,7 +423,7 @@ class PendingFillConfirmation(TmpCwdMixin, unittest.TestCase):
             "score": 80.0, "up_probability": 60.0, "down_probability": 10.0, "market_regime": "neutral",
             "top10_rank": 1, "policy_file": "strategy_policy.json", "policy_source": "reused_today_row",
             "policy_hash": "abc123", "model_id": None, "model_version": "legacy-20260912",
-            "budget": budget,
+            "budget": budget, "entry_window_start": "09:55",
         }
 
     def test_fill_bar_not_yet_available_stays_pending(self):
@@ -452,6 +453,7 @@ class PendingFillConfirmation(TmpCwdMixin, unittest.TestCase):
         self.assertEqual(pos["fill_method"], dt.FILL_METHOD_V2)
         self.assertEqual(pos["entry_datetime"], pd.Timestamp("2026-09-25 09:35:00").isoformat())
         self.assertEqual(state["trades_today"], 1)
+        self.assertEqual(pos["entry_window_start"], "09:55")  # carried from the pending row
 
     def test_shares_are_recomputed_from_fill_price_not_scan_price(self):
         # fill price (3020, bar Open) differs from whatever the original
@@ -749,20 +751,58 @@ class NoCarryOverAcrossDays(TmpCwdMixin, unittest.TestCase):
 # =====================================================================
 
 class EntryWindowAndDailyLimitGuards(TmpCwdMixin, unittest.TestCase):
-    def test_no_entry_attempt_before_0930(self):
-        with patch.object(dt, "_try_entry") as try_entry:
-            dt.run(now=datetime(2026, 9, 25, 9, 20, tzinfo=TZ))
-        try_entry.assert_not_called()
+    def test_no_entry_attempt_before_0955(self):
+        for hour, minute, second in [(9, 20, 0), (9, 30, 0), (9, 50, 0), (9, 54, 59)]:
+            with self.subTest(time=(hour, minute, second)), \
+                 patch.object(dt, "_try_entry") as try_entry:
+                dt.run(now=datetime(2026, 9, 25, hour, minute, second, tzinfo=TZ))
+            try_entry.assert_not_called()
+
+    def test_entry_attempted_exactly_at_0955(self):
+        with patch.object(dt, "_try_entry", return_value=None) as try_entry:
+            dt.run(now=datetime(2026, 9, 25, 9, 55, 0, tzinfo=TZ))
+        try_entry.assert_called_once()
 
     def test_no_entry_attempt_from_1450(self):
         with patch.object(dt, "_try_entry") as try_entry:
             dt.run(now=datetime(2026, 9, 25, 14, 50, tzinfo=TZ))
         try_entry.assert_not_called()
 
+    def test_entry_attempted_at_1449(self):
+        with patch.object(dt, "_try_entry", return_value=None) as try_entry:
+            dt.run(now=datetime(2026, 9, 25, 14, 49, tzinfo=TZ))
+        try_entry.assert_called_once()
+
     def test_entry_attempted_within_window(self):
         with patch.object(dt, "_try_entry", return_value=None) as try_entry:
             dt.run(now=datetime(2026, 9, 25, 10, 0, tzinfo=TZ))
         try_entry.assert_called_once()
+
+    def test_carried_pending_still_evaluated_before_0955(self):
+        # the entry gate blocks NEW decisions before 09:55, but a pending
+        # decision already created earlier (or a cancellation/day-reset)
+        # must still be evaluated on every tick regardless of the window.
+        state = dt.default_state()
+        state["pending"] = {
+            "ticker": "7203.T", "direction": "BUY",
+            "decision_date": "2026-09-24", "decision_time": "2026-09-24T14:49:00",
+            "fill_bar_time": "2026-09-24T14:50:00", "score": 80.0, "up_probability": 60.0,
+            "down_probability": 10.0, "market_regime": "neutral", "top10_rank": 1,
+            "top10_source": dt.TOP10_SOURCE_LIVE_TICK_CACHE, "skipped": "",
+            "policy_file": "strategy_policy.json", "policy_source": "reused_today_row",
+            "policy_hash": "abc123", "model_id": None, "model_version": "legacy-20260912",
+            "budget": 1_000_000.0, "entry_window_start": "09:30",
+        }
+        state["trade_date"] = "2026-09-25"
+        dt.save_state(state)
+        with patch.object(live_p10, "download_5m") as dl, \
+             patch.object(dt, "_try_entry") as try_entry:
+            dt.run(now=datetime(2026, 9, 25, 9, 40, tzinfo=TZ))
+        dl.assert_not_called()  # cancelled on day-mismatch before even trying to fetch data
+        try_entry.assert_not_called()  # still before 09:55 -- no new decision
+        self.assertIsNone(dt.load_state()["pending"])
+        log = pd.read_csv(dt.CANCELLED_LOG_FILE)
+        self.assertEqual(log.iloc[-1]["reason"], "CANCELLED_NO_FILL_NEW_DAY")
 
     def test_no_entry_attempt_once_daily_limit_reached(self):
         state = dt.default_state()
@@ -790,6 +830,53 @@ class EntryWindowAndDailyLimitGuards(TmpCwdMixin, unittest.TestCase):
             dt.run(now=datetime(2026, 9, 25, 10, 0, tzinfo=TZ))
         try_entry.assert_not_called()
         self.assertEqual(dt.load_state()["positions"], [])
+
+
+# =====================================================================
+# entry_window_start: 09:55の由来を記録する新しい末尾カラム。
+# 既存の過去行は書き換えず、空値のまま(docstringで09:30と定義)。
+# =====================================================================
+
+class EntryWindowStartProvenance(TmpCwdMixin, unittest.TestCase):
+    def test_history_row_carries_entry_window_start(self):
+        pos = {
+            "ticker": "7203.T", "direction": "BUY", "entry_date": "2026-09-25",
+            "entry_time": "09:55", "entry_datetime": "2026-09-25T09:55:00",
+            "entry_price": 3000.0, "shares": 300, "invested_amount": 900000.0,
+            "tp": 3010.0, "sl": 2900.0, "tp_pct": 0.3, "sl_pct": -3.0,
+            "mfe_yen": 0.0, "mae_yen": 0.0, "current_price": 3000.0,
+            "price_bar_time": "2026-09-25T09:55:00", "fill_bar_time": "2026-09-25T09:55:00",
+            "decision_time": "2026-09-25T09:55:00", "fill_method": dt.FILL_METHOD_V2,
+            "entry_window_start": dt.ENTRY_WINDOW_START_STR,
+        }
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        dt._close_position(state, datetime(2026, 9, 25, 10, 0, tzinfo=TZ), 3010.0, "TP",
+                            pd.Timestamp("2026-09-25 10:00:00"))
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertEqual(history.iloc[-1]["entry_window_start"], "09:55")
+
+    def test_old_history_rows_unchanged_after_entry_window_start_column_appended(self):
+        # simulate a pre-existing history file written before this field
+        # existed (no entry_window_start column at all).
+        old_row = {"ticker": "9984.T", "direction": "BUY", "entry_price": 5000.0,
+                   "exit_price": 5050.0, "result": "TP", "pnl": 1234.0,
+                   "track": dt.TRACK, "validation_eligible": False}
+        pd.DataFrame([old_row]).to_csv(dt.HISTORY_FILE, index=False, encoding="utf-8-sig")
+
+        new_row = dict(old_row)
+        new_row["ticker"] = "7203.T"
+        new_row["entry_window_start"] = "09:55"
+        dt.append_history(new_row)
+
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertEqual(len(history), 2)
+        # old row's original columns/values are untouched...
+        for key, value in old_row.items():
+            self.assertEqual(history.iloc[0][key], value)
+        # ...and its new entry_window_start cell is empty (defined as '09:30').
+        self.assertTrue(pd.isna(history.iloc[0]["entry_window_start"]))
+        self.assertEqual(history.iloc[1]["entry_window_start"], "09:55")
+        self.assertEqual(list(history.columns)[-1], "entry_window_start")
 
 
 if __name__ == "__main__":

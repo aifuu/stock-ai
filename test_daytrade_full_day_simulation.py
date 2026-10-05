@@ -213,19 +213,21 @@ class FullDaySimulation(unittest.TestCase):
         self.assertEqual(len(cancelled_log), 0)  # no cancellations in this scenario
         first, second = daytrade_history.iloc[0], daytrade_history.iloc[1]
 
-        # trade 1: decision at 09:30 (the first eligible tick), fill bar is
-        # the 09:30 bar itself (decision lands exactly on a 5-min boundary),
-        # filled only once that bar clears the simulated 16-minute data
-        # delay (visible from tick 09:50 onward: now - DATA_DELAY >= 09:30),
-        # then closed via the 11:00 gap straight through TP (open>=tp).
+        # trade 1: decision at 09:55 (the first eligible tick now that entry
+        # decisions start at 09:55, not 09:30), fill bar is the 09:55 bar
+        # itself (decision lands exactly on a 5-min boundary), filled only
+        # once that bar clears the simulated 16-minute data delay (visible
+        # from tick 10:15 onward: now - DATA_DELAY >= 09:55), then closed
+        # via the 11:00 gap straight through TP (open>=tp).
         self.assertEqual(first["ticker"], "7203.T")
         self.assertEqual(first["fill_method"], dt.FILL_METHOD_V2)
-        self.assertEqual(pd.Timestamp(first["decision_time"]), pd.Timestamp(f"{DAY} 09:30:00"))
-        self.assertEqual(pd.Timestamp(first["fill_bar_time"]), pd.Timestamp(f"{DAY} 09:30:00"))
-        self.assertEqual(first["entry_price"], 3005.0)  # Open of the 09:30 fill bar
+        self.assertEqual(pd.Timestamp(first["decision_time"]), pd.Timestamp(f"{DAY} 09:55:00"))
+        self.assertEqual(pd.Timestamp(first["fill_bar_time"]), pd.Timestamp(f"{DAY} 09:55:00"))
+        self.assertEqual(first["entry_price"], 3005.0)  # Open of the 09:55 fill bar
         self.assertEqual(first["result"], "TP")
         self.assertEqual(first["exit_time"], "11:00")
         self.assertAlmostEqual(float(first["exit_price"]), 3050.0)
+        self.assertEqual(first["entry_window_start"], "09:55")
 
         # trade 2: 7203.T's exit is only processed once its own data delay
         # clears (tick 11:20), so the next decision tick is 11:25; 7203.T is
@@ -240,6 +242,7 @@ class FullDaySimulation(unittest.TestCase):
         self.assertEqual(second["result"], "FORCED_EXIT")
         self.assertEqual(second["exit_time"], "15:20")
         self.assertAlmostEqual(float(second["exit_price"]), 5000.0)
+        self.assertEqual(second["entry_window_start"], "09:55")
 
         for row in (first, second):
             self.assertEqual(row["track"], dt.TRACK)
