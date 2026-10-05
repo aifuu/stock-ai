@@ -1,51 +1,14 @@
 {
-  "positions": [
-    {
-      "ticker": "8766.T",
-      "direction": "BUY",
-      "entry_date": "2026-10-05",
-      "entry_time": "14:35",
-      "entry_datetime": "2026-10-05T14:35:00",
-      "entry_price": 511.0,
-      "shares": 1900,
-      "invested_amount": 970900.0,
-      "tp": 514.1954364374091,
-      "sl": 507.3495659454806,
-      "tp_pct": 0.6253300268902264,
-      "sl_pct": -0.7143706564617209,
-      "score": 70.41608559925028,
-      "up_probability": 34.62605981109249,
-      "down_probability": 33.132511818261875,
-      "market_regime": "bullish",
-      "top10_rank": 1,
-      "top10_source": "live_tick_cache",
-      "skipped": "",
-      "policy_file": "strategy_policy_up.json",
-      "policy_source": "reused_today_row",
-      "policy_hash": "cfe6da4cc960",
-      "model_id": "a679143b199e6cec",
-      "model_version": "2026-10-02",
-      "price_bar_time": "2026-10-05T14:35:00",
-      "data_delay_minutes": 15.783794483333333,
-      "decision_time": "2026-10-05T14:30:45.570545",
-      "fill_bar_time": "2026-10-05T14:35:00",
-      "fill_method": "decision_next_bar_open_v2",
-      "atr_pct": 0.17472699863603403,
-      "vwap_deviation_pct": 0.6888380679190911,
-      "mfe_yen": 2280.023193359375,
-      "mae_yen": -380.023193359375,
-      "current_price": 510.79998779296875
-    }
-  ],
+  "positions": [],
   "pending": null,
   "trade_date": "2026-10-05",
   "trades_today": 5,
   "last_exit_by_ticker": {
     "5301.T": "2026-10-05T14:25:45.080004+09:00",
     "6302.T": "2026-10-02T10:51:08.196853+09:00",
-    "8766.T": "2026-10-05T13:10:45.372684+09:00",
+    "8766.T": "2026-10-05T15:20:47.555564+09:00",
     "6752.T": "2026-10-05T10:30:55.721538+09:00"
   },
   "live_cache_miss_notice_date": null,
-  "daily_summary_sent_date": null
+  "daily_summary_sent_date": "2026-10-05"
 }
