@@ -32,9 +32,9 @@
       "fill_method": "decision_next_bar_open_v2",
       "atr_pct": 0.17472699863603403,
       "vwap_deviation_pct": 0.6888380679190911,
-      "mfe_yen": 1519.976806640625,
+      "mfe_yen": 2280.023193359375,
       "mae_yen": -380.023193359375,
-      "current_price": 511.79998779296875
+      "current_price": 511.5
     }
   ],
   "pending": null,
