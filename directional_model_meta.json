@@ -1,24 +1,24 @@
 {
-  "model_id": "a679143b199e6cec",
-  "training_date": "2026-10-02",
-  "training_data_end_date": "2026-10-01",
-  "train_cutoff": "2026-10-01",
-  "deployed_date": "2026-10-02",
+  "model_id": "9df81234e6cf9e83",
+  "training_date": "2026-10-07",
+  "training_data_end_date": "2026-10-06",
+  "train_cutoff": "2026-10-06",
+  "deployed_date": "2026-10-07",
   "validation_period": {
-    "start": "2026-07-03",
-    "end": "2026-10-01"
+    "start": "2026-07-08",
+    "end": "2026-10-06"
   },
-  "validation_trades": 17,
-  "validation_pf": 0.641,
-  "validation_win_rate": 52.94,
-  "validation_drawdown": -13.6,
-  "oos_pf": 0.641,
-  "oos_trades": 17,
-  "oos_max_dd_pct": -13.6,
+  "validation_trades": 15,
+  "validation_pf": 0.983,
+  "validation_win_rate": 46.67,
+  "validation_drawdown": -9.74,
+  "oos_pf": 0.983,
+  "oos_trades": 15,
+  "oos_max_dd_pct": -9.74,
   "policy_hash": {
     "strategy_policy.json": "cf106bdc4c56",
     "strategy_policy_up.json": "cfe6da4cc960"
   },
-  "deploy_reason": "現行モデルは評価不能(登録時5件<15件)のため、最低評価条件を満たす新モデルへ更新(チャレンジャー取引数=17件, PF=0.641, 最大DD=-13.6% vs 登録時PF=0.218[2026-09-12登録・5件])",
-  "previous_model_id": null
+  "deploy_reason": "チャレンジャーが現行モデルの登録時実績(投入時[2026-10-02]記録、直接比較不能[leaky]のため代用)を相対ゲート(+0.10以上)で上回るため更新(チャレンジャーPF=0.983 vs 登録時PF=0.641, チャレンジャー最大DD=-9.7% vs 登録時最大DD=-13.6%)",
+  "previous_model_id": "a679143b199e6cec"
 }
