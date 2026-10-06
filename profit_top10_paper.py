@@ -215,7 +215,7 @@ def mark_and_close(s,now,policy):
     remaining=[]; msgs=[]; hold_limit=max(1,int(policy.get('hold_days') or 1))
     for p in s['positions']:
         ep=float(p['entry_price']); sh=int(p.get('shares',0)); direction=p.get('direction','BUY'); entry_date=pd.Timestamp(p['entry_date'])
-        exit_price=reason=exit_dt=None
+        exit_price=reason=exit_dt=None; rollback_hold_limit=False
         prior_days=tse_trading_days_between(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date())-pd.Timedelta(days=1))
         if len(prior_days)>0:
             daily=download(p['ticker'],period='3mo')
@@ -231,6 +231,17 @@ def mark_and_close(s,now,policy):
                         elif lo<=p['tp']:exit_price,reason=float(p['tp']),'TP'
                         elif hi>=p['sl']:exit_price,reason=float(p['sl']),'SL'
                     if reason:exit_dt=ts;break
+                    # yfinanceのTSE 5分足には15:25のバーが存在しないため、下の当日
+                    # 5分足ループのHOLD_LIMIT判定は実質発火しない。ここでTP/SL未成立の
+                    # 日の時点で保有営業日数が上限に達していれば、その日の日足Closeで
+                    # 翌営業日にHOLD_LIMIT決済する(all_candidates_paper.evaluate_exits
+                    # のrollback分岐と同じ意図・同じexit_dt=その日15:30)。
+                    held_at_ts=count_tse_trading_days(entry_date+pd.Timedelta(days=1),ts)
+                    if held_at_ts>=hold_limit:
+                        exit_price,reason=float(b['Close']),'HOLD_LIMIT'
+                        exit_dt=pd.Timestamp.combine(pd.Timestamp(ts).date(),dtime(15,30))
+                        rollback_hold_limit=True
+                        break
         held=count_tse_trading_days(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date()))
         if exit_price is None:
             d=download_5m(p['ticker'])
@@ -246,14 +257,23 @@ def mark_and_close(s,now,policy):
                         if hi>=p['sl']:exit_price,reason=float(p['sl']),'SL'
                         elif lo<=p['tp']:exit_price,reason=float(p['tp']),'TP'
                     if reason:exit_dt=ts;break
+                    # 15:25のバーはyfinanceのTSE 5分足データに存在しない(最終バーは
+                    # 15:20)ため、このHOLD_LIMIT判定は実質発火しない。実際の決済は
+                    # 翌営業日実行時の上の日足rollback分岐(held_at_ts>=hold_limit)で
+                    # 行われる。
                     if held>=hold_limit and ts.time()>=FORCED_EXIT:exit_price,reason=float(b['Close']),'HOLD_LIMIT';exit_dt=ts;break
         cur=float(p.get('current_price',ep)); unreal=((cur-ep)*sh if direction=='BUY' else (ep-cur)*sh)-ep*sh*FEE_RATE-cur*sh*FEE_RATE; p['unrealized_pnl']=unreal
         if exit_price is None:remaining.append(p);continue
         gross=(exit_price-ep)*sh if direction=='BUY' else (ep-exit_price)*sh; pnl=gross-(ep+exit_price)*sh*FEE_RATE; s['capital']=float(s['capital'])+pnl; exit_value=exit_price*sh; total=s['capital']
         exit_date_str=str(pd.Timestamp(exit_dt).date()) if exit_dt is not None else str(now.date())
-        append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':exit_date_str,'exit_time':now.strftime('%H:%M'),'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'expected_value_pct':p.get('expected_value_pct',0),'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason','')})
+        exit_time_str=pd.Timestamp(exit_dt).strftime('%H:%M') if rollback_hold_limit and exit_dt is not None else now.strftime('%H:%M')
+        append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':exit_date_str,'exit_time':exit_time_str,'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'expected_value_pct':p.get('expected_value_pct',0),'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason','')})
         msgs.append(f"{'🟢' if pnl>=0 else '🔴'} 決済｜{p['company']}（{p['ticker']}）｜{direction}\n決済価格 {exit_price:,.1f}円｜{sh:,}株｜投資額 {p['invested_amount']:,.0f}円\n確定損益 {pnl:+,.0f}円｜💰総資産 {total:,.0f}円｜開始100万円から {total-INITIAL_CAPITAL:+,.0f}円")
-    s['positions']=remaining; s['peak']=max(float(s.get('peak',s['capital'])),float(s['capital'])); return msgs
+    s['positions']=remaining
+    new_peak=max(float(s.get('peak',s['capital'])),float(s['capital']))
+    dd=(new_peak-float(s['capital']))/new_peak*100 if new_peak else 0.0
+    s['max_dd']=max(float(s.get('max_dd',0) or 0),dd); s['peak']=new_peak
+    return msgs
 
 def _run():
     now=datetime.now(TZ); today=now.strftime('%Y-%m-%d'); policy_file,trend_result=select_policy_file(); policy=load_policy(policy_file); s=load_state(); reset_daily(s,today)
