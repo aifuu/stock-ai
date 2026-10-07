@@ -1,8 +1,8 @@
 {
   "positions": [],
   "pending": null,
-  "trade_date": "2026-10-06",
-  "trades_today": 1,
+  "trade_date": "2026-10-07",
+  "trades_today": 0,
   "last_exit_by_ticker": {
     "5301.T": "2026-10-05T14:25:45.080004+09:00",
     "6302.T": "2026-10-02T10:51:08.196853+09:00",
