@@ -77,12 +77,37 @@ def top1_changed(symbol, direction):
     if not symbol:
         return False
     state = _load_state()
-    if state.get("last_top1_ticker") == symbol and state.get("last_top1_direction") == direction:
+    today = now_jst().strftime("%Y-%m-%d")
+    # ★修正(2026-10-07): 前回TOP1を日付付きで保存し、日付が変わったら必ず「変化あり」
+    # とみなす。以前は前日の最後のTOP1が残り続け、翌日のTOP1が同じ銘柄だと
+    # その日の銘柄選定通知が一度も送られなかった。
+    if (
+        state.get("last_top1_date") == today
+        and state.get("last_top1_ticker") == symbol
+        and state.get("last_top1_direction") == direction
+    ):
         return False
+    state["last_top1_date"] = today
     state["last_top1_ticker"] = symbol
     state["last_top1_direction"] = direction
     _save_state(state)
     return True
+
+
+def no_candidates_first_today():
+    """本日初めて候補0件になったときだけTrueを返す(1日1回の「候補なし」通知用)。"""
+    state = _load_state()
+    today = now_jst().strftime("%Y-%m-%d")
+    if state.get("last_no_cand_date") == today:
+        return False
+    state["last_no_cand_date"] = today
+    _save_state(state)
+    return True
+
+
+def notify_no_candidates(scanned=None):
+    extra = f"(スキャン{scanned}銘柄)" if scanned is not None else ""
+    send_discord(f"🔍 銘柄選定\n📋 条件を満たす候補なし{extra}｜本日は見送り中", force=True)
 
 
 def notify_start(session):

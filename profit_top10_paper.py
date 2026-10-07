@@ -288,6 +288,11 @@ def _run():
             if discord_progress.top1_changed(top1.get('ticker',''),top1.get('direction','BUY')):
                 discord_progress.notify_selection_start(); discord_progress.notify_top10(cands); discord_progress.notify_top1(top1.get('ticker',''),top1.get('direction','BUY'),float(top1.get('score',0) or 0))
         except Exception as e: print(f'⚠️ discord_progress TOP1通知失敗: {e}')
+    else:
+        try:
+            if discord_progress.no_candidates_first_today():
+                discord_progress.notify_no_candidates(len(scanned) if hasattr(scanned,'__len__') else scanned)
+        except Exception as e: print(f'⚠️ discord_progress 候補なし通知失敗: {e}')
     opened=open_positions(s,policy,cands,today); save_state(s)
     entry_msgs=[
         f"🆕 エントリー｜{p['company']}（{p['ticker']}）｜{'買い' if p['direction']=='BUY' else '空売り'}\n"
