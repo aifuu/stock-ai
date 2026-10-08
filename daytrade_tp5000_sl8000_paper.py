@@ -123,11 +123,16 @@ the next bar on.
 Policy choice (C案, 2026-10): reads the single per-day decision in
 daily_decision.json (built once at 08:30 from confirmed closes only, see
 daily_decision.py) -- the exact same file the normal TOP10 track reads, so
-the two tracks can never run on different policies on the same day. New
-entries are blocked when the decision says entry_allowed=False (e.g. a
-DOWN day with no approved down policy), when the intraday crash brake has
-fired, or when the policy file changed after the decision was made. On a
-no-policy day the would-be TOP1 is written to the shadow log only.
+the two tracks can never run on different policies on the same day. On a
+DOWN day with no strategy_policy_down.json the decision falls back to
+strategy_policy.json and trades for real (policy_fallback=True; owner
+decision 2026-10-08). New entries are blocked when the decision says
+entry_allowed=False (e.g. trend data unavailable) or when the policy file
+changed after the decision was made; on such a no-trade day the would-be
+TOP1 is written to the shadow log only. While the intraday crash brake is
+active (sticky for the rest of the day) only new BUY entries are blocked:
+_select_top1() skips BUY candidates with reason 'brake_buy' and SHORT
+candidates remain selectable (exits always continue).
 policy_source on every row is 'daily_decision:<trend_data_as_of>'.
 
 Every row is written with track='daytrade_tp5000_sl8000' and
@@ -512,7 +517,7 @@ def _vwap_deviation_pct(bars, price, window=78):
     return (price - vwap) / vwap * 100.0
 
 
-def _select_top1(top10, cooldowns, now, budget=BUDGET_JPY):
+def _select_top1(top10, cooldowns, now, budget=BUDGET_JPY, block_buy=False):
     """Walks the already regime-filtered, profit_priority-ordered TOP10
     (run_profit_loop.scan_candidates_fixed()'s output -- the exact same
     ranking run_profit_loop.open_top1_only() uses) and returns
@@ -520,13 +525,18 @@ def _select_top1(top10, cooldowns, now, budget=BUDGET_JPY):
     of this track's own cooldown and affordable in at least one 100-share
     lot (or None if none qualify), and skipped is the ordered list of
     (ticker, reason) pairs for every higher-ranked candidate walked past
-    before it (reason is one of 'cooldown', 'no_price', 'budget') -- kept
-    for audit on the pending/history row.
+    before it (reason is one of 'brake_buy', 'cooldown', 'no_price',
+    'budget') -- kept for audit on the pending/history row. block_buy=True
+    (intraday crash brake active) skips every BUY candidate as 'brake_buy';
+    SHORT candidates are unaffected.
     """
     skipped = []
     for c in top10:
         ticker = str(c.get("ticker", "")).strip()
         if not ticker:
+            continue
+        if block_buy and str(c.get("direction", "BUY")).upper() == "BUY":
+            skipped.append((ticker, "brake_buy"))
             continue
         raw = cooldowns.get(ticker)
         if raw:
@@ -585,7 +595,11 @@ def _try_entry(state, now, today):
         print("⏸ daytrade: TOP10候補なし")
         return None
 
-    chosen, skipped = _select_top1(top10, state.setdefault("last_exit_by_ticker", {}), now)
+    block_buy = daily_decision.todays_crash_brake(now)
+    if block_buy:
+        print(f"🛑 daytrade: {daily_decision.CRASH_BRAKE_MESSAGE}")
+    chosen, skipped = _select_top1(top10, state.setdefault("last_exit_by_ticker", {}), now,
+                                   block_buy=block_buy)
     if chosen is None:
         print("⏸ daytrade: cooldown/予算により新規エントリ可能な候補なし")
         return None

@@ -157,6 +157,28 @@ class Top1MatchesLiveOpenTop1Only(unittest.TestCase):
         self.assertIsNone(chosen)
         self.assertEqual(skipped, [])
 
+    def test_brake_skips_buy_candidates_as_brake_buy_and_picks_short(self):
+        now = datetime(2026, 9, 25, 10, 0, tzinfo=TZ)
+        top10 = [
+            {"ticker": "7203.T", "direction": "BUY", "price": 3000.0},
+            {"ticker": "9984.T", "direction": "BUY", "price": 5000.0},
+            {"ticker": "8035.T", "direction": "SHORT", "price": 4000.0},
+        ]
+        chosen, skipped = dt._select_top1(top10, {}, now, block_buy=True)
+        self.assertEqual(chosen["ticker"], "8035.T")
+        self.assertEqual(skipped, [("7203.T", "brake_buy"), ("9984.T", "brake_buy")])
+        # ブレーキ無しなら従来どおり先頭のBUY
+        chosen, skipped = dt._select_top1(top10, {}, now)
+        self.assertEqual(chosen["ticker"], "7203.T")
+        self.assertEqual(skipped, [])
+
+    def test_brake_with_only_buy_candidates_returns_none(self):
+        now = datetime(2026, 9, 25, 10, 0, tzinfo=TZ)
+        top10 = [{"ticker": "7203.T", "direction": "BUY", "price": 3000.0}]
+        chosen, skipped = dt._select_top1(top10, {}, now, block_buy=True)
+        self.assertIsNone(chosen)
+        self.assertEqual(skipped, [("7203.T", "brake_buy")])
+
     def test_unaffordable_candidate_is_skipped(self):
         with _RegimeAndFeedbackPatched("neutral"):
             top10, _ = self._top10_via_scan_candidates_fixed()
@@ -316,23 +338,34 @@ class PolicyChoiceFromDailyDecision(unittest.TestCase):
         self.assertIsNone(policy_file)
         self.assertEqual(source, "blocked:no_approved_policy_for_down")
 
-    def test_crash_brake_blocks_new_entries(self):
+    def test_crash_brake_does_not_block_policy_choice(self):
+        # 急落ブレーキは新規の買いだけを止める(_select_top1でbrake_buyスキップ)。
+        # policy選択自体は止めないので、空売りは同じpolicyで継続できる。
         with patch.object(dt.daily_decision, "update_crash_brake",
-                          return_value=_decision(intraday_crash_brake=True)):
+                          return_value=_decision(intraday_crash_brake=True, policy_hash=None)), \
+             patch.object(dt.daily_decision, "entry_status", return_value=(True, None)):
             policy_file, source = dt.choose_policy_file_reusing_live_tick(now=datetime.now(TZ))
-        self.assertIsNone(policy_file)
-        self.assertEqual(source, "blocked:intraday_crash_brake")
+        self.assertEqual(policy_file, "strategy_policy_up.json")
+        self.assertEqual(source, "daily_decision:2026-10-07")
+
+    def test_down_day_fallback_policy_is_used_for_real_entries(self):
+        d = _decision(trend="down", policy_file="strategy_policy.json", policy_fallback=True)
+        with patch.object(dt.daily_decision, "update_crash_brake", return_value=d), \
+             patch.object(dt.daily_decision, "entry_status", return_value=(True, None)):
+            policy_file, source = dt.choose_policy_file_reusing_live_tick(now=datetime.now(TZ))
+        self.assertEqual(policy_file, "strategy_policy.json")
+        self.assertEqual(source, "daily_decision:2026-10-07")
 
     def test_try_entry_stops_before_loading_any_policy_when_blocked(self):
         state = dt.default_state() if hasattr(dt, "default_state") else {"positions": [], "pending": None}
         with patch.object(dt, "choose_policy_file_reusing_live_tick",
-                          return_value=(None, "blocked:intraday_crash_brake")), \
+                          return_value=(None, "blocked:policy_changed_since_decision")), \
              patch.object(live_p10, "load_policy") as lp, \
              patch.object(dt, "_record_daytrade_shadow") as shadow:
             out = dt._try_entry(state, datetime.now(TZ), datetime.now(TZ).strftime("%Y-%m-%d"))
         self.assertIsNone(out)
         lp.assert_not_called()
-        shadow.assert_not_called()  # 急落ブレーキ日はシャドー対象外
+        shadow.assert_not_called()  # policy差替え検知による停止はシャドー対象外
 
     def test_try_entry_records_shadow_on_no_policy_day(self):
         state = {"positions": [], "pending": None}
