@@ -305,6 +305,25 @@ class RealRepoFilesLoad(unittest.TestCase):
         self.assertEqual(dd.policy_hash(os.path.join(REPO, "strategy_policy_up.json")), "cfe6da4cc960")
         self.assertFalse(os.path.exists(os.path.join(REPO, "strategy_policy_down.json")))
 
+    def test_real_state_files_load_through_the_real_loaders(self):
+        tmp = tempfile.mkdtemp()
+        cwd = os.getcwd()
+        try:
+            for name in (live.STATE_FILE, dt.STATE_FILE):
+                src = os.path.join(REPO, name)
+                if os.path.exists(src):
+                    shutil.copy(src, os.path.join(tmp, name))
+            os.chdir(tmp)
+            with patch.object(live, "discord_send", side_effect=AssertionError("corrupt live state")), \
+                 patch.object(dt, "discord_send", side_effect=AssertionError("corrupt daytrade state")):
+                s_live = live.load_state()
+                s_dt = dt.load_state()
+            self.assertIsInstance(s_live["positions"], list)
+            self.assertIsInstance(s_dt["positions"], list)
+        finally:
+            os.chdir(cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_real_state_and_decision_files_load(self):
         for name in ("daily_decision.json", "profit_top10_paper_state.json",
                      "daytrade_tp5000_sl8000_state.json"):
