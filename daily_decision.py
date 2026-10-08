@@ -315,7 +315,7 @@ def record_shadow(decision, candidate, now=None, track="profit_top10", path=None
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--ensure", action="store_true", help="当日の判断が無ければ1回だけ作成(既にあれば何もしない)")
-    args = ap.parse_args(argv)
+    ap.parse_args(argv)
     d = ensure_decision()
     print(json.dumps(d, ensure_ascii=False, indent=2))
     return 0

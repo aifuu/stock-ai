@@ -6,7 +6,6 @@ import pandas as pd
 import yfinance as yf
 from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_model, features, atr, directional_score
 import paper_risk_policy
-import futures_trend
 import daily_decision
 import discord_progress
 import safe_state
