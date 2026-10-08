@@ -265,5 +265,148 @@ class FullDaySimulation(unittest.TestCase):
             self.assertGreaterEqual(float(row["hold_minutes"]), 0.0)
 
 
+# =====================================================================
+# DOWN日(down用policy無し → strategy_policy.jsonへフォールバックして実売買)
+# + 09:40の場中急落ブレーキ(新規買いのみ停止、空売り・決済は継続)を、実物の
+# daily_decision.py(判断ファイル・policyハッシュ・ブレーキ)で1日通して回す。
+# =====================================================================
+
+import shutil  # noqa: E402
+
+import daily_decision  # noqa: E402
+import futures_trend  # noqa: E402
+import numpy as np  # noqa: E402
+
+REPO = os.path.dirname(os.path.abspath(__file__))
+DOWN_CANDS = [
+    {"ticker": "7203.T", "direction": "BUY", "price": 3005.0, "tp": 3065.0, "sl": 2975.0, "score": 95.0,
+     "up_probability": 80.0, "down_probability": 5.0, "top10_rank": 1, "market_regime": "neutral"},
+    {"ticker": "8035.T", "direction": "SHORT", "price": 4000.0, "tp": 3960.0, "sl": 4020.0, "score": 50.0,
+     "up_probability": 10.0, "down_probability": 40.0, "top10_rank": 2, "market_regime": "neutral"},
+]
+BRAKE_FROM = "09:40"
+RECOVER_FROM = "10:30"
+
+
+def _down_futures_bars(*_a, **_k):
+    idx = pd.bdate_range(end="2026-09-24", periods=40)
+    return pd.DataFrame({"Close": np.linspace(70000, 60000, 40)}, index=idx)
+
+
+def _build_down_day_bars():
+    idx = pd.date_range(f"{DAY} 09:00", f"{DAY} 15:35", freq="5min")
+    close = [3005.0] * len(idx)
+    bars_7203 = pd.DataFrame({"Open": close, "High": [c + 2 for c in close], "Low": [c - 2 for c in close],
+                              "Close": close, "Volume": [1000] * len(idx)}, index=idx)
+    # 8035.T: 4000付近で横ばい → 11:00に3900へギャップダウン(空売りのTPを寄りで通過) → 以後横ばい
+    close8 = [4000.0 if ts < pd.Timestamp(f"{DAY} 11:00") else 3900.0 for ts in idx]
+    bars_8035 = pd.DataFrame({"Open": close8, "High": [c + 1 for c in close8], "Low": [c - 1 for c in close8],
+                              "Close": close8, "Volume": [1000] * len(idx)}, index=idx)
+    return {"7203.T": bars_7203, "8035.T": bars_8035}
+
+
+def _run_down_day_with_brake(work_dir, with_daytrade):
+    prev_cwd = os.getcwd()
+    os.chdir(work_dir)
+    try:
+        for f in ("strategy_policy.json", "strategy_policy_up.json"):
+            shutil.copy(os.path.join(REPO, f), f)
+        full_bars = _build_down_day_bars()
+        now_holder = {"now": None}
+        base = float(_down_futures_bars()["Close"].iloc[-1])
+
+        def fake_download_5m(ticker):
+            cutoff = pd.Timestamp(now_holder["now"].replace(tzinfo=None)) - DATA_DELAY
+            df = full_bars.get(ticker)
+            if df is None:
+                return None
+            sliced = df[df.index <= cutoff]
+            return sliced if not sliced.empty else None
+
+        def fake_intraday_price(*_a, **_k):
+            hm = now_holder["now"].strftime("%H:%M")
+            if hm < BRAKE_FROM:
+                return base * 0.995
+            if hm < RECOVER_FROM:
+                return base * 0.98  # -2.0% → ブレーキ発動
+            return base * 1.01  # 反発してもブレーキは当日中維持
+
+        def live_tick(tick_no, now):
+            # 本物のlive tick(profit_top10_paper._run)と同じく毎tick急落ブレーキを評価する
+            # (判断ファイルはlive/daytrade共有。liveのstate/historyには書かない)。
+            daily_decision.update_crash_brake(now)
+            with open(live_p10.STATE_FILE, "w", encoding="utf-8") as f:
+                f.write(f'{{"tick": {tick_no}, "capital": 1000000.0}}\n')
+            with open(live_p10.HISTORY_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{tick_no},live_row\n")
+            payload = {"timestamp": now.timestamp(), "raw": [dict(c) for c in DOWN_CANDS], "scanned": 225}
+            with open(dt.fast.SCAN_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+
+        decisions_policy = []
+        with patch.object(live_p10, "download_5m", side_effect=fake_download_5m), \
+             patch.object(live_loop, "_market_regime", return_value=("neutral", 0.0, 0.0)), \
+             patch.object(live_loop, "_load_feedback_weights", return_value={"BUY": 1.0, "SHORT": 1.0}), \
+             patch.object(futures_trend, "_download", side_effect=_down_futures_bars), \
+             patch.object(futures_trend, "intraday_price", side_effect=fake_intraday_price), \
+             patch.object(live_p10, "load_policy", return_value=POLICY):
+            daily_decision.ensure_decision(_tick_range()[0].replace(hour=8, minute=30))
+            for i, tick in enumerate(_tick_range()):
+                now_holder["now"] = tick
+                live_tick(i, tick)
+                if with_daytrade:
+                    dt.run(now=tick)
+                    d = daily_decision.ensure_decision(tick)
+                    decisions_policy.append((d["policy_file"], d["policy_hash"]))
+
+        with open(live_p10.STATE_FILE, "rb") as f:
+            live_state_bytes = f.read()
+        with open(live_p10.HISTORY_FILE, "rb") as f:
+            live_history_bytes = f.read()
+        history = pd.read_csv(dt.HISTORY_FILE) if os.path.exists(dt.HISTORY_FILE) else pd.DataFrame()
+        with open(daily_decision.DECISION_FILE, encoding="utf-8") as f:
+            final_decision = json.load(f)
+        return live_state_bytes, live_history_bytes, history, final_decision, decisions_policy
+    finally:
+        os.chdir(prev_cwd)
+
+
+class FullDayDownDayWithCrashBrake(unittest.TestCase):
+    def test_live_files_byte_identical_with_and_without_daytrade(self):
+        with tempfile.TemporaryDirectory() as d_with, tempfile.TemporaryDirectory() as d_without:
+            s_with, h_with, *_ = _run_down_day_with_brake(d_with, True)
+            s_without, h_without, *_ = _run_down_day_with_brake(d_without, False)
+        self.assertEqual(s_with, s_without)
+        self.assertEqual(h_with, h_without)
+
+    def test_down_day_trades_short_only_after_brake_and_keeps_exits(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, _, history, final_decision, decisions_policy = _run_down_day_with_brake(d, True)
+
+        # 判断: DOWN日、汎用policyへフォールバックして実売買、1日中同じpolicy
+        self.assertEqual(final_decision["trend"], "down")
+        self.assertEqual(final_decision["policy_file"], "strategy_policy.json")
+        self.assertTrue(final_decision["policy_fallback"])
+        self.assertTrue(final_decision["entry_allowed"])
+        self.assertEqual(len(set(decisions_policy)), 1)
+        # ブレーキは09:40に発動し、10:30以降に反発しても当日中は解除されない
+        self.assertTrue(final_decision["intraday_crash_brake"])
+        self.assertTrue(final_decision["crash_brake_time"].startswith(f"{DAY}T09:40"))
+
+        self.assertGreaterEqual(len(history), 1, history.to_dict("records"))
+        # ブレーキ中は一度もBUYを建てない(TOP1のBUYはbrake_buyで飛ばされる)
+        self.assertTrue((history["direction"] == "SHORT").all(), history.to_dict("records"))
+        self.assertTrue((history["policy_file"] == "strategy_policy.json").all())
+        first = history.iloc[0]
+        self.assertEqual(first["ticker"], "8035.T")
+        self.assertIn("7203.T:brake_buy", str(first["skipped"]))
+        self.assertEqual(pd.Timestamp(first["decision_time"]), pd.Timestamp(f"{DAY} 09:55:00"))
+        # 決済はブレーキ中も継続(11:00のギャップダウンで空売りTP)
+        self.assertEqual(first["result"], "TP")
+        self.assertEqual(first["exit_time"], "11:00")
+        for _, row in history.iterrows():
+            self.assertGreaterEqual(pd.Timestamp(row["fill_bar_time"]), pd.Timestamp(row["decision_time"]))
+
+
 if __name__ == "__main__":
     unittest.main()
