@@ -3,10 +3,10 @@
   "peak": 1000000.0,
   "max_dd": 3.5354761192257516,
   "positions": [],
-  "trade_count_date": "2026-10-07",
+  "trade_count_date": "2026-10-08",
   "trades_today": 0,
   "trades_by_ticker_today": {},
-  "daily_start_capital": 961815.2513077424,
+  "daily_start_capital": 964645.2388077425,
   "last_exit_by_ticker": {
     "5019.T": "2026-09-29T09:30:01.385801+09:00",
     "7267.T": "2026-10-07T09:35:01.329154+09:00"
