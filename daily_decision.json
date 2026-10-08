@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-09",
+  "decision_time": "2026-10-09T08:12:31+09:00",
+  "trend": "down",
+  "trend_reason": "急落補助条件: 前日確定比-1.52% <= -1.5%",
+  "trend_source": "futures",
+  "trend_data_as_of": "2026-10-08",
+  "ma_short": 69687.0,
+  "ma_long": 66395.5,
+  "last_confirmed_close": 68500.0,
+  "last_confirmed_change_pct": -0.015238642898217414,
+  "policy_file": "strategy_policy.json",
+  "policy_hash": "cf106bdc4c56",
+  "policy_fallback": true,
+  "entry_allowed": true,
+  "entry_block_reason": null,
+  "shadow_policy_file": null,
+  "shadow_policy_hash": null,
+  "intraday_crash_brake": false,
+  "crash_brake_time": null,
+  "crash_brake_reason": null
+}
