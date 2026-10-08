@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+import common
 import profit_top10_paper as app
 import all_candidates_paper as acp
 
@@ -67,6 +68,16 @@ def _state(positions, capital=1_000_000.0, peak=1_000_000.0, max_dd=0.0):
 
 def _no_intraday(*a, **k):
     return None
+
+
+def _trading_days_after(date_str, n):
+    """date_str の翌営業日からn営業日ぶんの日付(YYYY-MM-DD文字列)を返す
+    (common.tse_trading_days_between/jpholidayのみを使い、ネットワークは使わない)。"""
+    start = pd.Timestamp(date_str) + pd.Timedelta(days=1)
+    far_end = start + pd.Timedelta(days=n * 3 + 15)
+    days = common.tse_trading_days_between(start, far_end)
+    assert len(days) >= n, f"{date_str}以降の営業日が{n}日分取得できない"
+    return [d.strftime("%Y-%m-%d") for d in days[:n]]
 
 
 def _unexpected_5m_call(*a, **k):
@@ -354,54 +365,111 @@ class MultiplePositionsMixed(unittest.TestCase):
         self.assertEqual([p["ticker"] for p in s["positions"]], ["STAY.T"])
 
 
-class RealRepoStateReplay(unittest.TestCase):
-    """実リポジトリのprofit_top10_paper_state.json/historyを読み込み、
-    1回のmark_and_close()実行(10/05終値1670.5をモック)で7267.Tだけが決済され、
-    既存の履歴行や他のポジションは一切変更されないことを確認する。"""
+class RealRepoStateInvariantReplay(unittest.TestCase):
+    """実リポジトリのprofit_top10_paper_state.json/historyを読み込み、現在実際に
+    保有しているポジション(銘柄・保有日数は日々変わるため特定の銘柄をハード
+    コードしない)が何であっても、mark_and_close()が決定的なダミー日足データ
+    (ネットワーク不使用)の下で安全に動くことを検証する不変条件テスト。
 
-    def test_replay_real_state_closes_only_7267(self):
-        with open(os.path.join(REPO_ROOT, "profit_top10_paper_state.json"), encoding="utf-8") as f:
-            real_state = json.load(f)
+    実state/履歴ファイルが読めない、またはポジションが0件の場合はスキップする
+    (ネットワーク/実state依存の内容はテスト対象外とし、失敗扱いにしない)。
+    """
+
+    def setUp(self):
+        state_path = os.path.join(REPO_ROOT, "profit_top10_paper_state.json")
         history_path = os.path.join(REPO_ROOT, "profit_top10_paper_history.csv")
-        with open(history_path, "rb") as f:
-            history_before = f.read()
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                self.real_state = json.load(f)
+            with open(history_path, "rb") as f:
+                self.history_before = f.read()
+        except OSError:
+            self.skipTest("実state/履歴ファイルが読み込めないためスキップ")
+            return
+        if not self.real_state.get("positions"):
+            self.skipTest("実stateにポジションが存在しないためスキップ")
+        self.history_path = history_path
+        self.hold_limit = 3
 
-        s = copy.deepcopy(real_state)
-        tickers = [p["ticker"] for p in s["positions"]]
-        self.assertIn("7267.T", tickers)
-
-        now = datetime(2026, 10, 7, 9, 30, tzinfo=TZ)
-
-        def fake_download(ticker, period=None):
-            if ticker == "7267.T":
-                return _daily([
-                    ("2026-10-01", 1700.0, 1660.0, 1690.0),
-                    ("2026-10-02", 1710.0, 1665.0, 1695.0),
-                    ("2026-10-05", 1700.0, 1650.0, 1670.5),
-                ])
-            return None
-
-        captured = []
-        with patch("profit_top10_paper.download", side_effect=fake_download), \
-             patch("profit_top10_paper.download_5m", return_value=None), \
-             patch.object(app, "append_history", side_effect=lambda row: captured.append(row)):
-            app.mark_and_close(s, now, {"hold_days": 3})
-
-        remaining_tickers = [p["ticker"] for p in s["positions"]]
-        self.assertNotIn("7267.T", remaining_tickers)
-        self.assertEqual(len(captured), 1)
-        row = captured[0]
-        self.assertEqual(row["ticker"], "7267.T")
-        self.assertEqual(row["result"], "HOLD_LIMIT")
-        self.assertEqual(row["exit_price"], 1670.5)
-        self.assertEqual(row["exit_date"], "2026-10-05")
-        self.assertEqual(row["exit_time"], "15:30")
-        print("REAL STATE REPLAY history row:", json.dumps(row, ensure_ascii=False, default=str))
-        print("REAL STATE REPLAY new capital:", s["capital"])
-
-        with open(history_path, "rb") as f:
+    def _assert_history_file_untouched(self):
+        with open(self.history_path, "rb") as f:
             history_after = f.read()
-        self.assertEqual(history_before, history_after, "テストは実履歴ファイルに一切書き込んでいない")
+        self.assertEqual(self.history_before, history_after, "テストは実履歴ファイルに一切書き込んでいない")
+
+    def test_positions_within_hold_limit_stay_open(self):
+        """どのポジションも、保有営業日数が上限未到達の時点ではTP/SL/HOLD_LIMITの
+        いずれにも触れず開いたままであること(日足/5分足とも取得不可を模擬)。"""
+        for p in self.real_state["positions"]:
+            with self.subTest(ticker=p["ticker"]):
+                s = copy.deepcopy(self.real_state)
+                s["positions"] = [copy.deepcopy(p)]
+                capital_before = float(s["capital"])
+                max_dd_before = float(s.get("max_dd", 0) or 0)
+
+                now_date = _trading_days_after(p["entry_date"], 1)[0]
+                now = datetime.combine(
+                    pd.Timestamp(now_date).date(), datetime.min.time().replace(hour=9, minute=30)
+                ).replace(tzinfo=TZ)
+
+                with patch("profit_top10_paper.download", return_value=None), \
+                     patch("profit_top10_paper.download_5m", return_value=None), \
+                     patch.object(app, "append_history") as mocked_history:
+                    msgs = app.mark_and_close(s, now, {"hold_days": self.hold_limit})
+
+                self.assertEqual([x["ticker"] for x in s["positions"]], [p["ticker"]])
+                mocked_history.assert_not_called()
+                self.assertEqual(msgs, [])
+                self.assertAlmostEqual(s["capital"], capital_before, places=6)
+                self.assertGreaterEqual(s["max_dd"], max_dd_before)
+
+        self._assert_history_file_untouched()
+
+    def test_position_past_hold_limit_closes_with_correct_invariants(self):
+        """どのポジションも、保有営業日数が上限に達した時点の日足Closeで
+        HOLD_LIMIT決済され(exit_time=15:30/exit_date=上限到達日)、capitalは
+        記録されたpnlの分だけ正確に変化し、max_ddは減少しないこと。"""
+        for p in self.real_state["positions"]:
+            with self.subTest(ticker=p["ticker"]):
+                ep = float(p["entry_price"])
+                tp = float(p["tp"])
+                sl = float(p["sl"])
+                direction = p.get("direction", "BUY")
+                if direction == "BUY":
+                    self.assertTrue(sl < ep < tp, "前提: BUYはsl<entry<tp")
+                else:
+                    self.assertTrue(tp < ep < sl, "前提: SHORTはtp<entry<sl")
+
+                limit_days = _trading_days_after(p["entry_date"], self.hold_limit)
+                limit_day = limit_days[-1]
+                daily_df = _daily([(d, ep, ep, ep) for d in limit_days])
+                now_date = _trading_days_after(limit_day, 1)[0]
+                now = datetime.combine(
+                    pd.Timestamp(now_date).date(), datetime.min.time().replace(hour=9, minute=30)
+                ).replace(tzinfo=TZ)
+
+                s = copy.deepcopy(self.real_state)
+                s["positions"] = [copy.deepcopy(p)]
+                capital_before = float(s["capital"])
+                max_dd_before = float(s.get("max_dd", 0) or 0)
+
+                captured = []
+                with patch("profit_top10_paper.download", return_value=daily_df), \
+                     patch("profit_top10_paper.download_5m", side_effect=_unexpected_5m_call), \
+                     patch.object(app, "append_history", side_effect=lambda row: captured.append(row)):
+                    app.mark_and_close(s, now, {"hold_days": self.hold_limit})
+
+                self.assertEqual(s["positions"], [], "上限到達ポジションは決済されて除去される")
+                self.assertEqual(len(captured), 1)
+                row = captured[0]
+                self.assertEqual(row["ticker"], p["ticker"])
+                self.assertEqual(row["result"], "HOLD_LIMIT")
+                self.assertEqual(row["exit_price"], ep)
+                self.assertEqual(row["exit_date"], limit_day)
+                self.assertEqual(row["exit_time"], "15:30")
+                self.assertAlmostEqual(s["capital"], capital_before + row["pnl"], places=6)
+                self.assertGreaterEqual(s["max_dd"], max_dd_before)
+
+        self._assert_history_file_untouched()
 
 
 if __name__ == "__main__":
