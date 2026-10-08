@@ -15,9 +15,15 @@
      これは週次検証(historical_trend_series)が候補日dにtrend[d](d終値まで)を
      対応させ、翌営業日に建てる構造と一致する。
   3. 場中の急落(前日確定終値比 <= -CRASH_THRESHOLD)はpolicyを変えず、
-     intraday_crash_brake=Trueにして全トラックの新規エントリーを止める(当日中は解除しない)。
-  4. その日のtrendに対応する承認済みpolicyが無い場合(現状のDOWN日)は
-     entry_allowed=Falseで実売買なし。代わりにシャドー記録だけ残す。
+     intraday_crash_brake=Trueにして全トラックの新規「買い」だけを止める
+     (当日中は解除しない。新規空売りは日経レジームフィルターに従って継続、決済は常に継続)。
+     ★変更(2026-10-08 オーナー決定): 以前は新規の買い・空売りを両方止めていた。
+  4. DOWN日にstrategy_policy_down.jsonが無い場合は、2026-10-08以前と同じく
+     strategy_policy.jsonで実売買する(entry_allowed=True, policy_fallback=True)。
+     方向は従来どおり日経レジームフィルター(弱気→空売りのみ等)が決める。
+     ★変更(2026-10-08 オーナー決定): 以前はentry_allowed=Falseでシャドー記録のみだった。
+     UP日は従来どおりstrategy_policy_up.json(無ければ実売買なし)。
+     実売買しない日(確定データ取得不可など)だけ、シャドー記録を残す。
 
 判断ファイルの例:
 {
@@ -29,6 +35,7 @@
   "trend_data_as_of": "2026-10-07",
   "policy_file": "strategy_policy_up.json",
   "policy_hash": "xxxxxxxxxxxx",
+  "policy_fallback": false,
   "entry_allowed": true,
   "entry_block_reason": null,
   "shadow_policy_file": null,
@@ -55,6 +62,9 @@ POLICY_FILE = "strategy_policy.json"
 POLICY_FILE_UP = "strategy_policy_up.json"
 POLICY_FILE_DOWN = "strategy_policy_down.json"
 SCHEMA_VERSION = 1
+
+# 急落ブレーキの説明文(Discord/ログ共通。文言は固定)。
+CRASH_BRAKE_MESSAGE = "急落ブレーキ: 新規買い停止(空売りは継続)"
 
 SHADOW_COLUMNS = [
     "date", "time", "ticker", "company", "direction", "price", "tp", "sl",
@@ -102,6 +112,7 @@ def compute_decision(now=None):
         "last_confirmed_change_pct": t.get("daily_change_pct"),
         "policy_file": None,
         "policy_hash": None,
+        "policy_fallback": False,
         "entry_allowed": False,
         "entry_block_reason": None,
         "shadow_policy_file": None,
@@ -116,6 +127,12 @@ def compute_decision(now=None):
     elif os.path.exists(candidate):
         decision["policy_file"] = candidate
         decision["policy_hash"] = policy_hash(candidate)
+        decision["entry_allowed"] = True
+    elif trend == futures_trend.DOWN and os.path.exists(POLICY_FILE):
+        # DOWN日でdown専用policyが無い → 2026-10-08以前と同じく汎用policyで実売買。
+        decision["policy_file"] = POLICY_FILE
+        decision["policy_hash"] = policy_hash(POLICY_FILE)
+        decision["policy_fallback"] = True
         decision["entry_allowed"] = True
     else:
         decision["entry_block_reason"] = f"no_approved_policy_for_{trend}"
@@ -178,23 +195,43 @@ def ensure_decision(now=None, path=None):
     print(
         f"🗓 daily_decision作成: date={decision['date']} trend={decision['trend']} "
         f"data_as_of={decision['trend_data_as_of']} policy={decision['policy_file']} "
-        f"entry_allowed={decision['entry_allowed']} block={decision['entry_block_reason']}"
+        f"fallback={decision.get('policy_fallback')} entry_allowed={decision['entry_allowed']} block={decision['entry_block_reason']}"
     )
     return decision
 
 
 def entry_status(decision):
-    """(新規エントリー可否, 理由)。policyが朝の判断後に差し替わっていたら止める。"""
+    """(新規エントリー可否, 理由)。policyが朝の判断後に差し替わっていたら止める。
+
+    急落ブレーキはここでは見ない(新規の買いだけを止めるため、buy_blocked_by_crash_brake()
+    で各トラックが候補から買いを除外する。空売りと決済は継続)。
+    """
     if not decision.get("entry_allowed"):
         return False, decision.get("entry_block_reason") or "entry_not_allowed"
-    if decision.get("intraday_crash_brake"):
-        return False, "intraday_crash_brake"
     pf = decision.get("policy_file")
     if not pf or not os.path.exists(pf):
         return False, "policy_file_missing"
     if policy_hash(pf) != decision.get("policy_hash"):
         return False, "policy_changed_since_decision"
     return True, None
+
+
+def buy_blocked_by_crash_brake(decision):
+    """急落ブレーキ発動中なら新規の買い(BUY)を止める。空売り・決済は止めない。"""
+    return bool(decision and decision.get("intraday_crash_brake"))
+
+
+def drop_buys_if_braked(decision, candidates):
+    """急落ブレーキ発動中は候補から新規BUYを除いたリストを返す(順序は維持)。"""
+    if not buy_blocked_by_crash_brake(decision):
+        return list(candidates or [])
+    return [c for c in (candidates or []) if str(c.get("direction", "BUY")).upper() != "BUY"]
+
+
+def todays_crash_brake(now=None, path=None):
+    """判断ファイルを読むだけ(作成・再判定しない)で、当日の急落ブレーキ状態を返す。"""
+    d = _read(path or DECISION_FILE)
+    return bool(d and d.get("date") == _now(now).date().isoformat() and d.get("intraday_crash_brake"))
 
 
 def update_crash_brake(now=None, path=None, price_fetcher=None):
@@ -228,12 +265,17 @@ def update_crash_brake(now=None, path=None, price_fetcher=None):
             f"<= -{futures_trend.CRASH_THRESHOLD * 100:.1f}%"
         )
         _atomic_write(path, decision)
-        print(f"🛑 急落ブレーキ発動: {decision['crash_brake_reason']} → 全トラック新規停止(決済は継続)")
+        print(f"🛑 {CRASH_BRAKE_MESSAGE}｜{decision['crash_brake_reason']}")
     return decision
 
 
 def record_shadow(decision, candidate, now=None, track="profit_top10", path=None):
-    """実売買しない日の「もし買っていたら」を記録する(同一銘柄は1日1回まで)。"""
+    """実売買しない日(entry_allowed=False)の「もし買っていたら」を記録する(同一銘柄は1日1回まで)。
+
+    実売買する日(DOWN日のフォールバックを含む)には呼ばれない。
+    """
+    if decision.get("entry_allowed"):
+        return False  # 実売買する日はシャドー記録しない
     path = path or SHADOW_FILE
     now = _now(now)
     today = now.date().isoformat()

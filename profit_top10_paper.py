@@ -23,7 +23,9 @@ def select_policy_file():
     今は前日までの確定終値で08:30に1回だけ作った判断を全トラックで共有する。
 
     戻り値: (policy_file, result)
-      policy_file: 実売買に使うpolicy。実売買しない日(entry_allowed=False)は、
+      policy_file: 実売買に使うpolicy。DOWN日にdown用policyが無い場合は、
+        2026-10-08以前と同じくPOLICY_FILEで実売買する(result["policy_fallback"]=True)。
+        実売買しない日(entry_allowed=False)は、
         シャドー記録と既存の読み取り専用利用者(ALLトラックの凍結policy対応付け)の
         互換のため、従来どおりPOLICY_FILEを返す。売買可否は必ずresultで判定すること。
       result: daily_decisionの中身+互換キー(reason/source)。
@@ -34,7 +36,7 @@ def select_policy_file():
     result["source"] = d.get("trend_source")
     policy_file = d.get("policy_file") if d.get("entry_allowed") else POLICY_FILE
     print(f'📈 本日の判断(固定): trend={d.get("trend")}｜{d.get("trend_reason")}｜確定データ {d.get("trend_data_as_of")}まで｜'
-          f'policy={d.get("policy_file")}｜entry_allowed={d.get("entry_allowed")}｜block={d.get("entry_block_reason")}')
+          f'policy={d.get("policy_file")}｜fallback={d.get("policy_fallback")}｜entry_allowed={d.get("entry_allowed")}｜block={d.get("entry_block_reason")}')
     return policy_file, result
 INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000')); TOP_N=10; MAX_TRADES_PER_TICKER_PER_DAY=10; MAX_TOTAL_TRADES_PER_DAY=30; FEE_RATE=float(os.getenv('INTRADAY_FEE_RATE','0.00055')); FORCED_EXIT=dtime(15,25); SHORT_ENABLED=os.getenv('ENABLE_SHORT_PAPER','1').lower() in ('1','true','yes','on'); LOT_SIZE=100
 
@@ -286,10 +288,11 @@ def _run():
         except Exception as e: print(f'⚠️ discord_progress notify_progress失敗: {e}')
         return
     closed=mark_and_close(s,now,policy)
-    # 場中急落ブレーキはpolicyを変えず新規だけ止める(決済は上で継続済み)。
+    # 場中急落ブレーキはpolicyを変えず新規の買いだけ止める(空売りは継続、決済は上で継続済み)。
     try: trend_result={**trend_result,**(daily_decision.update_crash_brake(now) or {})}
     except Exception as e: print(f'⚠️ 急落ブレーキ評価失敗(状態維持): {e}')
     entry_ok,block_reason=daily_decision.entry_status(trend_result)
+    buy_braked=daily_decision.buy_blocked_by_crash_brake(trend_result)
     cands,scanned=scan(policy)
     if cands:
         top1=cands[0]
@@ -303,7 +306,11 @@ def _run():
                 discord_progress.notify_no_candidates(len(scanned) if hasattr(scanned,'__len__') else scanned)
         except Exception as e: print(f'⚠️ discord_progress 候補なし通知失敗: {e}')
     if entry_ok:
-        opened=open_positions(s,policy,cands,today)
+        # 急落ブレーキ中はopen_positions(=open_top1_only)に渡す前に新規BUY候補を除く。
+        # SHORT候補はそのまま渡す(日経レジームフィルターは従来どおりopen側で適用)。
+        entry_cands=daily_decision.drop_buys_if_braked(trend_result,cands) if buy_braked else cands
+        if buy_braked: print(f'🛑 {daily_decision.CRASH_BRAKE_MESSAGE}｜候補 {len(cands)}→{len(entry_cands)}')
+        opened=open_positions(s,policy,entry_cands,today)
     else:
         opened=[]
         print(f'⏸ 本日の判断により新規エントリー停止: {block_reason}')
@@ -327,7 +334,8 @@ def _run():
          f'📅 {today} {now:%H:%M} JST｜⚠️ 実注文なし\n対象225銘柄(日経225)｜取得成功 {scanned}｜候補 {len(cands)}｜新規 {len(opened)}件\n'
          f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}｜TP×{policy["atr_tp_multiplier"]:.1f}｜SL×{policy["atr_sl_multiplier"]:.1f}｜日経フィルター{"ON" if policy.get("nikkei_filter") else "OFF"}｜最大保有{policy["hold_days"]}営業日\n'
          f'📈 本日の判断: {trend_result.get("trend")}｜{trend_result.get("reason")}｜確定データ {trend_result.get("trend_data_as_of")}まで｜使用policy: {policy_file}\n'
-         + (f'⛔ 新規停止中: {block_reason}\n' if not entry_ok else '') +
+         + (f'⛔ 新規停止中: {block_reason}\n' if not entry_ok else '')
+         + (f'🛑 {daily_decision.CRASH_BRAKE_MESSAGE}\n' if entry_ok and buy_braked else '') +
          f'💰総資産 {equity:,.0f}円｜本日 {daily:+,.0f}円｜累計 {cum:+.2f}%\n'
          f'📦 保有 {len(s["positions"])}件\n' + ('\n'.join(rows) if rows else 'なし'))
     for m in closed: discord_send(m)
