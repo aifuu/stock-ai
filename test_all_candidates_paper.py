@@ -88,22 +88,23 @@ class TrendMappingMatchesLiveDecision(unittest.TestCase):
         self.assertEqual(acp.choose_frozen_policy_file("strategy_policy_down.json"), acp.FROZEN_POLICY_FILE)
 
     def test_matches_live_select_policy_file_up_case(self):
-        fake_result = {"trend": "up", "reason": "test", "source": "futures"}
-        with patch("profit_top10_paper.futures_trend.detect_futures_trend", return_value=fake_result), \
-             patch("profit_top10_paper.futures_trend.log_daily_trend"), \
-             patch("profit_top10_paper.os.path.exists", return_value=True):
+        fake_decision = {"trend": "up", "trend_reason": "test", "trend_source": "futures",
+                         "policy_file": live.POLICY_FILE_UP, "entry_allowed": True}
+        with patch("profit_top10_paper.daily_decision.ensure_decision", return_value=fake_decision):
             live_file, live_result = live.select_policy_file()
         self.assertEqual(live_file, live.POLICY_FILE_UP)
         self.assertEqual(acp.choose_frozen_policy_file(live_file), acp.FROZEN_POLICY_FILE_UP)
         self.assertEqual(live_result["trend"], "up")
 
     def test_matches_live_select_policy_file_down_case_falls_back_to_normal(self):
-        fake_result = {"trend": "down", "reason": "test", "source": "futures"}
-        # strategy_policy_down.json は存在しない -> live自体もPOLICY_FILEへフォールバックする
-        with patch("profit_top10_paper.futures_trend.detect_futures_trend", return_value=fake_result), \
-             patch("profit_top10_paper.futures_trend.log_daily_trend"), \
-             patch("profit_top10_paper.os.path.exists", return_value=False):
+        # strategy_policy_down.json は存在しない -> 実売買なし(entry_allowed=False)。
+        # 互換のためファイル名はPOLICY_FILEを返し、ALLトラックは凍結normalへ対応付く。
+        fake_decision = {"trend": "down", "trend_reason": "test", "trend_source": "futures",
+                         "policy_file": None, "entry_allowed": False,
+                         "entry_block_reason": "no_approved_policy_for_down"}
+        with patch("profit_top10_paper.daily_decision.ensure_decision", return_value=fake_decision):
             live_file, live_result = live.select_policy_file()
+        self.assertFalse(live_result["entry_allowed"])
         self.assertEqual(live_file, live.POLICY_FILE)
         self.assertEqual(acp.choose_frozen_policy_file(live_file), acp.FROZEN_POLICY_FILE)
         self.assertTrue(acp.choose_frozen_policy_file(live_file) != acp.FROZEN_POLICY_FILE_UP)

@@ -285,59 +285,66 @@ class TpSlPricesSolveExactNetYen(unittest.TestCase):
 
 
 # =====================================================================
-# ポリシー選択: 同一tickのlive判定(futures_trend_history.csv)を再利用する
+# ポリシー選択(C案): daily_decision.jsonの当日判断だけを使う
 # =====================================================================
 
-class PolicyChoiceReusesLiveTick(unittest.TestCase):
-    def test_reuses_todays_row_without_calling_select_policy_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "futures_trend_history.csv")
-            today = datetime.now(TZ).strftime("%Y-%m-%d")
-            pd.DataFrame([{"date": today, "trend": "down"}]).to_csv(path, index=False)
-            with patch.object(live_p10, "select_policy_file") as sp:
-                policy_file, source = dt.choose_policy_file_reusing_live_tick(
-                    now=datetime.now(TZ), history_path=path
-                )
-            sp.assert_not_called()
-        self.assertEqual(source, "reused_today_row")
-        # strategy_policy_down.json is not a committed live file -> falls back to POLICY_FILE
-        self.assertEqual(policy_file, live_p10.POLICY_FILE)
+def _decision(**kw):
+    d = {"date": datetime.now(TZ).strftime("%Y-%m-%d"), "trend": "up",
+         "trend_data_as_of": "2026-10-07", "policy_file": "strategy_policy_up.json",
+         "policy_hash": "x", "entry_allowed": True, "entry_block_reason": None,
+         "shadow_policy_file": None, "intraday_crash_brake": False}
+    d.update(kw)
+    return d
 
-    def test_reused_up_trend_maps_to_policy_file_up(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "futures_trend_history.csv")
-            today = datetime.now(TZ).strftime("%Y-%m-%d")
-            pd.DataFrame([{"date": today, "trend": "up"}]).to_csv(path, index=False)
-            with patch.object(live_p10, "select_policy_file") as sp:
-                policy_file, source = dt.choose_policy_file_reusing_live_tick(
-                    now=datetime.now(TZ), history_path=path
-                )
-            sp.assert_not_called()
-        self.assertEqual(source, "reused_today_row")
-        self.assertEqual(policy_file, live_p10.POLICY_FILE_UP)
 
-    def test_falls_back_when_no_row_for_today(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "futures_trend_history.csv")
-            pd.DataFrame([{"date": "2000-01-01", "trend": "up"}]).to_csv(path, index=False)
-            with patch.object(live_p10, "select_policy_file",
-                               return_value=("strategy_policy_up.json", {"trend": "up"})) as sp:
-                policy_file, source = dt.choose_policy_file_reusing_live_tick(
-                    now=datetime.now(TZ), history_path=path
-                )
-            sp.assert_called_once()
-        self.assertEqual(source, "fallback_select_policy_file")
+class PolicyChoiceFromDailyDecision(unittest.TestCase):
+    def test_uses_decision_policy_and_records_data_as_of(self):
+        with patch.object(dt.daily_decision, "update_crash_brake", return_value=_decision()), \
+             patch.object(dt.daily_decision, "entry_status", return_value=(True, None)), \
+             patch.object(live_p10, "select_policy_file") as sp:
+            policy_file, source = dt.choose_policy_file_reusing_live_tick(now=datetime.now(TZ))
+        sp.assert_not_called()
         self.assertEqual(policy_file, "strategy_policy_up.json")
+        self.assertEqual(source, "daily_decision:2026-10-07")
 
-    def test_missing_file_falls_back(self):
-        with patch.object(live_p10, "select_policy_file",
-                           return_value=("strategy_policy.json", {"trend": "up"})) as sp:
-            policy_file, source = dt.choose_policy_file_reusing_live_tick(
-                now=datetime.now(TZ), history_path="/nonexistent/futures_trend_history.csv"
-            )
-        sp.assert_called_once()
-        self.assertEqual(source, "fallback_select_policy_file")
-        self.assertEqual(policy_file, "strategy_policy.json")
+    def test_blocked_day_returns_none_never_falls_back_to_generic_policy(self):
+        d = _decision(trend="down", policy_file=None, entry_allowed=False,
+                      entry_block_reason="no_approved_policy_for_down",
+                      shadow_policy_file="strategy_policy.json")
+        with patch.object(dt.daily_decision, "update_crash_brake", return_value=d):
+            policy_file, source = dt.choose_policy_file_reusing_live_tick(now=datetime.now(TZ))
+        self.assertIsNone(policy_file)
+        self.assertEqual(source, "blocked:no_approved_policy_for_down")
+
+    def test_crash_brake_blocks_new_entries(self):
+        with patch.object(dt.daily_decision, "update_crash_brake",
+                          return_value=_decision(intraday_crash_brake=True)):
+            policy_file, source = dt.choose_policy_file_reusing_live_tick(now=datetime.now(TZ))
+        self.assertIsNone(policy_file)
+        self.assertEqual(source, "blocked:intraday_crash_brake")
+
+    def test_try_entry_stops_before_loading_any_policy_when_blocked(self):
+        state = dt.default_state() if hasattr(dt, "default_state") else {"positions": [], "pending": None}
+        with patch.object(dt, "choose_policy_file_reusing_live_tick",
+                          return_value=(None, "blocked:intraday_crash_brake")), \
+             patch.object(live_p10, "load_policy") as lp, \
+             patch.object(dt, "_record_daytrade_shadow") as shadow:
+            out = dt._try_entry(state, datetime.now(TZ), datetime.now(TZ).strftime("%Y-%m-%d"))
+        self.assertIsNone(out)
+        lp.assert_not_called()
+        shadow.assert_not_called()  # 急落ブレーキ日はシャドー対象外
+
+    def test_try_entry_records_shadow_on_no_policy_day(self):
+        state = {"positions": [], "pending": None}
+        with patch.object(dt, "choose_policy_file_reusing_live_tick",
+                          return_value=(None, "blocked:no_approved_policy_for_down")), \
+             patch.object(live_p10, "load_policy") as lp, \
+             patch.object(dt, "_record_daytrade_shadow") as shadow:
+            out = dt._try_entry(state, datetime.now(TZ), datetime.now(TZ).strftime("%Y-%m-%d"))
+        self.assertIsNone(out)
+        lp.assert_not_called()
+        shadow.assert_called_once()
+        self.assertIsNone(state["pending"])
 
 
 # =====================================================================

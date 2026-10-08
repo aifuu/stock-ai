@@ -96,7 +96,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py daytrade_tp5000_sl8000_paper.py
+          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py daytrade_tp5000_sl8000_paper.py daily_decision.py futures_trend.py
 
       - name: Verify Nikkei 225 tickers
         run: |
@@ -115,6 +115,12 @@ jobs:
               counts.append(len(vals)); print(f'✅ {f}: {len(vals)}銘柄・重複なし')
           if len(set(counts))!=1: raise SystemExit(f'❌ 3ファイルの銘柄数不一致: {counts}')
           PY
+
+      - name: Fix today's decision (daily_decision.json, confirmed closes only)
+        # C案: その日の判断は1日1回だけ作り全トラックで共有する。既に当日分があれば
+        # 何もしない(PMセッションやジョブ再実行で作り直さない)。失敗しても各トラックが
+        # 最初のtickで同じ確定終値から同じ判断を作るのでセッションは止めない。
+        run: python daily_decision.py --ensure || echo '⚠️ daily_decision作成失敗(最初のtickで再試行)'
 
       - name: Morning premarket phase marker
         run: python intraday_scheduler.py --phase premarket
@@ -267,7 +273,7 @@ jobs:
 
             timeout 90 python daytrade_tp5000_sl8000_paper.py || echo '⚠️ daytrade別枠tick失敗(無視してliveループを継続)'
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_paper_history.recovery.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json daytrade_tp5000_sl8000_state.json daytrade_tp5000_sl8000_history.csv daytrade_tp5000_sl8000_history.recovery.csv daytrade_tp5000_sl8000_daily.csv; do
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_paper_history.recovery.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json daytrade_tp5000_sl8000_state.json daytrade_tp5000_sl8000_history.csv daytrade_tp5000_sl8000_history.recovery.csv daytrade_tp5000_sl8000_daily.csv daily_decision.json down_day_shadow_trades.csv; do
               if [ -f "$f" ]; then git add "$f"; fi
             done
 
@@ -343,6 +349,8 @@ jobs:
             daytrade_tp5000_sl8000_state.json
             daytrade_tp5000_sl8000_history.csv
             daytrade_tp5000_sl8000_daily.csv
+            daily_decision.json
+            down_day_shadow_trades.csv
 
   session_pm:
     needs: [session_am]
@@ -416,7 +424,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py daytrade_tp5000_sl8000_paper.py
+          python -m py_compile nikkei225_universe.py apply_expanded_universe.py intraday_scheduler.py run_profit_loop.py paper_fast_entrypoint.py paper_profit_entrypoint.py paper_risk_policy.py daily_model_retrain.py walk_forward.py adversarial_strategy_validator.py adversarial_oos_diagnostic.py multi_oos_profit_validator.py build_verified_profit_policy.py daily_directional_top1.py profit_top10_paper.py profit_top10_monthly_performance.py intraday_directional_top1_cycle.py daytrade_tp5000_sl8000_paper.py daily_decision.py futures_trend.py
 
       - name: Verify Nikkei 225 tickers
         run: |
@@ -584,7 +592,7 @@ jobs:
 
             timeout 90 python daytrade_tp5000_sl8000_paper.py || echo '⚠️ daytrade別枠tick失敗(無視してliveループを継続)'
 
-            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_paper_history.recovery.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json daytrade_tp5000_sl8000_state.json daytrade_tp5000_sl8000_history.csv daytrade_tp5000_sl8000_history.recovery.csv daytrade_tp5000_sl8000_daily.csv; do
+            for f in profit_top10_paper_state.json profit_top10_paper_history.csv profit_top10_paper_history.recovery.csv profit_top10_monthly_performance.csv intraday_scheduler_state.json futures_trend_history.csv discord_progress_state.json daytrade_tp5000_sl8000_state.json daytrade_tp5000_sl8000_history.csv daytrade_tp5000_sl8000_history.recovery.csv daytrade_tp5000_sl8000_daily.csv daily_decision.json down_day_shadow_trades.csv; do
               if [ -f "$f" ]; then git add "$f"; fi
             done
 
@@ -660,3 +668,5 @@ jobs:
             daytrade_tp5000_sl8000_state.json
             daytrade_tp5000_sl8000_history.csv
             daytrade_tp5000_sl8000_daily.csv
+            daily_decision.json
+            down_day_shadow_trades.csv

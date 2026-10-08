@@ -7,6 +7,7 @@ import yfinance as yf
 from daily_directional_top1 import TICKERS, NAMES, download, make_nikkei, load_model, features, atr, directional_score
 import paper_risk_policy
 import futures_trend
+import daily_decision
 import discord_progress
 import safe_state
 from common import is_tse_trading_day, tse_trading_days_between, count_tse_trading_days
@@ -14,24 +15,27 @@ from common import is_tse_trading_day, tse_trading_days_between, count_tse_tradi
 TZ=ZoneInfo('Asia/Tokyo'); POLICY_FILE='strategy_policy.json'; POLICY_FILE_UP='strategy_policy_up.json'; POLICY_FILE_DOWN='strategy_policy_down.json'; STATE_FILE='profit_top10_paper_state.json'; HISTORY_FILE='profit_top10_paper_history.csv'; MONTHLY_FILE='profit_top10_monthly_performance.csv'
 
 def select_policy_file():
-    """先物トレンド(案3)に応じて、その日使うpolicyファイルを選ぶ。
+    """その日使うpolicyファイルを、daily_decision.json(1日1回だけ固定)から返す。
 
-    上昇用/下落用の個別policyファイルが両方揃っていない間は、
-    既存の単一strategy_policy.jsonにフォールバックする(安全側の既定動作)。
-    判定結果は本番選定には使わず、futures_trend_history.csvへ記録するだけの
-    週次専用戦略検討用データとしても蓄積される。
+    ★変更(2026-10, C案): 以前はtickごとにdetect_futures_trend()で当日の未確定足を
+    含めて再判定していたため、場中の急落でtrendが反転し、存在しないdown用の代わりに
+    strategy_policy.jsonへフォールバックして未検証条件で売買していた。
+    今は前日までの確定終値で08:30に1回だけ作った判断を全トラックで共有する。
+
+    戻り値: (policy_file, result)
+      policy_file: 実売買に使うpolicy。実売買しない日(entry_allowed=False)は、
+        シャドー記録と既存の読み取り専用利用者(ALLトラックの凍結policy対応付け)の
+        互換のため、従来どおりPOLICY_FILEを返す。売買可否は必ずresultで判定すること。
+      result: daily_decisionの中身+互換キー(reason/source)。
     """
-    result = futures_trend.detect_futures_trend()
-    try:
-        futures_trend.log_daily_trend(result)
-    except Exception as e:
-        print(f'⚠️ futures_trend記録失敗: {e}')
-    candidate = POLICY_FILE_DOWN if result.get('trend') == futures_trend.DOWN else POLICY_FILE_UP
-    if os.path.exists(candidate):
-        print(f'📈 先物トレンド判定: {result.get("trend")}｜{result.get("reason")}｜使用policy: {candidate}')
-        return candidate, result
-    print(f'📈 先物トレンド判定: {result.get("trend")}｜{result.get("reason")}｜{candidate}未整備のため{POLICY_FILE}を使用')
-    return POLICY_FILE, result
+    d = daily_decision.ensure_decision()
+    result = dict(d)
+    result["reason"] = d.get("trend_reason")
+    result["source"] = d.get("trend_source")
+    policy_file = d.get("policy_file") if d.get("entry_allowed") else POLICY_FILE
+    print(f'📈 本日の判断(固定): trend={d.get("trend")}｜{d.get("trend_reason")}｜確定データ {d.get("trend_data_as_of")}まで｜'
+          f'policy={d.get("policy_file")}｜entry_allowed={d.get("entry_allowed")}｜block={d.get("entry_block_reason")}')
+    return policy_file, result
 INITIAL_CAPITAL=float(os.getenv('AI_INITIAL_CAPITAL','1000000')); TOP_N=10; MAX_TRADES_PER_TICKER_PER_DAY=10; MAX_TOTAL_TRADES_PER_DAY=30; FEE_RATE=float(os.getenv('INTRADAY_FEE_RATE','0.00055')); FORCED_EXIT=dtime(15,25); SHORT_ENABLED=os.getenv('ENABLE_SHORT_PAPER','1').lower() in ('1','true','yes','on'); LOT_SIZE=100
 
 def discord_send(message,required=False):
@@ -281,7 +285,12 @@ def _run():
         try: discord_progress.notify_progress(f'🤖 PROFIT LOOP｜待機\n{today} {now:%H:%M} JST\n市場時間外｜実注文なし')
         except Exception as e: print(f'⚠️ discord_progress notify_progress失敗: {e}')
         return
-    closed=mark_and_close(s,now,policy); cands,scanned=scan(policy)
+    closed=mark_and_close(s,now,policy)
+    # 場中急落ブレーキはpolicyを変えず新規だけ止める(決済は上で継続済み)。
+    try: trend_result={**trend_result,**(daily_decision.update_crash_brake(now) or {})}
+    except Exception as e: print(f'⚠️ 急落ブレーキ評価失敗(状態維持): {e}')
+    entry_ok,block_reason=daily_decision.entry_status(trend_result)
+    cands,scanned=scan(policy)
     if cands:
         top1=cands[0]
         try:
@@ -293,7 +302,17 @@ def _run():
             if discord_progress.no_candidates_first_today():
                 discord_progress.notify_no_candidates(len(scanned) if hasattr(scanned,'__len__') else scanned)
         except Exception as e: print(f'⚠️ discord_progress 候補なし通知失敗: {e}')
-    opened=open_positions(s,policy,cands,today); save_state(s)
+    if entry_ok:
+        opened=open_positions(s,policy,cands,today)
+    else:
+        opened=[]
+        print(f'⏸ 本日の判断により新規エントリー停止: {block_reason}')
+        # 実売買しない日(承認済みpolicyが無いtrend)は「もし買っていたら」だけ記録する。
+        # 急落ブレーキ・policy差替え検知による停止はシャドー対象外(判断自体は有効な日のため)。
+        if cands and not trend_result.get('entry_allowed') and trend_result.get('shadow_policy_file'):
+            try: daily_decision.record_shadow(trend_result,cands[0],now,track='profit_top10')
+            except Exception as e: print(f'⚠️ シャドー記録失敗: {e}')
+    save_state(s)
     entry_msgs=[
         f"🆕 エントリー｜{p['company']}（{p['ticker']}）｜{'買い' if p['direction']=='BUY' else '空売り'}\n"
         f"取得価格 {p['entry_price']:,.1f}円｜{p['shares']:,}株｜投資額 {p['invested_amount']:,.0f}円\n"
@@ -307,7 +326,8 @@ def _run():
     msg=('🤖 利益優先ループ｜TOP10 ペーパートレード\n━━━━━━━━━━━━━━━━━━\n'
          f'📅 {today} {now:%H:%M} JST｜⚠️ 実注文なし\n対象225銘柄(日経225)｜取得成功 {scanned}｜候補 {len(cands)}｜新規 {len(opened)}件\n'
          f'条件: 確率≥{policy["up_threshold"]:.0f}%｜AIスコア≥{policy["min_score_for_buy"]:.0f}｜TP×{policy["atr_tp_multiplier"]:.1f}｜SL×{policy["atr_sl_multiplier"]:.1f}｜日経フィルター{"ON" if policy.get("nikkei_filter") else "OFF"}｜最大保有{policy["hold_days"]}営業日\n'
-         f'📈 先物トレンド: {trend_result.get("trend")}｜{trend_result.get("reason")}｜使用policy: {policy_file}\n'
+         f'📈 本日の判断: {trend_result.get("trend")}｜{trend_result.get("reason")}｜確定データ {trend_result.get("trend_data_as_of")}まで｜使用policy: {policy_file}\n'
+         + (f'⛔ 新規停止中: {block_reason}\n' if not entry_ok else '') +
          f'💰総資産 {equity:,.0f}円｜本日 {daily:+,.0f}円｜累計 {cum:+.2f}%\n'
          f'📦 保有 {len(s["positions"])}件\n' + ('\n'.join(rows) if rows else 'なし'))
     for m in closed: discord_send(m)

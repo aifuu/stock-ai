@@ -120,15 +120,15 @@ onward; for v2 positions the fill bar itself uses _fill_bar_exit()
 instead (no gap-at-open rule on that one bar), then this same order from
 the next bar on.
 
-Policy choice: never calls futures_trend.detect_futures_trend() itself
-(that would be a second, redundant network-bound trend judgement for the
-same tick). Instead it reuses the live decision already made earlier in
-this same tick by profit_top10_paper.select_policy_file() (which logs one
-row per *day*, not per tick, to futures_trend_history.csv): if that file's
-last row is dated today, its trend is reused directly; only if there is no
-row for today yet does this module fall back to calling
-profit_top10_paper.select_policy_file() itself. Which path was used is
-recorded on every row (policy_source).
+Policy choice (C案, 2026-10): reads the single per-day decision in
+daily_decision.json (built once at 08:30 from confirmed closes only, see
+daily_decision.py) -- the exact same file the normal TOP10 track reads, so
+the two tracks can never run on different policies on the same day. New
+entries are blocked when the decision says entry_allowed=False (e.g. a
+DOWN day with no approved down policy), when the intraday crash brake has
+fired, or when the policy file changed after the decision was made. On a
+no-policy day the would-be TOP1 is written to the shadow log only.
+policy_source on every row is 'daily_decision:<trend_data_as_of>'.
 
 Every row is written with track='daytrade_tp5000_sl8000' and
 validation_eligible=False: this track is a separate P&L experiment, not an
@@ -167,6 +167,7 @@ live_p10.load_model = live_loop._original_load_model
 
 import paper_fast_entrypoint as fast  # noqa: E402
 import safe_state  # noqa: E402
+import daily_decision  # noqa: E402
 from common import is_tse_trading_day  # noqa: E402
 
 TZ = ZoneInfo("Asia/Tokyo")
@@ -296,33 +297,41 @@ def current_model_identity(work_dir="."):
     return model_id, model_version
 
 
-def choose_policy_file_reusing_live_tick(now=None, history_path="futures_trend_history.csv"):
-    """Reuse the trend decision live's profit_top10_paper.select_policy_file()
-    already logged for *today* (futures_trend_history.csv logs at most one
-    row per calendar day, not per tick -- see futures_trend.log_daily_trend)
-    instead of calling futures_trend.detect_futures_trend() a second time
-    for the same tick. Falls back to calling select_policy_file() directly
-    only when there is no row for today yet.
+def choose_policy_file_reusing_live_tick(now=None, history_path=None):
+    """Returns (policy_file, source) from today's fixed daily_decision.json.
 
-    Returns (policy_file, source) where source is 'reused_today_row' or
-    'fallback_select_policy_file'.
+    policy_file is None when new entries are not allowed today; source then
+    holds 'blocked:<reason>'. history_path is accepted for backward
+    compatibility only and is ignored (the per-day decision file replaced
+    the old futures_trend_history.csv reuse).
     """
     now = now or datetime.now(TZ)
-    today_str = now.strftime("%Y-%m-%d")
+    decision = daily_decision.update_crash_brake(now)
+    ok, reason = daily_decision.entry_status(decision)
+    if not ok:
+        print(f"⏸ daytrade: 本日の判断により新規停止: {reason}")
+        return None, f"blocked:{reason}"
+    policy_file = decision["policy_file"]
+    print(f"🗓 daytrade: 本日の判断を使用: trend={decision.get('trend')} policy={policy_file} "
+          f"data_as_of={decision.get('trend_data_as_of')}")
+    return policy_file, f"daily_decision:{decision.get('trend_data_as_of')}"
+
+
+def _record_daytrade_shadow(now, state):
+    """No-policy day: rank with the shadow policy and log the would-be TOP1."""
+    decision = daily_decision.ensure_decision(now)
+    if decision.get("entry_allowed") or not decision.get("shadow_policy_file"):
+        return
     try:
-        if os.path.exists(history_path):
-            df = pd.read_csv(history_path)
-            if not df.empty and str(df.iloc[-1].get("date")) == today_str:
-                trend = str(df.iloc[-1].get("trend"))
-                candidate = live_p10.POLICY_FILE_DOWN if trend == "down" else live_p10.POLICY_FILE_UP
-                policy_file = candidate if os.path.exists(candidate) else live_p10.POLICY_FILE
-                print(f"♻️ daytrade: 同一tickのlive判定を再利用: trend={trend} policy={policy_file}")
-                return policy_file, "reused_today_row"
+        policy = live_p10.load_policy(decision["shadow_policy_file"])
+        result = _get_live_tick_top10(policy, now, state)
+        if not result or not result[0]:
+            return
+        chosen, _ = _select_top1(result[0], state.setdefault("last_exit_by_ticker", {}), now)
+        if chosen is not None:
+            daily_decision.record_shadow(decision, chosen, now, track="daytrade_tp5000_sl8000")
     except Exception as exc:
-        print(f"⚠️ daytrade: futures_trend_history.csv読込失敗: {exc}")
-    policy_file, _ = live_p10.select_policy_file()
-    print(f"ℹ️ daytrade: 本日の行がないためselect_policy_file()を直接呼び出し: policy={policy_file}")
-    return policy_file, "fallback_select_policy_file"
+        print(f"⚠️ daytrade: シャドー記録失敗: {exc}")
 
 
 def _load_live_tick_cache(now):
@@ -563,6 +572,10 @@ def _try_entry(state, now, today):
     confirms the actual fill on whatever later tick the fill bar's data
     becomes available."""
     policy_file, policy_source = choose_policy_file_reusing_live_tick(now)
+    if policy_file is None:
+        if policy_source.startswith("blocked:no_approved_policy"):
+            _record_daytrade_shadow(now, state)
+        return None
     policy = live_p10.load_policy(policy_file)
     result = _get_live_tick_top10(policy, now, state)
     if result is None:
