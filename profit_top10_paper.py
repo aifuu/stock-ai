@@ -315,7 +315,7 @@ def _run():
         opened=[]
         print(f'⏸ 本日の判断により新規エントリー停止: {block_reason}')
         # 実売買しない日(承認済みpolicyが無いtrend)は「もし買っていたら」だけ記録する。
-        # 急落ブレーキ・policy差替え検知による停止はシャドー対象外(判断自体は有効な日のため)。
+        # policy差替え検知による停止はシャドー対象外(判断自体は有効な日のため)。
         if cands and not trend_result.get('entry_allowed') and trend_result.get('shadow_policy_file'):
             try: daily_decision.record_shadow(trend_result,cands[0],now,track='profit_top10')
             except Exception as e: print(f'⚠️ シャドー記録失敗: {e}')

@@ -601,7 +601,7 @@ def _try_entry(state, now, today):
     chosen, skipped = _select_top1(top10, state.setdefault("last_exit_by_ticker", {}), now,
                                    block_buy=block_buy)
     if chosen is None:
-        print("⏸ daytrade: 急落ブレーキ/cooldown/予算により新規エントリ可能な候補なし")
+        print("⏸ daytrade: cooldown/予算により新規エントリ可能な候補なし")
         return None
 
     ticker = str(chosen["ticker"]).strip()
