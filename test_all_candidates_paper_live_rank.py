@@ -48,13 +48,20 @@ class _RegimeAndFeedbackPatched:
     def __enter__(self):
         self._p1 = patch.object(loop, "_market_regime", return_value=(self.regime, 1.0, 1.0))
         self._p2 = patch.object(loop, "_load_feedback_weights", return_value={"BUY": 1.0, "SHORT": 1.0})
+        # このテストは実repoのdaily_decision.json(cwd相対)をchdirせずに読める状態で
+        # 走るため、A案の下落日ゲート(_down_day_decision)が当日の実ファイル内容に
+        # 左右されないよう固定する(このテストファイルはレジームフィルターだけを
+        # 対象にしており、down_day側は別テストで検証する)。
+        self._p3 = patch.object(loop, "_down_day_decision", return_value=False)
         self._p1.start()
         self._p2.start()
+        self._p3.start()
         return self
 
     def __exit__(self, *exc):
         self._p1.stop()
         self._p2.stop()
+        self._p3.stop()
 
 
 class LiveRankMatchesOpenTop1Only(unittest.TestCase):

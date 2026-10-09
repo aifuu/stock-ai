@@ -48,14 +48,20 @@ class CooldownSelfHealTests(unittest.TestCase):
     def setUp(self):
         os.environ.pop("DISCORD_WEBHOOK", None)
         self._orig_regime = loop._market_regime
+        self._orig_down_day = loop._down_day_decision
         self._orig_priority = loop.profit_priority
         self._orig_open = loop._original_open
         loop._market_regime = lambda: ("neutral", None, None)
+        # cwdをchdirしないため実repoのdaily_decision.json(当日分)を読んでしまい得る。
+        # このテストはcooldown自己修復ロジックだけが関心事なので、下落日ゲートは
+        # 常に無効(既存のneutral regime挙動)に固定する。
+        loop._down_day_decision = lambda: False
         loop.profit_priority = lambda cands: cands
         loop._original_open = lambda state, policy, cands, today: []
 
     def tearDown(self):
         loop._market_regime = self._orig_regime
+        loop._down_day_decision = self._orig_down_day
         loop.profit_priority = self._orig_priority
         loop._original_open = self._orig_open
 

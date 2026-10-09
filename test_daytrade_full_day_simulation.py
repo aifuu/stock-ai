@@ -32,7 +32,7 @@ import os
 import tempfile
 import time
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -315,6 +315,16 @@ def _run_down_day_with_brake(work_dir, with_daytrade):
         now_holder = {"now": None}
         base = float(_down_futures_bars()["Close"].iloc[-1])
 
+        class _FakeDT(datetime):
+            # A案(run_profit_loop._down_day_decision)はdaily_decision.todays_trend()
+            # を引数無しで呼び、_now(None)=実時刻で当日分かを判定する。このシミュレーション
+            # はDAY(2026-09-25)という架空の日付でdaily_decision.jsonを書くため、
+            # daily_decision側のdatetime.now()もシミュレーション時刻に合わせる
+            # (test_down_day_short_brake.pyの_FakeDTパターンと同じ)。
+            @classmethod
+            def now(cls, tz=None):
+                return now_holder["now"] if tz is None else now_holder["now"].astimezone(tz)
+
         def fake_download_5m(ticker):
             cutoff = pd.Timestamp(now_holder["now"].replace(tzinfo=None)) - DATA_DELAY
             df = full_bars.get(ticker)
@@ -344,11 +354,13 @@ def _run_down_day_with_brake(work_dir, with_daytrade):
                 json.dump(payload, f)
 
         decisions_policy = []
+        now_holder["now"] = _tick_range()[0].replace(hour=8, minute=30)
         with patch.object(live_p10, "download_5m", side_effect=fake_download_5m), \
              patch.object(live_loop, "_market_regime", return_value=("neutral", 0.0, 0.0)), \
              patch.object(live_loop, "_load_feedback_weights", return_value={"BUY": 1.0, "SHORT": 1.0}), \
              patch.object(futures_trend, "_download", side_effect=_down_futures_bars), \
              patch.object(futures_trend, "intraday_price", side_effect=fake_intraday_price), \
+             patch.object(daily_decision, "datetime", _FakeDT), \
              patch.object(live_p10, "load_policy", return_value=POLICY):
             daily_decision.ensure_decision(_tick_range()[0].replace(hour=8, minute=30))
             for i, tick in enumerate(_tick_range()):
@@ -394,12 +406,14 @@ class FullDayDownDayWithCrashBrake(unittest.TestCase):
         self.assertTrue(final_decision["crash_brake_time"].startswith(f"{DAY}T09:40"))
 
         self.assertGreaterEqual(len(history), 1, history.to_dict("records"))
-        # ブレーキ中は一度もBUYを建てない(TOP1のBUYはbrake_buyで飛ばされる)
+        # ブレーキ中は一度もBUYを建てない(A案: 下落日ゲートにより買いはそもそも
+        # TOP10に出ないため、ブレーキ自身のbrake_buyスキップは発生しない)
         self.assertTrue((history["direction"] == "SHORT").all(), history.to_dict("records"))
         self.assertTrue((history["policy_file"] == "strategy_policy.json").all())
         first = history.iloc[0]
         self.assertEqual(first["ticker"], "8035.T")
-        self.assertIn("7203.T:brake_buy", str(first["skipped"]))
+        self.assertNotIn("7203.T", str(first["skipped"]))
+        self.assertEqual(first["direction_gate"], "short_only_down_day")
         self.assertEqual(pd.Timestamp(first["decision_time"]), pd.Timestamp(f"{DAY} 09:55:00"))
         # 決済はブレーキ中も継続(11:00のギャップダウンで空売りTP)
         self.assertEqual(first["result"], "TP")

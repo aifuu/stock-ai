@@ -234,6 +234,18 @@ def todays_crash_brake(now=None, path=None):
     return bool(d and d.get("date") == _now(now).date().isoformat() and d.get("intraday_crash_brake"))
 
 
+def todays_trend(now=None, path=None):
+    """判断ファイルを読むだけ(作成・再判定しない)で、当日分のtrendを返す。
+
+    当日分が無い/壊れている場合はNone(呼び出し側は既存ロジックへフォールバックすること。
+    ネットワークアクセスは一切行わない)。
+    """
+    d = _read(path or DECISION_FILE)
+    if not d or d.get("date") != _now(now).date().isoformat():
+        return None
+    return d.get("trend")
+
+
 def update_crash_brake(now=None, path=None, price_fetcher=None):
     """場中の急落ブレーキを評価し、発動したら当日中は維持する(解除しない)。
 
