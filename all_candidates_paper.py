@@ -838,6 +838,13 @@ def compute_live_ranking(qualified_candidates):
     無いのでTOP1/TOP3/TOP5には入らない)。
 
     空リストならネットワーク呼び出し(日経レジーム取得)を一切行わず{}を返す。
+
+    ★2026-10(A案)注記: live_loop.profit_priority()は、当日のdaily_decision.jsonの
+    trendが'down'の日は日経レジームに関わらず空売りのみに絞るようになった
+    (run_profit_loop.py参照)。この研究トラックはそのprofit_priority()をそのまま
+    再利用しているため、DOWN日のrank_info/regime_eligibleも同じ方向ゲートの影響を
+    受ける(=DOWN日はBUY候補がregime_eligible=Falseになる)。本関数・本ファイルの
+    コードは変更していない(挙動はprofit_priority側の変更がそのまま伝播するだけ)。
     """
     rank_info = {}
     if not qualified_candidates:

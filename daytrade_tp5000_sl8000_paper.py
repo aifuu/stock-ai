@@ -626,6 +626,10 @@ def _try_entry(state, now, today):
         "model_id": model_id, "model_version": model_version,
         "budget": BUDGET_JPY,
         "entry_window_start": ENTRY_WINDOW_START_STR,
+        # new columns appended at the end -- see safe_state.safe_append_history
+        # (A案方向ゲート監査用)
+        "market_regime_raw": chosen.get("market_regime_raw"),
+        "direction_gate": chosen.get("direction_gate"),
     }
     state["pending"] = pending
     print(f"⏳ daytrade PENDING: {direction} {ticker} decision={now_naive} fill_bar_time>={fill_bar_time}")
@@ -720,6 +724,8 @@ def _check_pending_fill(state, now, today):
         "atr_pct": _simple_atr_pct(bars, fill_price), "vwap_deviation_pct": _vwap_deviation_pct(bars, fill_price),
         "mfe_yen": 0.0, "mae_yen": 0.0, "current_price": fill_price,
         "entry_window_start": pending.get("entry_window_start"),
+        "market_regime_raw": pending.get("market_regime_raw"),
+        "direction_gate": pending.get("direction_gate"),
     }
     assert pd.Timestamp(position["fill_bar_time"]) >= pd.Timestamp(position["decision_time"]), (
         "invariant violated: fill_bar_time < decision_time"
@@ -777,6 +783,8 @@ def _close_position(state, now, exit_price, reason, exit_ts):
         # (pd.concat unions columns; existing rows get empty values for these)
         "top10_source": pos.get("top10_source"), "skipped": pos.get("skipped"),
         "entry_window_start": pos.get("entry_window_start"),
+        "market_regime_raw": pos.get("market_regime_raw"),
+        "direction_gate": pos.get("direction_gate"),
     }
     append_history(row)
     state.setdefault("last_exit_by_ticker", {})[pos["ticker"]] = pd.Timestamp(now).isoformat()

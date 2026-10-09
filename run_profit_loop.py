@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 
 import profit_top10_paper as app
+import daily_decision
+import futures_trend
 
 TOP10 = 10
 MAX_DAILY_TRADES = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
@@ -61,19 +63,52 @@ def _market_regime():
         print(f"⚠️ 日経レジーム判定失敗 → neutral: {exc}")
         return "neutral", None, None
 
+# ★追加(2026-10, A案): 2026-10-09の事象(daily_decisionはDOWNだったが日経レジームが
+# 強気だったため、両トラックとも通常のレジーム判定(強気→買いのみ)に従って買い、
+# 下落日に買って損失を出した)を受けたオーナー承認の方向転換。
+# daily_decision.jsonの当日trendが'down'の日は、日経レジームに関わらず新規エントリーを
+# 空売りのみに固定する(地合い判定より優先)。判断ファイルが当日分無し/壊れている場合は
+# ネットワークに依存せず既存の地合いロジックへフォールバックする(クラッシュしない)。
+def _down_day_decision():
+    try:
+        trend = daily_decision.todays_trend()
+    except Exception as exc:
+        print(f"⚠️ daily_decision読み込み失敗 → 既存の地合いロジックを使用: {exc}")
+        return False
+    if trend is None:
+        print("⚠️ daily_decision未取得(当日分なし) → 既存の地合いロジックを使用")
+        return False
+    return trend == futures_trend.DOWN
+
+def _direction_gate_label(down_day, regime):
+    return "short_only_down_day" if down_day else f"regime_{regime}"
+
 def profit_priority(candidates):
     """Regime gate: bearish means SHORT candidates only; bullish means BUY only.
-    Neutral compares BUY/SHORT by expected value and score."""
+    Neutral compares BUY/SHORT by expected value and score.
+
+    ★変更(2026-10, A案): daily_decisionの当日trendが'down'の日は、この地合い判定の
+    結果に関わらず新規エントリーを空売りのみに固定する(effective direction gate)。
+    UP日の挙動(フィルター・スコアリングとも)は変更しない。
+    """
     regime, kairi25, ret5 = _market_regime()
+    down_day = _down_day_decision()
+    direction_gate = _direction_gate_label(down_day, regime)
     feedback_weights = _load_feedback_weights()
     print(f"🌐 日経レジーム: {regime.upper()}" + (f"｜25MA乖離 {kairi25:+.2f}%｜5日騰落 {ret5:+.2f}%" if kairi25 is not None else ""))
+    if down_day:
+        print(f"📉 下落日: 新規は空売りのみ(地合い判定 {regime} より優先)")
     ranked = []
     for c in candidates:
         direction = str(c.get("direction", "BUY")).upper()
-        if regime == "bullish" and direction != "BUY":
-            continue
-        if regime == "bearish" and direction != "SHORT":
-            continue
+        if down_day:
+            if direction != "SHORT":
+                continue
+        else:
+            if regime == "bullish" and direction != "BUY":
+                continue
+            if regime == "bearish" and direction != "SHORT":
+                continue
         price = float(c.get("price", 0) or 0)
         tp = float(c.get("tp", 0) or 0)
         sl = float(c.get("sl", 0) or 0)
@@ -102,6 +137,11 @@ def profit_priority(candidates):
         item["profit_ev_pct"] = round(ev, 4)
         item["feedback_weight"] = feedback_weight
         item["profit_priority"] = round(rank, 4)
+        # ★追加(2026-10, A案監査用、末尾に追加): market_regime_raw=日経レジームの生値
+        # (market_regimeと同じ値だが、down_day時にフィルターが地合いを上書きしたことが
+        # わかるようdirection_gateと併せて残す)。direction_gate=実際に使われた方向制限。
+        item["market_regime_raw"] = regime
+        item["direction_gate"] = direction_gate
         ranked.append(item)
     return sorted(ranked, key=lambda x: (x["profit_priority"], x.get("score", 0), max(x.get("up_probability", 0), x.get("down_probability", 0))), reverse=True)
 
@@ -180,11 +220,14 @@ def close_positions_with_cooldown(state,now,policy):
     return messages
 
 def open_top1_only(state,policy,candidates,today):
-    cooldowns=state.setdefault("last_exit_by_ticker",{});now=datetime.now(app.TZ);active={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};eligible=[];regime,_,_=_market_regime()
+    cooldowns=state.setdefault("last_exit_by_ticker",{});now=datetime.now(app.TZ);active={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};eligible=[];regime,_,_=_market_regime();down_day=_down_day_decision()
     for candidate in profit_priority(candidates)[:TOP10]:
         ticker=str(candidate.get("ticker","")).strip();direction=str(candidate.get("direction","BUY")).upper()
-        if regime=="bearish" and direction!="SHORT":continue
-        if regime=="bullish" and direction!="BUY":continue
+        if down_day:
+            if direction!="SHORT":continue
+        else:
+            if regime=="bearish" and direction!="SHORT":continue
+            if regime=="bullish" and direction!="BUY":continue
         if not ticker or ticker in active:continue
         if int(state.get("trades_by_ticker_today",{}).get(ticker,0))>=MAX_TICKER_TRADES:continue
         if int(state.get("trades_today",0))>=MAX_DAILY_TRADES:break
@@ -211,7 +254,7 @@ def open_top1_only(state,policy,candidates,today):
     finally:
         app.MAX_TOTAL_TRADES_PER_DAY=old_max_total;app.MAX_TRADES_PER_TICKER_PER_DAY=old_max_ticker
     if opened:
-        p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));p["feedback_weight"]=float(top1.get("feedback_weight",1.0));print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}% FEEDBACK_W={p['feedback_weight']:.2f}")
+        p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));p["feedback_weight"]=float(top1.get("feedback_weight",1.0));p["market_regime_raw"]=top1.get("market_regime_raw",regime);p["direction_gate"]=top1.get("direction_gate",_direction_gate_label(down_day,regime));print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}% FEEDBACK_W={p['feedback_weight']:.2f}")
     return opened
 
 app.scan=scan_candidates_fixed

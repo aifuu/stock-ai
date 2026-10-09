@@ -173,6 +173,8 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         pos = state["positions"][0]
         self.assertEqual(pos["direction"], "SHORT")
         self.assertEqual(pos["ticker"], "8035.T")  # 弱気→空売りのみ、最上位の空売り
+        self.assertEqual(pos["market_regime_raw"], "bearish")
+        self.assertEqual(pos["direction_gate"], "short_only_down_day")
         self.assertFalse(os.path.exists(dd.SHADOW_FILE))  # 実売買日はシャドー無し
 
     def test_daytrade_same_tick_uses_same_policy_and_same_top10_with_short_allowed(self):
@@ -213,7 +215,10 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         self.assertTrue(self._decision()["intraday_crash_brake"])  # sticky
 
     def test_crash_brake_blocks_buys_on_both_tracks_but_allows_short(self):
-        self.regime = "neutral"  # 中立: BUY/SHORT両方可(ブレーキが無ければBUYが最上位)
+        # 中立レジームでも下落日ゲートにより新規は空売りのみ(A案)。この時点で既に
+        # 買いはTOP10に出ないため、ブレーキ自身のbrake_buyスキップは発生しない
+        # (クラッシュブレーキのロジック自体は変更していない)。
+        self.regime = "neutral"
         dd.ensure_decision(self._at(8, 30))
         self.price_ratio = 0.984  # -1.6%
         live_state = self._live_tick(10, 0)
@@ -225,7 +230,7 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         pending = dt_state["pending"]
         self.assertEqual(pending["direction"], "SHORT")
         self.assertEqual(pending["ticker"], "8035.T")
-        self.assertIn("7203.T:brake_buy", pending["skipped"])
+        self.assertNotIn("7203.T", pending["skipped"])
 
         # 反発してもその日は解除されず、次のtickでもBUYは建たない
         self.price_ratio = 1.02
@@ -234,21 +239,74 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         self.assertTrue(self._decision()["intraday_crash_brake"])
 
     def test_without_brake_neutral_regime_opens_top_buy(self):
-        # 対照: ブレーキ無しなら同じ並びで両トラックともBUY最上位を選ぶ
+        # 対照(UP日・ブレーキ無し): 下落日ゲートが働かない日なら、従来どおり
+        # レジーム中立で並び最上位(BUY)を両トラックとも選ぶ。
+        self.trend = "up"
         self.regime = "neutral"
         dd.ensure_decision(self._at(8, 30))
         live_state = self._live_tick(10, 0)
         self.assertEqual(live_state["positions"][0]["direction"], "BUY")
+        self.assertEqual(live_state["positions"][0]["direction_gate"], "regime_neutral")
         pending = self._daytrade_entry(_FakeDT.current)["pending"]
         self.assertEqual((pending["ticker"], pending["direction"]), ("7203.T", "BUY"))
 
-    def test_crash_brake_with_bullish_regime_opens_nothing(self):
-        # 強気レジームはBUYのみ、ブレーキはBUYを止める → 新規なし(レジームフィルターは迂回しない)
+    def test_down_day_short_only_despite_bullish_regime(self):
+        # A案(2026-10-09の事象そのもの): DOWN日は日経レジームが強気でも新規は
+        # 空売りのみに固定する。ブレーキ(新規買いのみ停止)も、元々買いが
+        # 候補に出ないのでここでは効かない(クラッシュブレーキのロジック自体は不変)。
         self.regime = "bullish"
         dd.ensure_decision(self._at(8, 30))
-        self.price_ratio = 0.98
+        self.price_ratio = 0.98  # ブレーキも発動させておく(買いが候補に出ないことの確認)
         live_state = self._live_tick(10, 0)
-        self.assertEqual(live_state["positions"], [])
+        self.assertEqual([p["direction"] for p in live_state["positions"]], ["SHORT"])
+        self.assertEqual(live_state["positions"][0]["ticker"], "8035.T")
+        self.assertEqual(live_state["positions"][0]["market_regime_raw"], "bullish")
+        self.assertEqual(live_state["positions"][0]["direction_gate"], "short_only_down_day")
+        self.assertTrue(self._decision()["intraday_crash_brake"])
+
+        dt_state = self._daytrade_entry(_FakeDT.current)
+        pending = dt_state["pending"]
+        self.assertEqual(pending["direction"], "SHORT")
+        self.assertEqual(pending["ticker"], "8035.T")
+        self.assertEqual(pending["direction_gate"], "short_only_down_day")
+        # 強気レジームでも買いはそもそもTOP10に出ないため、ブレーキのbrake_buy
+        # スキップ理由は発生しない(7203.T/9984.Tはskippedに現れない)。
+        self.assertNotIn("7203.T", pending["skipped"])
+        self.assertNotIn("9984.T", pending["skipped"])
+
+    def test_replay_2026_10_09_bullish_regime_down_day_both_tracks_choose_short(self):
+        """2026-10-09の再現: daily_decisionはDOWNだが日経レジームは強気
+        (kairi25+2.62%/ret5+1.06%相当)。実際の候補に近い確率帯(BUY約34-36%上昇/
+        33-35%下落、SHORTはpolicy適合)で、両トラックとも空売りのみを選ぶことを確認する。
+        """
+        self.regime = "bullish"
+        realistic_pool = [
+            _cand("8766.T", "BUY", 3200.0, 72.0, 35.0, 33.0),
+            _cand("4704.T", "BUY", 2800.0, 68.0, 34.5, 34.0),
+            _cand("9501.T", "SHORT", 1500.0, 75.0, 25.0, 55.0),
+            _cand("6502.T", "SHORT", 2100.0, 70.0, 22.0, 50.0),
+        ]
+        with patch.object(loop, "_original_scan", side_effect=lambda policy: ([dict(c) for c in realistic_pool], 225)):
+            dd.ensure_decision(self._at(8, 30))
+            now = self._at(10, 0)
+            live._run()
+            # liveのtickと同じく、このiterationのTOP10キャッシュをrealistic_poolで書く
+            # (_live_tickヘルパーはモジュール定数POOLを書くため、ここでは使わない)。
+            with open(dt.fast.SCAN_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"timestamp": now.timestamp(), "raw": [dict(c) for c in realistic_pool], "scanned": 225}, f)
+            with open(live.STATE_FILE, encoding="utf-8") as f:
+                live_state = json.load(f)
+            dt_state = self._daytrade_entry(_FakeDT.current)
+
+        self.assertEqual(len(live_state["positions"]), 1)
+        self.assertEqual(live_state["positions"][0]["direction"], "SHORT")
+        self.assertEqual(live_state["positions"][0]["ticker"], "9501.T")  # SHORTの最高scoreが選ばれる
+        self.assertEqual(live_state["positions"][0]["direction_gate"], "short_only_down_day")
+
+        pending = dt_state["pending"]
+        self.assertEqual(pending["direction"], "SHORT")
+        self.assertEqual(pending["ticker"], "9501.T")
+        self.assertEqual(pending["direction_gate"], "short_only_down_day")
 
     def test_exits_continue_while_brake_active(self):
         dd.ensure_decision(self._at(8, 30))
