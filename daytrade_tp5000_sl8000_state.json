@@ -1,6 +1,26 @@
 {
   "positions": [],
-  "pending": null,
+  "pending": {
+    "ticker": "8766.T",
+    "direction": "BUY",
+    "decision_date": "2026-10-09",
+    "decision_time": "2026-10-09T12:51:48.329089",
+    "fill_bar_time": "2026-10-09T12:55:00",
+    "score": 70.4108077908582,
+    "up_probability": 34.52050364325108,
+    "down_probability": 33.60799188132271,
+    "market_regime": "bullish",
+    "top10_rank": 1,
+    "top10_source": "live_tick_cache",
+    "skipped": "",
+    "policy_file": "strategy_policy.json",
+    "policy_source": "daily_decision:2026-10-08",
+    "policy_hash": "cf106bdc4c56",
+    "model_id": "9df81234e6cf9e83",
+    "model_version": "2026-10-07",
+    "budget": 1000000.0,
+    "entry_window_start": "09:55"
+  },
   "trade_date": "2026-10-09",
   "trades_today": 2,
   "last_exit_by_ticker": {
