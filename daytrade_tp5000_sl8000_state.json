@@ -1,6 +1,26 @@
 {
   "positions": [],
-  "pending": null,
+  "pending": {
+    "ticker": "4704.T",
+    "direction": "BUY",
+    "decision_date": "2026-10-09",
+    "decision_time": "2026-10-09T11:11:22.979020",
+    "fill_bar_time": "2026-10-09T11:15:00",
+    "score": 72.76596720341949,
+    "up_probability": 36.62369189447673,
+    "down_probability": 35.69595953203327,
+    "market_regime": "bullish",
+    "top10_rank": 2,
+    "top10_source": "live_tick_cache",
+    "skipped": "6857.T:budget",
+    "policy_file": "strategy_policy.json",
+    "policy_source": "daily_decision:2026-10-08",
+    "policy_hash": "cf106bdc4c56",
+    "model_id": "9df81234e6cf9e83",
+    "model_version": "2026-10-07",
+    "budget": 1000000.0,
+    "entry_window_start": "09:55"
+  },
   "trade_date": "2026-10-09",
   "trades_today": 1,
   "last_exit_by_ticker": {
