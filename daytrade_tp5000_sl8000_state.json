@@ -33,8 +33,8 @@
       "atr_pct": 0.3991417051114601,
       "vwap_deviation_pct": 1.0157148624305916,
       "mfe_yen": 720.0439453125,
-      "mae_yen": -3420.0439453125,
-      "current_price": 530.0,
+      "mae_yen": -4139.97802734375,
+      "current_price": 530.4000244140625,
       "entry_window_start": "09:55",
       "market_regime_raw": "neutral",
       "direction_gate": "regime_neutral"
