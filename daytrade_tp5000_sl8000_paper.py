@@ -32,11 +32,11 @@ _evaluate_exit() for the exact mechanics):
     skipped/failed tick -- is force-closed/cancelled immediately)
   - max 30 trades/day (a cancelled pending, see below, does not count)
 
-TP/SL are solved exactly so the realized **net** P&L (after the live
-round-trip fee rate, charged on both the entry and exit notional, exactly
-as profit_top10_paper.mark_and_close computes it: pnl = gross -
-(entry_price + exit_price) * shares * fee_rate) equals the target yen
-amount for a given share count `sh`:
+TP/SL are solved exactly so the realized **net** P&L (after this track's
+own round-trip fee rate, charged on both the entry and exit notional, in
+the same shape as profit_top10_paper.mark_and_close's own fee math:
+pnl = gross - (entry_price + exit_price) * shares * fee_rate) equals the
+target yen amount for a given share count `sh`:
     BUY:   exit = (net/sh + entry_price*(1+fee)) / (1-fee)
     SHORT: exit = (entry_price*(1-fee) - net/sh) / (1+fee)
 Because the target is a fixed yen amount rather than a fixed percentage,
@@ -139,6 +139,16 @@ Every row is written with track='daytrade_tp5000_sl8000' and
 validation_eligible=False: this track is a separate P&L experiment, not an
 input to any OOS/walk-forward validation pipeline.
 
+Fee assumption (owner decision, 2026-10-15): this track assumes a
+zero-commission broker and reads its own DAYTRADE_FEE_RATE env var
+(default '0'), independent of the live TOP10/TOP1 track's
+INTRADAY_FEE_RATE (which stays at 0.00055 and is never read here). Every
+pending/position/history row carries the fee_rate in effect when it was
+computed as a trailing column (same safe column-extension mechanism as
+top10_source/entry_window_start); rows written before this field existed
+are untouched and read back empty, which is defined to mean 0.00055 (this
+track's fee rate prior to 2026-10-15).
+
 profit_top10_paper.py and run_profit_loop.py are imported read-only and
 never modified; see the usual monkeypatch-revert note near the imports
 below for why run_profit_loop's import-time side effects on
@@ -190,9 +200,30 @@ BUDGET_JPY = float(os.getenv("DAYTRADE_BUDGET_JPY", "1000000"))
 LOT_SIZE = 100
 TP_NET_JPY = 5000.0
 SL_NET_JPY = -8000.0
-FEE_RATE = float(os.getenv("INTRADAY_FEE_RATE", "0.00055"))
 COOLDOWN_MINUTES = 30
 MAX_TRADES_PER_DAY = 30
+
+
+def _read_daytrade_fee_rate():
+    """This track owns its own fee-rate variable (DAYTRADE_FEE_RATE),
+    separate from the live TOP10/TOP1 track's INTRADAY_FEE_RATE (which this
+    module never reads): owner decision 2026-10-14 assumes a zero-commission
+    broker for this track only, so the default is 0. Falls back to 0 (with a
+    printed warning, never raising) on anything that isn't a non-negative
+    float."""
+    raw = os.getenv("DAYTRADE_FEE_RATE", "0")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        print(f"⚠️ daytrade: DAYTRADE_FEE_RATE='{raw}' は数値として不正です。0にフォールバックします。")
+        return 0.0
+    if value < 0:
+        print(f"⚠️ daytrade: DAYTRADE_FEE_RATE={value} は負数です。0にフォールバックします。")
+        return 0.0
+    return value
+
+
+FEE_RATE = _read_daytrade_fee_rate()
 
 # Change A: this track's TOP10 must be the SAME TOP10 the live tick already
 # selected this iteration -- never its own re-scan. ai-stock-scan.yml deletes
@@ -630,6 +661,11 @@ def _try_entry(state, now, today):
         # (A案方向ゲート監査用)
         "market_regime_raw": chosen.get("market_regime_raw"),
         "direction_gate": chosen.get("direction_gate"),
+        # trailing column, same safe column-extension mechanism as
+        # top10_source/entry_window_start -- rows written before this field
+        # existed are never rewritten and read back empty, defined to mean
+        # 0.00055 (this track's fee rate prior to the 2026-10-15 zero-fee change).
+        "fee_rate": FEE_RATE,
     }
     state["pending"] = pending
     print(f"⏳ daytrade PENDING: {direction} {ticker} decision={now_naive} fill_bar_time>={fill_bar_time}")
@@ -726,6 +762,7 @@ def _check_pending_fill(state, now, today):
         "entry_window_start": pending.get("entry_window_start"),
         "market_regime_raw": pending.get("market_regime_raw"),
         "direction_gate": pending.get("direction_gate"),
+        "fee_rate": pending.get("fee_rate", FEE_RATE),
     }
     assert pd.Timestamp(position["fill_bar_time"]) >= pd.Timestamp(position["decision_time"]), (
         "invariant violated: fill_bar_time < decision_time"
@@ -785,6 +822,7 @@ def _close_position(state, now, exit_price, reason, exit_ts):
         "entry_window_start": pos.get("entry_window_start"),
         "market_regime_raw": pos.get("market_regime_raw"),
         "direction_gate": pos.get("direction_gate"),
+        "fee_rate": pos.get("fee_rate", FEE_RATE),
     }
     append_history(row)
     state.setdefault("last_exit_by_ticker", {})[pos["ticker"]] = pd.Timestamp(now).isoformat()
@@ -1027,6 +1065,20 @@ def _build_daily_summary_messages(today):
             lines.append(
                 f"累計v2 {v2_trades_cum}件 {v2_wins_cum}勝{v2_trades_cum - v2_wins_cum}敗 "
                 f"勝率{v2_win_rate_cum:.1f}%(損益分岐{breakeven_pct:.1f}%) 合計{v2_net_cum:+,.0f}円"
+            )
+
+    if hist is not None and "fee_rate" in hist.columns and not hist.empty:
+        fee_rate_num = pd.to_numeric(hist["fee_rate"], errors="coerce")
+        zero_fee_hist = hist[fee_rate_num == 0.0]
+        zero_fee_trades_cum = len(zero_fee_hist)
+        if zero_fee_trades_cum:
+            zero_fee_pnl = pd.to_numeric(zero_fee_hist["pnl"], errors="coerce").fillna(0.0)
+            zero_fee_wins_cum = int((zero_fee_pnl > 0).sum())
+            zero_fee_net_cum = float(zero_fee_pnl.sum())
+            lines.append(
+                f"手数料0円(10/15〜) 累計 {zero_fee_trades_cum}件 "
+                f"{zero_fee_wins_cum}勝{zero_fee_trades_cum - zero_fee_wins_cum}敗 "
+                f"合計 {zero_fee_net_cum:+,.0f}円"
             )
 
     return _split_for_discord("\n".join(lines))

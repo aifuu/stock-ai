@@ -924,5 +924,156 @@ class EntryWindowStartProvenance(TmpCwdMixin, unittest.TestCase):
         self.assertEqual(list(history.columns)[-1], "entry_window_start")
 
 
+# =====================================================================
+# 手数料ゼロ化(2026-10-15, オーナー承認): デイトレ別枠は独自の
+# DAYTRADE_FEE_RATE(デフォルト0)を読む。ライブTOP1のINTRADAY_FEE_RATEは
+# 共有変数のまま一切読まない/影響されない。
+# =====================================================================
+
+class DaytradeFeeRateEnvVar(unittest.TestCase):
+    def test_default_env_unset_is_zero(self):
+        os.environ.pop("DAYTRADE_FEE_RATE", None)
+        self.assertEqual(dt._read_daytrade_fee_rate(), 0.0)
+
+    def test_intraday_fee_rate_set_does_not_affect_daytrade(self):
+        # the live TOP1 track's shared var must never leak into this track.
+        os.environ.pop("DAYTRADE_FEE_RATE", None)
+        os.environ["INTRADAY_FEE_RATE"] = "0.00055"
+        try:
+            self.assertEqual(dt._read_daytrade_fee_rate(), 0.0)
+        finally:
+            os.environ.pop("INTRADAY_FEE_RATE", None)
+
+    def test_daytrade_fee_rate_set_is_honored(self):
+        os.environ["DAYTRADE_FEE_RATE"] = "0.00055"
+        try:
+            self.assertEqual(dt._read_daytrade_fee_rate(), 0.00055)
+        finally:
+            os.environ.pop("DAYTRADE_FEE_RATE", None)
+
+    def test_invalid_value_falls_back_to_zero_with_warning(self):
+        os.environ["DAYTRADE_FEE_RATE"] = "not-a-number"
+        try:
+            with patch("builtins.print") as mock_print:
+                self.assertEqual(dt._read_daytrade_fee_rate(), 0.0)
+            self.assertTrue(any("DAYTRADE_FEE_RATE" in str(c) for c in mock_print.call_args_list))
+        finally:
+            os.environ.pop("DAYTRADE_FEE_RATE", None)
+
+    def test_negative_value_falls_back_to_zero_with_warning(self):
+        os.environ["DAYTRADE_FEE_RATE"] = "-0.001"
+        try:
+            with patch("builtins.print") as mock_print:
+                self.assertEqual(dt._read_daytrade_fee_rate(), 0.0)
+            self.assertTrue(any("DAYTRADE_FEE_RATE" in str(c) for c in mock_print.call_args_list))
+        finally:
+            os.environ.pop("DAYTRADE_FEE_RATE", None)
+
+    def test_live_top1_fee_rate_is_untouched_and_still_reads_intraday_fee_rate(self):
+        # Reloading profit_top10_paper here would reset its import-time
+        # monkeypatches (see daytrade's module docstring) and could leak
+        # into other test modules sharing the process, so this checks the
+        # live module's actual source instead of re-executing it: the live
+        # TOP1 track's FEE_RATE assignment must still read INTRADAY_FEE_RATE
+        # verbatim, and daytrade's own module must never reference it.
+        import inspect
+        live_source = inspect.getsource(live_p10)
+        self.assertIn("FEE_RATE=float(os.getenv('INTRADAY_FEE_RATE','0.00055'))", live_source.replace(" ", ""))
+        daytrade_source = inspect.getsource(dt)
+        self.assertNotIn("getenv(\"INTRADAY_FEE_RATE\"", daytrade_source)
+        self.assertNotIn("getenv('INTRADAY_FEE_RATE'", daytrade_source)
+
+
+class TpSlAndNetPnlAtZeroFee(unittest.TestCase):
+    """dt.FEE_RATE is read once at import time; this process's test run has
+    no DAYTRADE_FEE_RATE/INTRADAY_FEE_RATE set at import, so dt.FEE_RATE ==
+    0.0 here (see DaytradeFeeRateEnvVar for the env-var parsing itself)."""
+
+    def test_module_level_fee_rate_is_zero_by_default(self):
+        self.assertEqual(dt.FEE_RATE, 0.0)
+
+    def test_buy_tp_sl_prices_are_entry_plus_minus_net_over_shares(self):
+        entry_price, shares = 3000.0, 300
+        tp, sl, _, _ = dt._tp_sl_prices(entry_price, "BUY", shares)
+        self.assertAlmostEqual(tp, entry_price + dt.TP_NET_JPY / shares, places=9)
+        self.assertAlmostEqual(sl, entry_price + dt.SL_NET_JPY / shares, places=9)
+
+    def test_short_tp_sl_prices_are_entry_minus_plus_net_over_shares(self):
+        entry_price, shares = 3000.0, 300
+        tp, sl, _, _ = dt._tp_sl_prices(entry_price, "SHORT", shares)
+        self.assertAlmostEqual(tp, entry_price - dt.TP_NET_JPY / shares, places=9)
+        self.assertAlmostEqual(sl, entry_price - dt.SL_NET_JPY / shares, places=9)
+
+    def test_net_pnl_at_tp_and_sl_is_exact(self):
+        entry_price, shares = 3000.0, 300
+        tp, sl, _, _ = dt._tp_sl_prices(entry_price, "BUY", shares)
+        self.assertAlmostEqual(dt.net_pnl(entry_price, tp, shares, "BUY"), 5000.0, places=9)
+        self.assertAlmostEqual(dt.net_pnl(entry_price, sl, shares, "BUY"), -8000.0, places=9)
+        tp_s, sl_s, _, _ = dt._tp_sl_prices(entry_price, "SHORT", shares)
+        self.assertAlmostEqual(dt.net_pnl(entry_price, tp_s, shares, "SHORT"), 5000.0, places=9)
+        self.assertAlmostEqual(dt.net_pnl(entry_price, sl_s, shares, "SHORT"), -8000.0, places=9)
+
+
+class FeeRateProvenanceColumn(TmpCwdMixin, unittest.TestCase):
+    def test_pending_and_position_carry_fee_rate(self):
+        with open("strategy_policy.json", "w", encoding="utf-8") as f:
+            f.write('{"status": "PENDING"}')
+        now = datetime(2026, 10, 15, 9, 55, tzinfo=TZ)
+        payload = {"timestamp": now.timestamp(),
+                   "raw": [{"ticker": "placeholder"}], "scanned": 225}
+        with open(dt.fast.SCAN_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        candidates = [{"ticker": "7203.T", "direction": "BUY", "price": 3000.0, "score": 80.0,
+                       "up_probability": 60.0, "down_probability": 10.0, "top10_rank": 1,
+                       "market_regime": "neutral"}]
+        state = dt.default_state()
+        with patch.object(dt, "choose_policy_file_reusing_live_tick",
+                           return_value=("strategy_policy.json", "reused_today_row")), \
+             patch.object(live_p10, "load_policy", return_value={"status": "PENDING"}), \
+             patch.object(dt.fast, "scan_progressive_with_prefilter", return_value=(candidates, 225)):
+            dt._try_entry(state, now, now.strftime("%Y-%m-%d"))
+        self.assertEqual(state["pending"]["fee_rate"], dt.FEE_RATE)
+
+        bars = _bars([3000.0], start="2026-10-15 09:55")
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            dt._check_pending_fill(state, now, "2026-10-15")
+        self.assertEqual(state["positions"][0]["fee_rate"], dt.FEE_RATE)
+
+    def test_old_history_rows_without_fee_rate_are_untouched(self):
+        old_row = {"ticker": "9984.T", "direction": "BUY", "entry_price": 5000.0,
+                   "exit_price": 5050.0, "result": "TP", "pnl": 1234.0,
+                   "track": dt.TRACK, "validation_eligible": False}
+        pd.DataFrame([old_row]).to_csv(dt.HISTORY_FILE, index=False, encoding="utf-8-sig")
+
+        new_row = dict(old_row)
+        new_row["ticker"] = "7203.T"
+        new_row["fee_rate"] = dt.FEE_RATE
+        dt.append_history(new_row)
+
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertEqual(len(history), 2)
+        for key, value in old_row.items():
+            self.assertEqual(history.iloc[0][key], value)
+        self.assertTrue(pd.isna(history.iloc[0]["fee_rate"]))  # untouched old row -> defined as 0.00055
+        self.assertEqual(history.iloc[1]["fee_rate"], dt.FEE_RATE)
+
+    def test_close_position_history_row_carries_fee_rate(self):
+        pos = {
+            "ticker": "7203.T", "direction": "BUY", "entry_date": "2026-10-15",
+            "entry_time": "09:55", "entry_datetime": "2026-10-15T09:55:00",
+            "entry_price": 3000.0, "shares": 300, "invested_amount": 900000.0,
+            "tp": 3016.67, "sl": 2973.33, "tp_pct": 0.5, "sl_pct": -0.9,
+            "mfe_yen": 0.0, "mae_yen": 0.0, "current_price": 3000.0,
+            "price_bar_time": "2026-10-15T09:55:00", "fill_bar_time": "2026-10-15T09:55:00",
+            "decision_time": "2026-10-15T09:55:00", "fill_method": dt.FILL_METHOD_V2,
+            "fee_rate": dt.FEE_RATE,
+        }
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        dt._close_position(state, datetime(2026, 10, 15, 10, 0, tzinfo=TZ), 3020.0, "TP",
+                            pd.Timestamp("2026-10-15 10:00:00"))
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertEqual(history.iloc[-1]["fee_rate"], dt.FEE_RATE)
+
+
 if __name__ == "__main__":
     unittest.main()
