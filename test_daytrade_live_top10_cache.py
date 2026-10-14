@@ -478,6 +478,35 @@ class DailySummaryContent(TmpCwdMixin, unittest.TestCase):
         messages = dt._build_daily_summary_messages(self.TODAY)
         self.assertIsInstance(messages, list)
 
+    def test_zero_fee_cumulative_line_counts_only_fee_rate_zero_rows(self):
+        # fee_rate==0.0 rows (2026-10-15 zero-fee change onward) are counted
+        # separately from older rows whose fee_rate is blank (pre-change,
+        # defined to mean 0.00055) or explicitly 0.00055.
+        self._write_history([
+            {"ticker": "7203.T", "direction": "BUY", "entry_time": "09:35", "exit_time": "10:00",
+             "exit_date": "2026-09-30", "result": "TP", "pnl": 5000.0,
+             "fill_method": dt.FILL_METHOD_V2},  # no fee_rate column value at all (pre-change row)
+            {"ticker": "9984.T", "direction": "BUY", "entry_time": "11:00", "exit_time": "11:30",
+             "exit_date": self.TODAY, "result": "TP", "pnl": 5000.0,
+             "fill_method": dt.FILL_METHOD_V2, "fee_rate": 0.0},
+            {"ticker": "8035.T", "direction": "SHORT", "entry_time": "12:00", "exit_time": "12:30",
+             "exit_date": self.TODAY, "result": "SL", "pnl": -8000.0,
+             "fill_method": dt.FILL_METHOD_V2, "fee_rate": 0.0},
+            {"ticker": "6758.T", "direction": "BUY", "entry_time": "13:00", "exit_time": "13:30",
+             "exit_date": self.TODAY, "result": "TP", "pnl": 5000.0,
+             "fill_method": dt.FILL_METHOD_V2, "fee_rate": 0.00055},
+        ])
+        text = "\n".join(dt._build_daily_summary_messages(self.TODAY))
+        self.assertIn("手数料0円(10/15〜) 累計 2件 1勝1敗 合計 -3,000円", text)
+
+    def test_zero_fee_cumulative_line_absent_when_no_fee_rate_column(self):
+        self._write_history([
+            {"ticker": "7203.T", "direction": "BUY", "entry_time": "09:35", "exit_time": "10:00",
+             "exit_date": self.TODAY, "result": "TP", "pnl": 5000.0, "fill_method": dt.FILL_METHOD_V2},
+        ])
+        text = "\n".join(dt._build_daily_summary_messages(self.TODAY))
+        self.assertNotIn("手数料0円", text)
+
 
 # =====================================================================
 # History/cancelled-log CSV: new columns appended at the end, existing
