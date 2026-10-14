@@ -1,45 +1,5 @@
 {
-  "positions": [
-    {
-      "ticker": "4307.T",
-      "direction": "BUY",
-      "entry_date": "2026-10-14",
-      "entry_time": "14:25",
-      "entry_datetime": "2026-10-14T14:25:00",
-      "entry_price": 5685.0,
-      "shares": 100,
-      "invested_amount": 568500.0,
-      "tp": 5741.284456451049,
-      "sl": 5611.212917104408,
-      "tp_pct": 0.9900520044159851,
-      "sl_pct": -1.2979258205029374,
-      "score": 72.63487535080407,
-      "up_probability": 34.00185484216817,
-      "down_probability": 32.76022703649852,
-      "market_regime": "neutral",
-      "top10_rank": 3,
-      "top10_source": "live_tick_cache",
-      "skipped": "6098.T:budget,9766.T:budget",
-      "policy_file": "strategy_policy_up.json",
-      "policy_source": "daily_decision:2026-10-13",
-      "policy_hash": "cfe6da4cc960",
-      "model_id": "9df81234e6cf9e83",
-      "model_version": "2026-10-07",
-      "price_bar_time": "2026-10-14T14:25:00",
-      "data_delay_minutes": 15.954454766666666,
-      "decision_time": "2026-10-14T14:20:58.458835",
-      "fill_bar_time": "2026-10-14T14:25:00",
-      "fill_method": "decision_next_bar_open_v2",
-      "atr_pct": 0.13192612137203166,
-      "vwap_deviation_pct": -0.06146824074034745,
-      "mfe_yen": 1600.0,
-      "mae_yen": -400.0,
-      "current_price": 5691.0,
-      "entry_window_start": "09:55",
-      "market_regime_raw": "neutral",
-      "direction_gate": "regime_neutral"
-    }
-  ],
+  "positions": [],
   "pending": null,
   "trade_date": "2026-10-14",
   "trades_today": 2,
@@ -49,8 +9,9 @@
     "8766.T": "2026-10-13T15:20:57.481421+09:00",
     "6752.T": "2026-10-05T10:30:55.721538+09:00",
     "6645.T": "2026-10-06T15:20:53.875506+09:00",
-    "4704.T": "2026-10-14T14:15:56.855107+09:00"
+    "4704.T": "2026-10-14T14:15:56.855107+09:00",
+    "4307.T": "2026-10-14T15:20:56.875686+09:00"
   },
   "live_cache_miss_notice_date": null,
-  "daily_summary_sent_date": "2026-10-13"
+  "daily_summary_sent_date": "2026-10-14"
 }
