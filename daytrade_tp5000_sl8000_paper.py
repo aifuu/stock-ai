@@ -9,8 +9,12 @@ the exact same disk scan cache written by paper_fast_entrypoint.py in the
 same workflow tick -- no extra network calls for candidate selection), but
 its own independent capital (fixed 1,000,000 JPY budget per trade, no
 compounding, no shared pool with live), its own state/history files, and
-its own exit rule: close each trade at an exact **net-of-fee** profit of
-+5,000 JPY or loss of -8,000 JPY, instead of live's ATR-multiple TP/SL.
+(as of 2026-10-15, see the "Exit rule" section below) its own fixed-
+multiple ATR exit (TP=1.0x/SL=0.5x the ticker's 14-day daily ATR) for new
+positions -- distinct from live's own, separately-configured ATR TP/SL.
+A position already open at the time of that change keeps closing under
+this track's original exit rule instead: an exact **net-of-fee** profit
+of +5,000 JPY or loss of -8,000 JPY (see "TP/SL are solved exactly" below).
 
 Trading rules (see run() / _try_entry() / _check_pending_fill() /
 _evaluate_exit() for the exact mechanics):
@@ -32,9 +36,11 @@ _evaluate_exit() for the exact mechanics):
     skipped/failed tick -- is force-closed/cancelled immediately)
   - max 30 trades/day (a cancelled pending, see below, does not count)
 
-TP/SL are solved exactly so the realized **net** P&L (after this track's
-own round-trip fee rate, charged on both the entry and exit notional, in
-the same shape as profit_top10_paper.mark_and_close's own fee math:
+TP/SL for a position already open under the original yen rule (no
+exit_rule field -- see "Exit rule" below) are solved exactly so the
+realized **net** P&L (after this track's own round-trip fee rate, charged
+on both the entry and exit notional, in the same shape as
+profit_top10_paper.mark_and_close's own fee math:
 pnl = gross - (entry_price + exit_price) * shares * fee_rate) equals the
 target yen amount for a given share count `sh`:
     BUY:   exit = (net/sh + entry_price*(1+fee)) / (1-fee)
@@ -68,7 +74,9 @@ decision). That is unrealistic and flatters results, so it is now:
      later tick that happens to be, given the data delay). Shares are
      computed from the fill price within the 1,000,000 JPY budget in
      100-share lots (cancelled if even 100 shares exceeds budget), then
-     TP/SL are solved from the fill price with the formulas above.
+     TP/SL are solved from the fill price (the ATR exit rule for a new
+     position, see below; the original yen formulas above for a position
+     that predates it).
   3. Exit checks start WITH the fill bar itself (see _fill_bar_exit()):
      since the position enters exactly at that bar's open, only its
      High/Low *after* the open are checked (no gap-at-open rule on this
@@ -149,6 +157,30 @@ top10_source/entry_window_start); rows written before this field existed
 are untouched and read back empty, which is defined to mean 0.00055 (this
 track's fee rate prior to 2026-10-15).
 
+Exit rule (owner decision, 2026-10-15): NEW positions no longer use the
+fixed net-yen TP/SL described above -- they use an ATR exit instead. ATR
+is the 14-day daily ATR (true-range rolling mean, see _atr_as_of())
+computed from the ticker's DAILY bars, using only days strictly BEFORE
+the entry date (no look-ahead; daily bars come from
+daily_directional_top1.download() via the live_p10.download import,
+cached per ticker for the lifetime of this process/tick). BUY: tp =
+fill_price + ATR_TP_MULT*atr, sl = fill_price - ATR_SL_MULT*atr; SHORT is
+the mirror image. This is solved once at fill time (pending -> fill,
+_check_pending_fill()) and stored on the position (atr, atr_tp_mult,
+atr_sl_mult, tp, sl); it is never recomputed afterward. If ATR cannot be
+computed (no/insufficient daily data, or the result is NaN/<=0), the
+pending entry is cancelled (CANCELLED_NO_FILL_NO_ATR, logged like any
+other cancel) rather than silently falling back to the old yen targets.
+Exit mechanics themselves (fill-bar SL priority, gap-aware TP/SL from the
+next bar on, the 15:20 forced exit) are completely unchanged -- only how
+tp/sl are computed at fill time differs. A position already open in state
+at the time of this change (no exit_rule field) keeps whatever tp/sl it
+was given under the old yen rule until it closes; new positions carry a
+trailing exit_rule='atr_tp1.0_sl0.5' plus atr/atr_pct columns (same safe
+column-extension mechanism as fee_rate/entry_window_start; rows written
+before this field existed are untouched and read back empty, defined to
+mean 'yen_tp5000_sl8000', this track's exit rule prior to 2026-10-15).
+
 profit_top10_paper.py and run_profit_loop.py are imported read-only and
 never modified; see the usual monkeypatch-revert note near the imports
 below for why run_profit_loop's import-time side effects on
@@ -203,6 +235,19 @@ SL_NET_JPY = -8000.0
 COOLDOWN_MINUTES = 30
 MAX_TRADES_PER_DAY = 30
 
+# ATR exit rule (owner decision, 2026-10-15) -- see module docstring's
+# "Exit rule" section. Applies to NEW positions only; see EXIT_RULE_ATR.
+ATR_PERIOD = 14
+ATR_TP_MULT = 1.0
+ATR_SL_MULT = 0.5
+EXIT_RULE_ATR = "atr_tp1.0_sl0.5"
+LEGACY_EXIT_RULE_LABEL = "yen_tp5000_sl8000"  # documentation only; never written
+
+# Daily bars for ATR, keyed by ticker; cleared at the start of every tick
+# (run()) -- a fresh process per workflow tick is the natural cache
+# boundary in production, this just guards a long-lived process too.
+_DAILY_BARS_CACHE = {}
+
 
 def _read_daytrade_fee_rate():
     """This track owns its own fee-rate variable (DAYTRADE_FEE_RATE),
@@ -253,7 +298,7 @@ LEGACY_MODEL_VERSION = "legacy-20260912"
 
 def discord_send(message):
     """Never raises: a notify failure must never crash the trading tick."""
-    label = "\U0001f4b4 【デイトレ別枠 +5000/−8000】"
+    label = "\U0001f4b4 【デイトレ別枠 ATR TP1.0×/SL0.5×】"
     text = f"{label}\n{message}"
     webhook = os.getenv("DISCORD_WEBHOOK", "").strip()
     if not webhook:
@@ -456,6 +501,66 @@ def net_pnl(entry_price, exit_price, shares, direction):
     return gross - (entry_price + exit_price) * shares * FEE_RATE
 
 
+def _download_daily_bars(ticker):
+    """Daily bars for the ATR exit rule: reuses profit_top10_paper's own
+    daily_directional_top1.download() import (live_p10.download) rather
+    than opening a separate network path. Cached per ticker for this
+    process (see _DAILY_BARS_CACHE; run() clears it every tick). Returns
+    None on any download failure/empty result -- never raises."""
+    if ticker in _DAILY_BARS_CACHE:
+        return _DAILY_BARS_CACHE[ticker]
+    try:
+        df = live_p10.download(ticker, period="6mo")
+    except Exception as exc:
+        print(f"⚠️ daytrade: 日次データ取得失敗 {ticker}: {exc}")
+        df = None
+    _DAILY_BARS_CACHE[ticker] = df
+    return df
+
+
+def _atr_as_of(ticker, entry_date):
+    """14-day daily ATR (true-range rolling mean), computed using only
+    days strictly BEFORE entry_date -- no look-ahead. Returns None (never
+    raises) if daily bars are unavailable, there are fewer than
+    ATR_PERIOD+1 prior days, or the result is NaN/<=0; callers must not
+    enter on None rather than falling back to any other value."""
+    df = _download_daily_bars(ticker)
+    if df is None or df.empty:
+        return None
+    try:
+        entry_ts = pd.Timestamp(entry_date).normalize()
+        idx_norm = pd.DatetimeIndex(df.index).normalize()
+        prior = df[idx_norm < entry_ts]
+        if len(prior) < ATR_PERIOD + 1:
+            return None
+        h, l, c = prior["High"].squeeze(), prior["Low"].squeeze(), prior["Close"].squeeze()
+        pc = c.shift(1)
+        tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1).dropna()
+        if len(tr) < ATR_PERIOD:
+            return None
+        atr_val = float(tr.tail(ATR_PERIOD).mean())
+    except Exception as exc:
+        print(f"⚠️ daytrade: ATR計算失敗 {ticker}: {exc}")
+        return None
+    if not pd.notna(atr_val) or atr_val <= 0:
+        return None
+    return atr_val
+
+
+def _atr_tp_sl_prices(entry_price, direction, atr_val):
+    """ATR exit rule (owner decision, 2026-10-15): BUY tp/sl are
+    entry +/- ATR_TP_MULT/ATR_SL_MULT * atr; SHORT is the mirror image."""
+    if direction == "BUY":
+        tp = entry_price + ATR_TP_MULT * atr_val
+        sl = entry_price - ATR_SL_MULT * atr_val
+    else:
+        tp = entry_price - ATR_TP_MULT * atr_val
+        sl = entry_price + ATR_SL_MULT * atr_val
+    tp_pct = (tp - entry_price) / entry_price * 100.0
+    sl_pct = (sl - entry_price) / entry_price * 100.0
+    return tp, sl, tp_pct, sl_pct
+
+
 def _gap_fill_exit(direction, bar):
     """Returns (exit_price, reason) or (None, None). SL wins when a single
     bar's range touches both TP and SL (checked before TP in both branches
@@ -519,18 +624,6 @@ def _update_mfe_mae(pos, direction, hi, lo):
         fav, adv = (ep - lo) * sh, (ep - hi) * sh
     pos["mfe_yen"] = max(float(pos.get("mfe_yen", 0.0)), fav)
     pos["mae_yen"] = min(float(pos.get("mae_yen", 0.0)), adv)
-
-
-def _simple_atr_pct(bars, price, window=14):
-    """ATR approximated from the already-fetched 5-minute bars (no extra
-    daily download): mean high-low range of the last `window` 5-min bars,
-    as a percentage of price. A coarse proxy, recorded for diagnostics only
-    (not used by the TP/SL math)."""
-    if bars is None or bars.empty or price <= 0:
-        return None
-    tail = bars.tail(window)
-    tr = (tail["High"] - tail["Low"]).mean()
-    return float(tr) / price * 100.0 if pd.notna(tr) else None
 
 
 def _vwap_deviation_pct(bars, price, window=78):
@@ -738,7 +831,11 @@ def _check_pending_fill(state, now, today):
         return []
 
     direction = pending["direction"]
-    tp, sl, tp_pct, sl_pct = _tp_sl_prices(fill_price, direction, shares)
+    atr_val = _atr_as_of(ticker, today)
+    if atr_val is None:
+        _cancel_pending(state, "CANCELLED_NO_FILL_NO_ATR", now)
+        return []
+    tp, sl, tp_pct, sl_pct = _atr_tp_sl_prices(fill_price, direction, atr_val)
     now_naive = now.replace(tzinfo=None)
     data_delay_minutes = (now_naive - fill_bar_time).total_seconds() / 60.0
 
@@ -757,12 +854,14 @@ def _check_pending_fill(state, now, today):
         "price_bar_time": fill_bar_time.isoformat(), "data_delay_minutes": data_delay_minutes,
         "decision_time": decision_time.isoformat(), "fill_bar_time": fill_bar_time.isoformat(),
         "fill_method": FILL_METHOD_V2,
-        "atr_pct": _simple_atr_pct(bars, fill_price), "vwap_deviation_pct": _vwap_deviation_pct(bars, fill_price),
+        "atr_pct": atr_val / fill_price * 100.0, "vwap_deviation_pct": _vwap_deviation_pct(bars, fill_price),
         "mfe_yen": 0.0, "mae_yen": 0.0, "current_price": fill_price,
         "entry_window_start": pending.get("entry_window_start"),
         "market_regime_raw": pending.get("market_regime_raw"),
         "direction_gate": pending.get("direction_gate"),
         "fee_rate": pending.get("fee_rate", FEE_RATE),
+        "exit_rule": EXIT_RULE_ATR, "atr": atr_val,
+        "atr_tp_mult": ATR_TP_MULT, "atr_sl_mult": ATR_SL_MULT,
     }
     assert pd.Timestamp(position["fill_bar_time"]) >= pd.Timestamp(position["decision_time"]), (
         "invariant violated: fill_bar_time < decision_time"
@@ -775,7 +874,7 @@ def _check_pending_fill(state, now, today):
     return [(
         f"\U0001f195 エントリー約定｜{ticker}｜{'買い' if direction == 'BUY' else '空売り'}\n"
         f"約定価格 {fill_price:,.1f}円｜{shares:,}株｜投資額 {fill_price*shares:,.0f}円\n"
-        f"利確(+5000円) {tp:,.1f}｜損切(-8000円) {sl:,.1f}"
+        f"利確(ATR×{ATR_TP_MULT:.1f}) {tp:,.1f}｜損切(ATR×{ATR_SL_MULT:.1f}) {sl:,.1f}｜ATR {atr_val:,.1f}"
     )]
 
 
@@ -823,6 +922,12 @@ def _close_position(state, now, exit_price, reason, exit_ts):
         "market_regime_raw": pos.get("market_regime_raw"),
         "direction_gate": pos.get("direction_gate"),
         "fee_rate": pos.get("fee_rate", FEE_RATE),
+        # trailing columns, same safe column-extension mechanism as
+        # fee_rate/entry_window_start -- rows written before this field
+        # existed (incl. a legacy position with no exit_rule field, kept on
+        # its old yen TP/SL until close) are never rewritten and read back
+        # empty, defined to mean LEGACY_EXIT_RULE_LABEL ('yen_tp5000_sl8000').
+        "exit_rule": pos.get("exit_rule"), "atr": pos.get("atr"),
     }
     append_history(row)
     state.setdefault("last_exit_by_ticker", {})[pos["ticker"]] = pd.Timestamp(now).isoformat()
@@ -1067,6 +1172,18 @@ def _build_daily_summary_messages(today):
                 f"勝率{v2_win_rate_cum:.1f}%(損益分岐{breakeven_pct:.1f}%) 合計{v2_net_cum:+,.0f}円"
             )
 
+    if hist is not None and "exit_rule" in hist.columns and not hist.empty:
+        atr_hist = hist[hist["exit_rule"].astype(str) == EXIT_RULE_ATR]
+        atr_trades_cum = len(atr_hist)
+        if atr_trades_cum:
+            atr_pnl = pd.to_numeric(atr_hist["pnl"], errors="coerce").fillna(0.0)
+            atr_wins_cum = int((atr_pnl > 0).sum())
+            atr_net_cum = float(atr_pnl.sum())
+            lines.append(
+                f"ATR方式(TP{ATR_TP_MULT:.1f}×/SL{ATR_SL_MULT:.1f}×) 累計 {atr_trades_cum}件 "
+                f"{atr_wins_cum}勝{atr_trades_cum - atr_wins_cum}敗 合計 {atr_net_cum:+,.0f}円"
+            )
+
     if hist is not None and "fee_rate" in hist.columns and not hist.empty:
         fee_rate_num = pd.to_numeric(hist["fee_rate"], errors="coerce")
         zero_fee_hist = hist[fee_rate_num == 0.0]
@@ -1107,6 +1224,7 @@ def _maybe_send_daily_summary(state, now, today):
 def run(now=None):
     now = now or datetime.now(TZ)
     today = now.strftime("%Y-%m-%d")
+    _DAILY_BARS_CACHE.clear()
     state = load_state()
     reset_daily(state, today)
 

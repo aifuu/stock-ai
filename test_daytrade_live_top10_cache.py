@@ -507,6 +507,31 @@ class DailySummaryContent(TmpCwdMixin, unittest.TestCase):
         text = "\n".join(dt._build_daily_summary_messages(self.TODAY))
         self.assertNotIn("手数料0円", text)
 
+    def test_atr_cumulative_line_counts_only_exit_rule_atr_rows(self):
+        # exit_rule==EXIT_RULE_ATR rows (2026-10-15 ATR exit change onward)
+        # are counted separately from legacy yen-rule rows (blank exit_rule).
+        self._write_history([
+            {"ticker": "7203.T", "direction": "BUY", "entry_time": "09:35", "exit_time": "10:00",
+             "exit_date": "2026-09-30", "result": "TP", "pnl": 5000.0,
+             "fill_method": dt.FILL_METHOD_V2},  # pre-change row: no exit_rule column value at all
+            {"ticker": "9984.T", "direction": "BUY", "entry_time": "11:00", "exit_time": "11:30",
+             "exit_date": self.TODAY, "result": "TP", "pnl": 3000.0,
+             "fill_method": dt.FILL_METHOD_V2, "exit_rule": dt.EXIT_RULE_ATR},
+            {"ticker": "8035.T", "direction": "SHORT", "entry_time": "12:00", "exit_time": "12:30",
+             "exit_date": self.TODAY, "result": "SL", "pnl": -1500.0,
+             "fill_method": dt.FILL_METHOD_V2, "exit_rule": dt.EXIT_RULE_ATR},
+        ])
+        text = "\n".join(dt._build_daily_summary_messages(self.TODAY))
+        self.assertIn("ATR方式(TP1.0×/SL0.5×) 累計 2件 1勝1敗 合計 +1,500円", text)
+
+    def test_atr_cumulative_line_absent_when_no_exit_rule_column(self):
+        self._write_history([
+            {"ticker": "7203.T", "direction": "BUY", "entry_time": "09:35", "exit_time": "10:00",
+             "exit_date": self.TODAY, "result": "TP", "pnl": 5000.0, "fill_method": dt.FILL_METHOD_V2},
+        ])
+        text = "\n".join(dt._build_daily_summary_messages(self.TODAY))
+        self.assertNotIn("ATR方式", text)
+
 
 # =====================================================================
 # History/cancelled-log CSV: new columns appended at the end, existing
@@ -537,6 +562,58 @@ class HistoryColumnExtensionIsSafe(TmpCwdMixin, unittest.TestCase):
         self.assertEqual(hist.iloc[1]["skipped"], "4062.T:budget")
         # new columns land after all pre-existing columns
         self.assertEqual(hist.columns.tolist()[-2:], ["top10_source", "skipped"])
+
+    def test_exit_rule_and_atr_columns_appended_and_old_rows_untouched(self):
+        # Mirrors the above for the 2026-10-15 ATR exit rule's own trailing
+        # columns (see daytrade's module docstring "Exit rule" section):
+        # a row written before exit_rule/atr existed must be untouched and
+        # read back empty for both, defined to mean LEGACY_EXIT_RULE_LABEL.
+        old_row = {"ticker": "7203.T", "direction": "BUY", "pnl": 1234.5, "result": "TP",
+                   "track": dt.TRACK, "validation_eligible": False, "fee_rate": 0.0}
+        pd.DataFrame([old_row]).to_csv(dt.HISTORY_FILE, index=False, encoding="utf-8-sig")
+
+        new_row = dict(old_row)
+        new_row.update({"ticker": "9984.T", "pnl": 3000.0, "exit_rule": dt.EXIT_RULE_ATR, "atr": 25.0})
+        dt.append_history(new_row)
+
+        hist = pd.read_csv(dt.HISTORY_FILE)
+        self.assertEqual(len(hist), 2)
+        self.assertEqual(hist.iloc[0]["ticker"], "7203.T")
+        self.assertTrue(pd.isna(hist.iloc[0]["exit_rule"]))  # old row: empty -> defined as yen rule
+        self.assertTrue(pd.isna(hist.iloc[0]["atr"]))
+        self.assertEqual(hist.iloc[1]["exit_rule"], dt.EXIT_RULE_ATR)
+        self.assertEqual(float(hist.iloc[1]["atr"]), 25.0)
+        self.assertEqual(hist.columns.tolist()[-2:], ["exit_rule", "atr"])
+
+
+# =====================================================================
+# Discordテキスト(オーナー承認, 2026-10-15): ATR退出ルールへの変更に伴い、
+# 旧「+5000/-8000」表記はラベル/エントリー約定メッセージから消え、
+# 数字→単位の表記('4件 2勝2敗'等)は変わらず維持される。
+# =====================================================================
+
+class DiscordTextsReflectAtrExitRule(TmpCwdMixin, unittest.TestCase):
+    def test_label_no_longer_states_fixed_yen_amounts(self):
+        os.environ.pop("DISCORD_WEBHOOK", None)
+        with patch("builtins.print") as mock_print:
+            dt.discord_send("test")
+        printed = "\n".join(str(c) for c in mock_print.call_args_list)
+        self.assertNotIn("+5000", printed)
+        self.assertNotIn("8000", printed)
+        self.assertIn("ATR", printed)
+
+    def test_number_before_unit_wording_unchanged(self):
+        # the owner's "数字→単位" convention ('4件 2勝2敗', never '件数4')
+        # must survive the exit-rule text change untouched.
+        pd.DataFrame([
+            {"ticker": "7203.T", "direction": "BUY", "entry_time": "09:35", "exit_time": "10:00",
+             "exit_date": "2026-10-02", "result": "TP", "pnl": 1000.0, "fill_method": dt.FILL_METHOD_V2},
+            {"ticker": "9984.T", "direction": "BUY", "entry_time": "11:00", "exit_time": "11:30",
+             "exit_date": "2026-10-02", "result": "SL", "pnl": -500.0, "fill_method": dt.FILL_METHOD_V2},
+        ]).to_csv(dt.HISTORY_FILE, index=False, encoding="utf-8-sig")
+        text = "\n".join(dt._build_daily_summary_messages("2026-10-02"))
+        self.assertRegex(text, r"\d+件 \d+勝\d+敗")
+        self.assertNotRegex(text, r"件数\d+")
 
 
 if __name__ == "__main__":
