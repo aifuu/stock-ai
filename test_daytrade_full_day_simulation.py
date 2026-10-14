@@ -108,6 +108,42 @@ def _build_day_bars():
     return {"7203.T": bars_7203, "9984.T": bars_9984}
 
 
+# ATR fixtures for the ATR exit rule (owner decision, 2026-10-15): flat
+# daily OHLC with a constant High-Low range, so the 14-day rolling-mean
+# true range comes out to exactly `range_val` for every ticker (TR=H-L
+# when Close never moves). 7203.T's range is chosen so its ATR-based TP
+# (entry + 1.0*ATR) still sits below the 11:00 gap-up to 3050 -- the
+# trade's TP-at-open outcome is unchanged from the pre-ATR fixed-yen
+# version of this test.
+DAILY_ATR_RANGE = {"7203.T": 25.0, "9984.T": 15.0, "8035.T": 50.0}
+
+
+def _daily_bars_for_atr(ticker, range_val, end, n=20):
+    idx = pd.bdate_range(end=pd.Timestamp(end) - pd.Timedelta(days=1), periods=n)
+    close = [3000.0] * n
+    return pd.DataFrame(
+        {"Open": close, "High": [c + range_val / 2 for c in close],
+         "Low": [c - range_val / 2 for c in close], "Close": close},
+        index=idx,
+    )
+
+
+# Realistic per-call latency for the new ATR daily download, so
+# test_daytrade_tick_runtime_stays_far_under_90s_budget actually exercises
+# that added network call rather than a free in-memory lookup -- it only
+# fires on a fill tick (at most a couple of times in the whole simulated
+# day; _DAILY_BARS_CACHE means at most once per ticker per tick either way).
+DAILY_DOWNLOAD_DELAY_SECONDS = 1.5
+
+
+def _fake_download_daily(ticker, period="6mo"):
+    time.sleep(DAILY_DOWNLOAD_DELAY_SECONDS)
+    range_val = DAILY_ATR_RANGE.get(ticker)
+    if range_val is None:
+        return None
+    return _daily_bars_for_atr(ticker, range_val, end=DAY)
+
+
 def _simulate_live_tick(tick_no, now):
     """Stand-in for the real live tick (paper_fast_entrypoint.py calling
     into profit_top10_paper.py). Content depends only on tick_no, never on
@@ -156,6 +192,7 @@ def _run_simulated_day(work_dir, with_daytrade):
 
         runtimes = []
         with patch.object(live_p10, "download_5m", side_effect=fake_download_5m), \
+             patch.object(live_p10, "download", side_effect=_fake_download_daily), \
              patch.object(live_loop, "_market_regime", return_value=("neutral", 0.0, 0.0)), \
              patch.object(live_loop, "_load_feedback_weights", return_value={"BUY": 1.0, "SHORT": 1.0}), \
              patch.object(dt, "choose_policy_file_reusing_live_tick",
@@ -356,6 +393,7 @@ def _run_down_day_with_brake(work_dir, with_daytrade):
         decisions_policy = []
         now_holder["now"] = _tick_range()[0].replace(hour=8, minute=30)
         with patch.object(live_p10, "download_5m", side_effect=fake_download_5m), \
+             patch.object(live_p10, "download", side_effect=_fake_download_daily), \
              patch.object(live_loop, "_market_regime", return_value=("neutral", 0.0, 0.0)), \
              patch.object(live_loop, "_load_feedback_weights", return_value={"BUY": 1.0, "SHORT": 1.0}), \
              patch.object(futures_trend, "_download", side_effect=_down_futures_bars), \

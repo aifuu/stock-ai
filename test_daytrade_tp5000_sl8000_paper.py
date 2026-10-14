@@ -43,12 +43,17 @@ TZ = ZoneInfo("Asia/Tokyo")
 class TmpCwdMixin:
     """daytrade's state/history files are written relative to the cwd; run
     each test in an isolated tmpdir so tests never touch the repo's real
-    daytrade_tp5000_sl8000_*.json/csv files."""
+    daytrade_tp5000_sl8000_*.json/csv files. Also clears the per-process
+    daily-bars ATR cache (_DAILY_BARS_CACHE) so one test's mocked
+    live_p10.download return value can never leak into another test
+    reusing the same ticker (run() clears this same cache every real
+    tick; nothing clears it between unittest methods otherwise)."""
 
     def setUp(self):
         self._prev_cwd = os.getcwd()
         self._tmp = tempfile.TemporaryDirectory()
         os.chdir(self._tmp.name)
+        dt._DAILY_BARS_CACHE.clear()
 
     def tearDown(self):
         os.chdir(self._prev_cwd)
@@ -60,6 +65,22 @@ def _bars(closes, start, freq="5min"):
     return pd.DataFrame(
         {"Open": closes, "High": [c + 1 for c in closes], "Low": [c - 1 for c in closes],
          "Close": closes, "Volume": [1000] * len(closes)},
+        index=idx,
+    )
+
+
+def _daily_bars(range_val, end="2026-09-25", n=20):
+    """Deterministic daily OHLC fixture for the ATR exit rule: a flat
+    Close with a constant High-Low range, so the 14-day rolling-mean true
+    range (dt._atr_as_of()) comes out to exactly `range_val` (TR = H-L =
+    range_val for every bar when Close never moves, so |H-prevClose| and
+    |L-prevClose| are both range_val/2, strictly less than H-L). `end` is
+    the entry date (exclusive) the bars must all fall strictly before."""
+    idx = pd.bdate_range(end=pd.Timestamp(end) - pd.Timedelta(days=1), periods=n)
+    close = [3000.0] * n
+    return pd.DataFrame(
+        {"Open": close, "High": [c + range_val / 2 for c in close],
+         "Low": [c - range_val / 2 for c in close], "Close": close},
         index=idx,
     )
 
@@ -459,6 +480,17 @@ class EntryCreatesPendingNotImmediateFill(TmpCwdMixin, unittest.TestCase):
 # =====================================================================
 
 class PendingFillConfirmation(TmpCwdMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        # ATR=40.0 for every ticker in this class by default (see
+        # AtrExitRule below for ATR computation/cancellation itself).
+        self._daily_patcher = patch.object(live_p10, "download", return_value=_daily_bars(40.0))
+        self._daily_patcher.start()
+
+    def tearDown(self):
+        self._daily_patcher.stop()
+        super().tearDown()
+
     def _pending(self, decision_time="2026-09-25 09:31:00", direction="BUY", ticker="7203.T", budget=1_000_000.0):
         decision_time = pd.Timestamp(decision_time)
         return {
@@ -511,15 +543,26 @@ class PendingFillConfirmation(TmpCwdMixin, unittest.TestCase):
         pos = state["positions"][0]
         self.assertEqual(pos["shares"], 300)  # floor(1_000_000 / 3020 / 100) * 100
 
-    def test_tp_sl_solved_from_fill_price(self):
+    def test_tp_sl_solved_from_fill_price_atr(self):
         state = dt.default_state()
         state["pending"] = self._pending(decision_time="2026-09-25 09:31:00")
         bars = _bars([3010.0, 3020.0], start="2026-09-25 09:30")
         with patch.object(live_p10, "download_5m", return_value=bars):
-            dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
         pos = state["positions"][0]
-        self.assertAlmostEqual(dt.net_pnl(pos["entry_price"], pos["tp"], pos["shares"], "BUY"), dt.TP_NET_JPY, places=4)
-        self.assertAlmostEqual(dt.net_pnl(pos["entry_price"], pos["sl"], pos["shares"], "BUY"), dt.SL_NET_JPY, places=4)
+        self.assertAlmostEqual(pos["atr"], 40.0)
+        self.assertEqual(pos["exit_rule"], dt.EXIT_RULE_ATR)
+        self.assertEqual(pos["atr_tp_mult"], dt.ATR_TP_MULT)
+        self.assertEqual(pos["atr_sl_mult"], dt.ATR_SL_MULT)
+        self.assertAlmostEqual(pos["tp"], pos["entry_price"] + dt.ATR_TP_MULT * 40.0)
+        self.assertAlmostEqual(pos["sl"], pos["entry_price"] - dt.ATR_SL_MULT * 40.0)
+        self.assertAlmostEqual(pos["atr_pct"], 40.0 / pos["entry_price"] * 100.0)
+        # the fill message itself must describe the ATR rule, not the old
+        # fixed-yen one (see module docstring's Discord-texts note)
+        self.assertEqual(len(msgs), 1)
+        self.assertNotIn("+5000円", msgs[0])
+        self.assertNotIn("-8000円", msgs[0])
+        self.assertIn("ATR", msgs[0])
 
     def test_cancelled_when_100_shares_exceed_budget(self):
         state = dt.default_state()
@@ -585,6 +628,197 @@ class PendingFillConfirmation(TmpCwdMixin, unittest.TestCase):
             dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
         pos = state["positions"][0]
         self.assertGreaterEqual(pd.Timestamp(pos["fill_bar_time"]), pd.Timestamp(pos["decision_time"]))
+
+
+# =====================================================================
+# ATR退出ルール(オーナー承認, 2026-10-15): 新規ポジションはTP=ATR×1.0/
+# SL=ATR×0.5(SHORTは鏡像)。ATRはエントリー日より厳密に前の日次バーのみ
+# から算出(ルックアヘッド無し)。算出不能(データ無し/NaN/<=0)なら
+# エントリーせずPENDINGをCANCELLED_NO_FILL_NO_ATRとしてキャンセルログに
+# 記録する(既存のキャンセル経路と同じ扱い)。
+# =====================================================================
+
+class AtrTpSlFormula(unittest.TestCase):
+    def test_buy_tp_sl_from_known_atr(self):
+        tp, sl, tp_pct, sl_pct = dt._atr_tp_sl_prices(3000.0, "BUY", 40.0)
+        self.assertAlmostEqual(tp, 3040.0)
+        self.assertAlmostEqual(sl, 2980.0)
+        self.assertAlmostEqual(tp_pct, 40.0 / 3000.0 * 100.0)
+        self.assertAlmostEqual(sl_pct, -20.0 / 3000.0 * 100.0)
+
+    def test_short_tp_sl_from_known_atr_is_mirrored(self):
+        tp, sl, tp_pct, sl_pct = dt._atr_tp_sl_prices(3000.0, "SHORT", 40.0)
+        self.assertAlmostEqual(tp, 2960.0)
+        self.assertAlmostEqual(sl, 3020.0)
+        self.assertAlmostEqual(tp_pct, -40.0 / 3000.0 * 100.0)
+        self.assertAlmostEqual(sl_pct, 20.0 / 3000.0 * 100.0)
+
+
+class AtrExitNetPnlAtZeroFee(unittest.TestCase):
+    """dt.FEE_RATE==0.0 in this test process (see TpSlAndNetPnlAtZeroFee
+    above); with fee 0, net P&L must equal exactly (exit-entry)*shares
+    regardless of how tp/sl were derived (ATR-based or the legacy yen
+    formula) -- net_pnl() itself does not know or care which exit rule
+    priced the trade."""
+
+    def test_buy_pnl_at_atr_tp_and_sl_is_exact(self):
+        entry_price, shares, atr_val = 3000.0, 300, 40.0
+        tp, sl, _, _ = dt._atr_tp_sl_prices(entry_price, "BUY", atr_val)
+        self.assertAlmostEqual(dt.net_pnl(entry_price, tp, shares, "BUY"), (tp - entry_price) * shares, places=9)
+        self.assertAlmostEqual(dt.net_pnl(entry_price, sl, shares, "BUY"), (sl - entry_price) * shares, places=9)
+
+    def test_short_pnl_at_atr_tp_and_sl_is_exact(self):
+        entry_price, shares, atr_val = 3000.0, 300, 40.0
+        tp, sl, _, _ = dt._atr_tp_sl_prices(entry_price, "SHORT", atr_val)
+        self.assertAlmostEqual(dt.net_pnl(entry_price, tp, shares, "SHORT"), (entry_price - tp) * shares, places=9)
+        self.assertAlmostEqual(dt.net_pnl(entry_price, sl, shares, "SHORT"), (entry_price - sl) * shares, places=9)
+
+
+class LegacyPositionWithoutExitRuleKeepsYenExit(TmpCwdMixin, unittest.TestCase):
+    """A position already open in state at the time of the 2026-10-15 ATR
+    exit change (fill_method set, but no exit_rule field -- it was filled
+    under the old code) must keep whatever tp/sl it was already given and
+    must never have them recomputed from ATR on close; its history row's
+    exit_rule/atr columns stay blank (see HistoryColumnExtensionIsSafe's
+    exit_rule/atr test for the CSV-level guarantee)."""
+
+    def _pre_atr_v2_position(self):
+        return {
+            "ticker": "7203.T", "direction": "BUY", "entry_date": "2026-09-25",
+            "entry_time": "09:35", "entry_datetime": "2026-09-25T09:35:00",
+            "entry_price": 3000.0, "shares": 300, "invested_amount": 900000.0,
+            # tp/sl solved under the OLD yen rule at fill time, pre-dating
+            # exit_rule/atr entirely -- must survive untouched to close.
+            "tp": 3016.6666666666665, "sl": 2973.3333333333335,
+            "tp_pct": 0.5, "sl_pct": -0.9, "mfe_yen": 0.0, "mae_yen": 0.0,
+            "current_price": 3000.0, "price_bar_time": "2026-09-25T09:35:00",
+            "fill_bar_time": "2026-09-25T09:35:00", "decision_time": "2026-09-25T09:31:00",
+            "fill_method": dt.FILL_METHOD_V2,
+        }
+
+    def test_close_never_recomputes_tp_sl_from_atr(self):
+        pos = self._pre_atr_v2_position()
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        with patch.object(dt, "_atr_as_of") as atr_fn, patch.object(dt, "_atr_tp_sl_prices") as atr_formula:
+            dt._close_position(state, datetime(2026, 9, 25, 10, 0, tzinfo=TZ), 3016.6666666666665, "TP",
+                                pd.Timestamp("2026-09-25 10:00:00"))
+        atr_fn.assert_not_called()
+        atr_formula.assert_not_called()
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertTrue(pd.isna(history.iloc[-1]["exit_rule"]))  # blank -> defined as yen rule
+        self.assertTrue(pd.isna(history.iloc[-1]["atr"]))
+        self.assertAlmostEqual(float(history.iloc[-1]["pnl"]), dt.TP_NET_JPY, places=4)
+
+    def test_evaluate_exit_v2_uses_the_stored_yen_tp_sl_unchanged(self):
+        pos = self._pre_atr_v2_position()
+        state = {"positions": [pos], "last_exit_by_ticker": {}}
+        bars = _bars([3000.0, 3020.0], start="2026-09-25 09:30")  # 09:35 bar gaps through the stored tp
+        with patch.object(live_p10, "download_5m", return_value=bars):
+            msgs = dt._evaluate_exit(state, datetime(2026, 9, 25, 9, 40, tzinfo=TZ))
+        self.assertEqual(len(msgs), 1)
+        history = pd.read_csv(dt.HISTORY_FILE)
+        self.assertAlmostEqual(float(history.iloc[-1]["tp"]), 3016.6666666666665)
+        self.assertAlmostEqual(float(history.iloc[-1]["pnl"]), dt.TP_NET_JPY, places=4)
+
+
+class AtrAsOfNoLookAhead(TmpCwdMixin, unittest.TestCase):
+    def test_atr_computed_from_known_range_fixture(self):
+        with patch.object(live_p10, "download", return_value=_daily_bars(40.0)):
+            atr_val = dt._atr_as_of("7203.T", "2026-09-25")
+        self.assertAlmostEqual(atr_val, 40.0)
+
+    def test_atr_excludes_bars_on_or_after_entry_date(self):
+        # 14+1 prior days at range=10, then days ON/AFTER the entry date
+        # with a huge range -- the result must reflect ONLY the prior
+        # days (no look-ahead), proving entry_date itself is excluded too.
+        prior_idx = pd.bdate_range(end="2026-09-24", periods=20)
+        prior_close = [3000.0] * 20
+        prior = pd.DataFrame(
+            {"Open": prior_close, "High": [c + 5 for c in prior_close], "Low": [c - 5 for c in prior_close],
+             "Close": prior_close}, index=prior_idx,
+        )
+        future_idx = pd.bdate_range(start="2026-09-25", periods=3)  # includes entry date itself
+        future_close = [3000.0] * 3
+        future = pd.DataFrame(
+            {"Open": future_close, "High": [c + 500 for c in future_close], "Low": [c - 500 for c in future_close],
+             "Close": future_close}, index=future_idx,
+        )
+        full = pd.concat([prior, future])
+        with patch.object(live_p10, "download", return_value=full):
+            atr_val = dt._atr_as_of("7203.T", "2026-09-25")
+        self.assertAlmostEqual(atr_val, 10.0)  # from the range=10 prior days only
+
+    def test_returns_none_on_insufficient_prior_history(self):
+        idx = pd.bdate_range(end="2026-09-24", periods=5)  # fewer than ATR_PERIOD+1
+        close = [3000.0] * 5
+        df = pd.DataFrame({"Open": close, "High": [c + 5 for c in close], "Low": [c - 5 for c in close],
+                            "Close": close}, index=idx)
+        with patch.object(live_p10, "download", return_value=df):
+            self.assertIsNone(dt._atr_as_of("7203.T", "2026-09-25"))
+
+    def test_returns_none_when_daily_download_unavailable(self):
+        with patch.object(live_p10, "download", return_value=None):
+            self.assertIsNone(dt._atr_as_of("7203.T", "2026-09-25"))
+
+    def test_returns_none_on_non_positive_atr(self):
+        # a perfectly flat (zero-range, zero-move) daily history -> TR=0
+        # for every bar -> ATR=0, which must be treated as "unusable" too.
+        idx = pd.bdate_range(end="2026-09-24", periods=20)
+        close = [3000.0] * 20
+        df = pd.DataFrame({"Open": close, "High": close, "Low": close, "Close": close}, index=idx)
+        with patch.object(live_p10, "download", return_value=df):
+            self.assertIsNone(dt._atr_as_of("7203.T", "2026-09-25"))
+
+    def test_daily_bars_cached_per_tick_not_redownloaded(self):
+        with patch.object(live_p10, "download", return_value=_daily_bars(40.0)) as dl:
+            dt._atr_as_of("7203.T", "2026-09-25")
+            dt._atr_as_of("7203.T", "2026-09-25")
+        self.assertEqual(dl.call_count, 1)  # same ticker, same tick -> one download only
+
+    def test_cache_cleared_at_the_start_of_every_run_tick(self):
+        dt._download_daily_bars("7203.T")  # pre-populate (None, download mocked to raise below)
+        with patch.object(live_p10, "download"), \
+             patch.object(dt, "_try_entry", return_value=None):
+            dt.run(now=datetime(2026, 9, 27, 10, 0, tzinfo=TZ))  # Sunday -> no-op before any ATR call
+        self.assertNotIn("7203.T", dt._DAILY_BARS_CACHE)  # run() cleared it even though it skipped
+
+
+class EntryCancelledWhenAtrUnavailable(TmpCwdMixin, unittest.TestCase):
+    def _pending(self, decision_time="2026-09-25 09:31:00", direction="BUY", ticker="7203.T", budget=1_000_000.0):
+        decision_time = pd.Timestamp(decision_time)
+        return {
+            "ticker": ticker, "direction": direction,
+            "decision_date": "2026-09-25", "decision_time": decision_time.isoformat(),
+            "fill_bar_time": dt._ceil_bar_time(decision_time).isoformat(),
+            "score": 80.0, "up_probability": 60.0, "down_probability": 10.0, "market_regime": "neutral",
+            "top10_rank": 1, "policy_file": "strategy_policy.json", "policy_source": "reused_today_row",
+            "policy_hash": "abc123", "model_id": None, "model_version": "legacy-20260912",
+            "budget": budget, "entry_window_start": "09:55",
+        }
+
+    def test_cancelled_when_atr_is_none(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 09:31:00")
+        bars = _bars([3010.0, 3020.0], start="2026-09-25 09:30")
+        with patch.object(live_p10, "download_5m", return_value=bars), \
+             patch.object(live_p10, "download", return_value=None):
+            msgs = dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
+        self.assertEqual(msgs, [])
+        self.assertIsNone(state["pending"])
+        self.assertEqual(state["positions"], [])
+        log = pd.read_csv(dt.CANCELLED_LOG_FILE)
+        self.assertEqual(log.iloc[-1]["reason"], "CANCELLED_NO_FILL_NO_ATR")
+        self.assertFalse(os.path.exists(dt.HISTORY_FILE))  # never a trade row
+
+    def test_never_falls_back_to_yen_targets_when_atr_missing(self):
+        state = dt.default_state()
+        state["pending"] = self._pending(decision_time="2026-09-25 09:31:00")
+        bars = _bars([3010.0, 3020.0], start="2026-09-25 09:30")
+        with patch.object(live_p10, "download_5m", return_value=bars), \
+             patch.object(live_p10, "download", return_value=None), \
+             patch.object(dt, "_tp_sl_prices") as yen_formula:
+            dt._check_pending_fill(state, datetime(2026, 9, 25, 9, 51, tzinfo=TZ), "2026-09-25")
+        yen_formula.assert_not_called()
 
 
 # =====================================================================
@@ -1035,7 +1269,8 @@ class FeeRateProvenanceColumn(TmpCwdMixin, unittest.TestCase):
         self.assertEqual(state["pending"]["fee_rate"], dt.FEE_RATE)
 
         bars = _bars([3000.0], start="2026-10-15 09:55")
-        with patch.object(live_p10, "download_5m", return_value=bars):
+        with patch.object(live_p10, "download_5m", return_value=bars), \
+             patch.object(live_p10, "download", return_value=_daily_bars(40.0, end="2026-10-15")):
             dt._check_pending_fill(state, now, "2026-10-15")
         self.assertEqual(state["positions"][0]["fee_rate"], dt.FEE_RATE)
 
