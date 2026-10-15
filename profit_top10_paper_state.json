@@ -1,49 +1,14 @@
 {
-  "capital": 940050.5236701085,
+  "capital": 923828.7136701085,
   "peak": 1000000.0,
-  "max_dd": 5.994947632989148,
-  "positions": [
-    {
-      "ticker": "4704.T",
-      "company": "トレンドマイクロ",
-      "price": 7548.0,
-      "up_probability": 38.69412880526872,
-      "down_probability": 35.287172640227446,
-      "flat_probability": 26.01869855450389,
-      "data_date": "2026-10-09",
-      "direction": "BUY",
-      "score": 86.06514122287213,
-      "tp": 8510.87229597718,
-      "sl": 7307.281926005705,
-      "buy_reason": "出来高2.0倍｜上昇トレンド｜25日線上｜75日線上｜MACD買い｜RSI77.6｜AI上昇38.7%/下落35.3%｜日経上昇",
-      "expected_value_pct": 3.810710706002398,
-      "market_regime": "bullish",
-      "regime_preferred": true,
-      "regime_bonus": 10.0,
-      "profit_ev_pct": 3.7821,
-      "feedback_weight": 1.0,
-      "profit_priority": 79.1797,
-      "market_regime_raw": "bullish",
-      "direction_gate": "regime_bullish",
-      "selection_level": 1,
-      "selection_mode": "normal",
-      "top10_rank": 1,
-      "entry_date": "2026-10-13",
-      "entry_time": "09:00",
-      "entry_price": 7548.0,
-      "shares": 100,
-      "invested_amount": 754800.0,
-      "allocation": 1.0,
-      "policy_updated_at": "2026-09-16T08:12:55",
-      "current_price": 7378.0,
-      "unrealized_pnl": -17820.93
-    }
-  ],
-  "trade_count_date": "2026-10-14",
+  "max_dd": 7.617128632989154,
+  "positions": [],
+  "trade_count_date": "2026-10-15",
   "trades_today": 0,
   "trades_by_ticker_today": {},
   "daily_start_capital": 940050.5236701085,
   "last_exit_by_ticker": {
-    "6472.T": "2026-10-09T09:26:02.492768+09:00"
+    "6472.T": "2026-10-09T09:26:02.492768+09:00",
+    "4704.T": "2026-10-15T09:01:20.657225+09:00"
   }
 }
