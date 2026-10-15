@@ -37,7 +37,10 @@ import run_profit_loop as loop  # noqa: E402
 
 def _candidate(ticker="TEST"):
     return {
-        "ticker": ticker, "direction": "BUY", "score": 10, "up_probability": 60,
+        # price: FIX(資金不足見送り)がopen_top1_only内で100株=price*100円が買えるか
+        # チェックするようになったため、この値が無いと常に資金不足扱いになり
+        # クールダウン自己修復ロジック自体のテストが無関係な理由で落ちる。
+        "ticker": ticker, "direction": "BUY", "price": 3000.0, "score": 10, "up_probability": 60,
         "down_probability": 10, "profit_priority": 1.0, "profit_ev_pct": 1.0,
         "feedback_weight": 1.0, "selection_mode": "normal", "selection_level": 1,
         "top10_rank": 1, "market_regime": "neutral", "regime_preferred": False,

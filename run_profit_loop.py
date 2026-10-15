@@ -7,6 +7,7 @@ Nikkei bullish -> BUY only, bearish -> SHORT only, neutral -> compare both.
 """
 from datetime import datetime, timedelta
 import json
+import math
 import os
 import numpy as np
 import pandas as pd
@@ -221,6 +222,13 @@ def close_positions_with_cooldown(state,now,policy):
 
 def open_top1_only(state,policy,candidates,today):
     cooldowns=state.setdefault("last_exit_by_ticker",{});now=datetime.now(app.TZ);active={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};eligible=[];regime,_,_=_market_regime();down_day=_down_day_decision()
+    # ★追加: rank1がRANK1でも1単元(100株)すら買えない場合、open_positions側は
+    # その1件を渡されてcontinueするだけでその日は何も開かない(フォールバック無し)。
+    # ここでeligible構築時にopen_positionsと同じ「買えるか」判定を適用し、最初に
+    # 買える候補をTOP1として選ぶ。capital/残り現金はこのループ中は変化しない
+    # (このループでは実際にポジションを開かない)ため1回だけ計算する。
+    capital=float(state.get("capital",app.INITIAL_CAPITAL));cash_remaining=capital-sum(float(p.get("invested_amount",0)) for p in state.get("positions",[]))
+    skipped_unaffordable=[]
     for candidate in profit_priority(candidates)[:TOP10]:
         ticker=str(candidate.get("ticker","")).strip();direction=str(candidate.get("direction","BUY")).upper()
         if down_day:
@@ -243,6 +251,11 @@ def open_top1_only(state,policy,candidates,today):
                 remaining=SAME_TICKER_COOLDOWN_MINUTES*60
             if remaining>0:print(f"⏸ 同一銘柄クールダウン中: {ticker} 残り約{int(remaining//60)+1}分");continue
             cooldowns.pop(ticker,None)
+        price=float(candidate.get("price",0) or 0)
+        if not(math.isfinite(price) and price>0 and app.LOT_SIZE*price<=cash_remaining):
+            skipped_unaffordable.append(ticker)
+            print(f"⏭ 資金不足のため見送り: {ticker} 100株={price*app.LOT_SIZE:,.0f}円 > 残り{cash_remaining:,.0f}円")
+            continue
         eligible.append(candidate)
     if not eligible:print("⏸ 候補内に新規エントリ可能なTOP1なし");return []
     top1=eligible[0];old_max_total=app.MAX_TOTAL_TRADES_PER_DAY;old_max_ticker=app.MAX_TRADES_PER_TICKER_PER_DAY
@@ -254,7 +267,9 @@ def open_top1_only(state,policy,candidates,today):
     finally:
         app.MAX_TOTAL_TRADES_PER_DAY=old_max_total;app.MAX_TRADES_PER_TICKER_PER_DAY=old_max_ticker
     if opened:
-        p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));p["feedback_weight"]=float(top1.get("feedback_weight",1.0));p["market_regime_raw"]=top1.get("market_regime_raw",regime);p["direction_gate"]=top1.get("direction_gate",_direction_gate_label(down_day,regime));print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}% FEEDBACK_W={p['feedback_weight']:.2f}")
+        p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));p["feedback_weight"]=float(top1.get("feedback_weight",1.0));p["market_regime_raw"]=top1.get("market_regime_raw",regime);p["direction_gate"]=top1.get("direction_gate",_direction_gate_label(down_day,regime))
+        if skipped_unaffordable:p["skipped_unaffordable"]=",".join(skipped_unaffordable)
+        print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}% FEEDBACK_W={p['feedback_weight']:.2f}")
     return opened
 
 app.scan=scan_candidates_fixed
