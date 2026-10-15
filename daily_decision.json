@@ -17,7 +17,7 @@
   "entry_block_reason": null,
   "shadow_policy_file": null,
   "shadow_policy_hash": null,
-  "intraday_crash_brake": false,
-  "crash_brake_time": null,
-  "crash_brake_reason": null
+  "intraday_crash_brake": true,
+  "crash_brake_time": "2026-10-15T13:20:01+09:00",
+  "crash_brake_reason": "場中 64480.0 / 前日確定 66355.0 = -2.83% <= -1.5%"
 }
