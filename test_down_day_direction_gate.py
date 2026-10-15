@@ -203,7 +203,7 @@ def _load_origin_main_profit_priority():
     return mod
 
 
-class UpDayByteIdenticalToOriginMain(unittest.TestCase):
+class UpDayByteIdenticalToOriginMain(TmpCwdMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
@@ -229,7 +229,12 @@ class UpDayByteIdenticalToOriginMain(unittest.TestCase):
              patch.object(loop, "_down_day_decision", return_value=False), \
              patch.object(loop, "_load_feedback_weights", return_value={"BUY": 1.0, "SHORT": 1.0}):
             new_ranked = loop.profit_priority(pool)
+        # origin/mainのrun_profit_loop.pyは既にA案(down_dayゲート)を含むため、
+        # ここも明示的にdown_day=Falseに固定する(実repoのdaily_decision.jsonの
+        # 当日trendに依存させない)。UP日比較の意図は「A案導入前後でUP日の挙動が
+        # 変わらないこと」であり、両辺とも常にUP日として評価する。
         with patch.object(self.origin_mod, "_market_regime", return_value=(regime, 1.0, 1.0)), \
+             patch.object(self.origin_mod, "_down_day_decision", return_value=False), \
              patch.object(self.origin_mod, "_load_feedback_weights", return_value={"BUY": 1.0, "SHORT": 1.0}):
             old_ranked = self.origin_mod.profit_priority(pool)
         new_keys = [k for k in (new_ranked[0].keys() if new_ranked else [])
