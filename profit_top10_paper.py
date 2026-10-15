@@ -271,6 +271,12 @@ def mark_and_close(s,now,policy):
         if exit_price is None:remaining.append(p);continue
         gross=(exit_price-ep)*sh if direction=='BUY' else (ep-exit_price)*sh; pnl=gross-(ep+exit_price)*sh*FEE_RATE; s['capital']=float(s['capital'])+pnl; exit_value=exit_price*sh; total=s['capital']
         exit_date_str=str(pd.Timestamp(exit_dt).date()) if exit_dt is not None else str(now.date())
+        if exit_dt is not None and pd.Timestamp(exit_dt).date()<now.date():
+            # この決済の損益は前営業日に属する(HOLD_LIMITロールバック等)。当日の
+            # 日次損失判定(paper_risk_policy.evaluate)が前日分の損益で誤発火しないよう、
+            # 当日の基準資産にも同額を反映してから当日分の損益だけを比較対象にする。
+            s['daily_start_capital']=float(s.get('daily_start_capital',INITIAL_CAPITAL))+pnl
+            print(f'ℹ️ 前日付け決済の損益{pnl:+,.0f}円は当日の日次損失判定から除外')
         exit_time_str=pd.Timestamp(exit_dt).strftime('%H:%M') if rollback_hold_limit and exit_dt is not None else now.strftime('%H:%M')
         append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':exit_date_str,'exit_time':exit_time_str,'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'expected_value_pct':p.get('expected_value_pct',0),'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason',''),
             # 末尾に追加(安全な列拡張、過去行は空値): A案の方向ゲート監査用。
@@ -300,6 +306,13 @@ def _run():
         try:
             if discord_progress.top1_changed(top1.get('ticker',''),top1.get('direction','BUY')):
                 discord_progress.notify_selection_start(); discord_progress.notify_top10(cands); discord_progress.notify_top1(top1.get('ticker',''),top1.get('direction','BUY'),float(top1.get('score',0) or 0))
+                # ★追加: 1位候補が1単元(100株)すら買えない資金状況の場合、実際の発注は
+                # open_positions側で見送られる(FIX: 資金不足はopen_top1_onlyが別候補に
+                # フォールバックするが、この通知自体は1位候補基準のため注記を添える)。
+                price=float(top1.get('price',0) or 0)
+                remaining=float(s['capital'])-sum(float(p.get('invested_amount',0)) for p in s['positions'])
+                if not(math.isfinite(price) and price>0 and LOT_SIZE*price<=remaining):
+                    discord_send(f"※1位 {top1.get('ticker','')} は資金不足(100株={price*LOT_SIZE:,.0f}円)のため見送り")
         except Exception as e: print(f'⚠️ discord_progress TOP1通知失敗: {e}')
     else:
         try:
