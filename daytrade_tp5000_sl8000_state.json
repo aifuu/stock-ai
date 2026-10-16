@@ -34,7 +34,7 @@
       "vwap_deviation_pct": 2.3894218983239877,
       "mfe_yen": 4050.018310546875,
       "mae_yen": -899.96337890625,
-      "current_price": 646.0999755859375,
+      "current_price": 646.0,
       "entry_window_start": "09:55",
       "market_regime_raw": "bearish",
       "direction_gate": "regime_bearish",
