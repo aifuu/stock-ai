@@ -1,50 +1,5 @@
 {
-  "positions": [
-    {
-      "ticker": "6976.T",
-      "direction": "SHORT",
-      "entry_date": "2026-10-21",
-      "entry_time": "10:00",
-      "entry_datetime": "2026-10-21T10:00:00",
-      "entry_price": 9383.0,
-      "shares": 100,
-      "invested_amount": 938300.0,
-      "tp": 8478.857142857143,
-      "sl": 9835.07142857143,
-      "tp_pct": -9.635967783681732,
-      "sl_pct": 4.817983891840876,
-      "score": 59.14204194827268,
-      "up_probability": 29.23451117208385,
-      "down_probability": 29.579969400236134,
-      "market_regime": "bearish",
-      "top10_rank": 1,
-      "top10_source": "live_tick_cache",
-      "skipped": "",
-      "policy_file": "strategy_policy.json",
-      "policy_source": "daily_decision:2026-10-20",
-      "policy_hash": "cf106bdc4c56",
-      "model_id": "ba0107937e65d6ea",
-      "model_version": "2026-10-21",
-      "price_bar_time": "2026-10-21T10:00:00",
-      "data_delay_minutes": 16.0963397,
-      "decision_time": "2026-10-21T09:56:00.770060",
-      "fill_bar_time": "2026-10-21T10:00:00",
-      "fill_method": "decision_next_bar_open_v2",
-      "atr_pct": 9.635967783681734,
-      "vwap_deviation_pct": 1.0474365257197067,
-      "mfe_yen": 21200.0,
-      "mae_yen": -17200.0,
-      "current_price": 9192.0,
-      "entry_window_start": "09:55",
-      "market_regime_raw": "bearish",
-      "direction_gate": "short_only_down_day",
-      "fee_rate": 0.0,
-      "exit_rule": "atr_tp1.0_sl0.5",
-      "atr": 904.1428571428571,
-      "atr_tp_mult": 1.0,
-      "atr_sl_mult": 0.5
-    }
-  ],
+  "positions": [],
   "pending": null,
   "trade_date": "2026-10-21",
   "trades_today": 1,
@@ -58,8 +13,8 @@
     "4307.T": "2026-10-14T15:20:56.875686+09:00",
     "8308.T": "2026-10-15T15:21:21.097638+09:00",
     "4755.T": "2026-10-16T15:20:50.392399+09:00",
-    "6976.T": "2026-10-20T15:21:06.302858+09:00"
+    "6976.T": "2026-10-21T15:21:25.664489+09:00"
   },
   "live_cache_miss_notice_date": null,
-  "daily_summary_sent_date": "2026-10-20"
+  "daily_summary_sent_date": "2026-10-21"
 }
