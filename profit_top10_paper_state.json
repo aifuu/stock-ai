@@ -35,8 +35,8 @@
       "invested_amount": 744000.0,
       "allocation": 1.0,
       "policy_updated_at": "2026-09-16T06:39:35",
-      "current_price": 2509.5,
-      "unrealized_pnl": -9673.2675,
+      "current_price": 2505.5,
+      "unrealized_pnl": -8472.6075,
       "skipped_unaffordable": "285A.T,4004.T"
     }
   ],
