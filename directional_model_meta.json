@@ -1,24 +1,24 @@
 {
-  "model_id": "ff99c5c0584804a4",
-  "training_date": "2026-10-23",
-  "training_data_end_date": "2026-10-22",
-  "train_cutoff": "2026-10-22",
-  "deployed_date": "2026-10-23",
+  "model_id": "7aa0eafc99aac7ac",
+  "training_date": "2026-10-26",
+  "training_data_end_date": "2026-10-23",
+  "train_cutoff": "2026-10-23",
+  "deployed_date": "2026-10-26",
   "validation_period": {
-    "start": "2026-07-24",
-    "end": "2026-10-22"
+    "start": "2026-07-25",
+    "end": "2026-10-23"
   },
-  "validation_trades": 19,
-  "validation_pf": 1.709,
-  "validation_win_rate": 47.37,
-  "validation_drawdown": -7.37,
-  "oos_pf": 1.709,
-  "oos_trades": 19,
-  "oos_max_dd_pct": -7.37,
+  "validation_trades": 15,
+  "validation_pf": 1.13,
+  "validation_win_rate": 60.0,
+  "validation_drawdown": -5.19,
+  "oos_pf": 1.13,
+  "oos_trades": 15,
+  "oos_max_dd_pct": -5.19,
   "policy_hash": {
     "strategy_policy.json": "cf106bdc4c56",
     "strategy_policy_up.json": "cfe6da4cc960"
   },
-  "deploy_reason": "OOSゲート通過(PF=1.71>=1.0, 最大DD=-7.4%)(現行モデルはOOS区間が未学習と確認できず[leaky]比較不能のため絶対ゲートのみで判定)",
-  "previous_model_id": "ba0107937e65d6ea"
+  "deploy_reason": "OOSゲート通過(PF=1.13>=1.0, 最大DD=-5.2%)(現行モデルはOOS区間が未学習と確認できず[leaky]比較不能のため絶対ゲートのみで判定)",
+  "previous_model_id": "ff99c5c0584804a4"
 }
