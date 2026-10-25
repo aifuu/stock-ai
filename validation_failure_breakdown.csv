@@ -1,151 +1,151 @@
 ﻿trend,stage,strategy,up,score,nikkei,tp,sl,hold,gate_annual_signals,gate_avg_lower,gate_avg_return,gate_compound,gate_dd,gate_monthly_positive_ratio,gate_pf,gate_ratio,gate_signals,pass_computed,pass_stored,failure_reasons
-up,validation,UP20_SCORE70_NIKKEIOFF_TP4.0_SL1.0_H1,20,70,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE70_NIKKEIOFF_TP4.0_SL1.0_H1,30,70,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE70_NIKKEIOFF_TP4.0_SL1.0_H1,25,70,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE70_NIKKEIOFF_TP3.5_SL1.0_H1,20,70,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE70_NIKKEIOFF_TP3.5_SL1.0_H1,30,70,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE70_NIKKEIOFF_TP3.5_SL1.0_H1,25,70,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,30,20,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,20,30,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,20,20,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,20,50,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,30,30,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,20,60,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,30,50,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,25,40,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,25,20,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,25,50,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,25,60,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,30,60,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,25,30,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,30,40,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,20,40,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE70_NIKKEIOFF_TP4.0_SL1.25_H1,30,70,False,4.0,1.25,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE70_NIKKEIOFF_TP4.0_SL1.25_H1,25,70,False,4.0,1.25,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE70_NIKKEIOFF_TP4.0_SL1.25_H1,20,70,False,4.0,1.25,1,True,True,True,,True,True,True,,True,True,True,
 up,validation,UP20_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,20,20,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,30,60,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,20,50,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
 up,validation,UP20_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,20,20,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,25,20,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,20,30,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,25,60,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
 up,validation,UP25_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,25,50,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,20,30,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,30,50,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,30,50,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,25,20,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,20,60,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,20,60,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,30,60,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,20,50,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,20,40,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,25,60,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,30,30,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,20,40,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP30_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,30,20,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
 up,validation,UP25_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,25,50,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,25,60,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,30,40,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,30,40,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,30,60,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,30,20,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,30,20,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,25,20,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,25,20,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,30,60,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,20,60,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,30,30,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,30,30,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,20,40,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,20,40,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,25,30,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,25,30,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,20,30,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,20,30,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,30,50,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,30,50,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
 up,validation,UP25_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,25,40,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
 up,validation,UP25_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,25,40,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,25,30,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,25,30,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
-up,validation,UP25_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,25,60,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
-up,oos,UP20_SCORE70_NIKKEIOFF_TP4.0_SL1.0_H1,20,70,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP30_SCORE70_NIKKEIOFF_TP4.0_SL1.0_H1,30,70,False,4.0,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP25_SCORE70_NIKKEIOFF_TP4.0_SL1.0_H1,25,70,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE70_NIKKEIOFF_TP3.5_SL1.0_H1,20,70,False,3.5,1.0,1,,,True,True,False,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足;最大DD超過
-up,oos,UP30_SCORE70_NIKKEIOFF_TP3.5_SL1.0_H1,30,70,False,3.5,1.0,1,,,True,True,False,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足;最大DD超過
-up,oos,UP25_SCORE70_NIKKEIOFF_TP3.5_SL1.0_H1,25,70,False,3.5,1.0,1,,,True,True,False,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足;最大DD超過
+up,validation,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,20,50,False,4.0,1.0,3,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,20,50,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,20,60,False,4.0,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,30,20,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,20,20,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,25,20,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,20,50,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,20,40,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,30,40,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,25,50,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,30,50,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,25,40,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,25,30,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,30,30,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,20,30,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,20,60,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,30,60,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP25_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,25,60,False,3.5,1.0,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE20_NIKKEIOFF_TP4.0_SL1.25_H1,30,20,False,4.0,1.25,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP30_SCORE40_NIKKEIOFF_TP4.0_SL1.25_H1,30,40,False,4.0,1.25,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.25_H1,20,40,False,4.0,1.25,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.25_H1,20,60,False,4.0,1.25,1,True,True,True,,True,True,True,,True,True,True,
+up,validation,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.25_H1,20,50,False,4.0,1.25,1,True,True,True,,True,True,True,,True,True,True,
+up,oos,UP20_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,20,20,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,20,20,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,25,60,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,25,50,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,25,50,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,25,60,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,30,40,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,30,40,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,30,60,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,30,20,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,30,20,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,25,20,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,25,20,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,30,60,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,20,60,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,30,30,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,30,30,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,20,40,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,20,40,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,25,30,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,25,30,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,20,30,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,20,30,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,30,50,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,30,50,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,25,40,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,25,40,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,20,50,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,20,50,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,20,60,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
 up,oos,UP30_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,30,20,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,20,30,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
 up,oos,UP20_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,20,20,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,25,20,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
 up,oos,UP20_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,20,50,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP30_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,30,30,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,20,60,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,20,40,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,30,40,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,25,50,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
 up,oos,UP30_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,30,50,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
 up,oos,UP25_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,25,40,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE20_NIKKEIOFF_TP3.5_SL1.0_H1,25,20,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE50_NIKKEIOFF_TP3.5_SL1.0_H1,25,50,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,25,60,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP30_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,30,60,False,3.5,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
 up,oos,UP25_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,25,30,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP30_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,30,40,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE40_NIKKEIOFF_TP3.5_SL1.0_H1,20,40,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP30_SCORE70_NIKKEIOFF_TP4.0_SL1.25_H1,30,70,False,4.0,1.25,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP25_SCORE70_NIKKEIOFF_TP4.0_SL1.25_H1,25,70,False,4.0,1.25,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP20_SCORE70_NIKKEIOFF_TP4.0_SL1.25_H1,20,70,False,4.0,1.25,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP20_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,20,20,False,4.0,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP30_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,30,60,False,4.0,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,20,50,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,20,20,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,25,20,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,20,30,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,25,50,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,20,30,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP30_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,30,50,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP30_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,30,50,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H1,25,20,False,4.0,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,20,60,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,20,60,False,4.0,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP30_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,30,60,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H3,20,50,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,20,40,False,4.0,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP25_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H1,25,60,False,4.0,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP30_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,30,30,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,20,40,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP30_SCORE20_NIKKEIOFF_TP4.0_SL1.0_H3,30,20,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE50_NIKKEIOFF_TP4.0_SL1.0_H1,25,50,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H1,25,40,False,4.0,1.0,1,,,True,True,True,False,True,False,True,False,False,OOS/Validation PF比不足;月次プラス比率不足
-up,oos,UP25_SCORE40_NIKKEIOFF_TP4.0_SL1.0_H3,25,40,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H3,25,30,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE30_NIKKEIOFF_TP4.0_SL1.0_H1,25,30,False,4.0,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-up,oos,UP25_SCORE60_NIKKEIOFF_TP4.0_SL1.0_H3,25,60,False,4.0,1.0,3,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
-down,validation,UP20_SCORE70_NIKKEION_TP4.0_SL1.0_H1,20,70,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+up,oos,UP30_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,30,30,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE30_NIKKEIOFF_TP3.5_SL1.0_H1,20,30,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,20,60,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,30,60,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP25_SCORE60_NIKKEIOFF_TP3.5_SL1.0_H1,25,60,False,3.5,1.0,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE20_NIKKEIOFF_TP4.0_SL1.25_H1,30,20,False,4.0,1.25,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP30_SCORE40_NIKKEIOFF_TP4.0_SL1.25_H1,30,40,False,4.0,1.25,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE40_NIKKEIOFF_TP4.0_SL1.25_H1,20,40,False,4.0,1.25,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE60_NIKKEIOFF_TP4.0_SL1.25_H1,20,60,False,4.0,1.25,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
+up,oos,UP20_SCORE50_NIKKEIOFF_TP4.0_SL1.25_H1,20,50,False,4.0,1.25,1,,,True,True,True,True,True,False,True,False,False,OOS/Validation PF比不足
 down,validation,UP25_SCORE70_NIKKEION_TP4.0_SL1.0_H1,25,70,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP30_SCORE70_NIKKEION_TP4.0_SL1.0_H1,30,70,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.0_H1,25,80,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.0_H1,20,80,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.0_H1,30,80,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP25_SCORE60_NIKKEION_TP4.0_SL1.0_H1,25,60,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP30_SCORE50_NIKKEION_TP4.0_SL1.0_H1,30,50,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP20_SCORE50_NIKKEION_TP4.0_SL1.0_H1,20,50,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP20_SCORE60_NIKKEION_TP4.0_SL1.0_H1,20,60,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP30_SCORE60_NIKKEION_TP4.0_SL1.0_H1,30,60,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP25_SCORE50_NIKKEION_TP4.0_SL1.0_H1,25,50,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP30_SCORE40_NIKKEION_TP4.0_SL1.0_H1,30,40,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP20_SCORE40_NIKKEION_TP4.0_SL1.0_H1,20,40,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP25_SCORE40_NIKKEION_TP4.0_SL1.0_H1,25,40,True,4.0,1.0,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
+down,validation,UP20_SCORE70_NIKKEION_TP4.0_SL1.0_H1,20,70,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP25_SCORE70_NIKKEION_TP4.0_SL1.25_H1,25,70,True,4.0,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP30_SCORE70_NIKKEION_TP4.0_SL1.25_H1,30,70,True,4.0,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP20_SCORE70_NIKKEION_TP4.0_SL1.25_H1,20,70,True,4.0,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP20_SCORE70_NIKKEION_TP3.5_SL1.0_H1,20,70,True,3.5,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP25_SCORE70_NIKKEION_TP3.5_SL1.0_H1,25,70,True,3.5,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP30_SCORE70_NIKKEION_TP3.5_SL1.0_H1,30,70,True,3.5,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.25_H1,30,80,True,4.0,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE70_NIKKEION_TP3.5_SL1.0_H1,25,70,True,3.5,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE70_NIKKEION_TP3.5_SL1.0_H1,20,70,True,3.5,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.0_H1,25,80,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.0_H1,20,80,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.0_H1,30,80,True,4.0,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.25_H1,25,80,True,4.0,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.25_H1,30,80,True,4.0,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.25_H1,20,80,True,4.0,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.25_H3,20,80,True,4.0,1.25,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.0_H3,20,80,True,4.0,1.0,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.25_H3,25,80,True,4.0,1.25,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP3.5_SL1.0_H1,20,80,True,3.5,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP3.5_SL1.0_H1,30,80,True,3.5,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE80_NIKKEION_TP3.5_SL1.0_H1,25,80,True,3.5,1.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.0_H3,25,80,True,4.0,1.0,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.0_H3,20,80,True,4.0,1.0,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.0_H3,30,80,True,4.0,1.0,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.25_H3,30,80,True,4.0,1.25,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL2.0_H1,20,80,True,4.0,2.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL2.0_H1,30,80,True,4.0,2.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL2.0_H1,25,80,True,4.0,2.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.75_H1,25,80,True,4.0,1.75,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.5_H1,30,80,True,4.0,1.5,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL2.0_H1,25,80,True,4.0,2.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.75_H1,20,80,True,4.0,1.75,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.5_H1,20,80,True,4.0,1.5,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.5_H1,25,80,True,4.0,1.5,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL2.0_H1,20,80,True,4.0,2.0,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
 down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.75_H1,30,80,True,4.0,1.75,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL2.0_H3,25,80,True,4.0,2.0,3,True,False,True,,True,False,True,,True,False,False,月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL2.0_H3,30,80,True,4.0,2.0,3,True,False,True,,True,False,True,,True,False,False,月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL2.0_H3,20,80,True,4.0,2.0,3,True,False,True,,True,False,True,,True,False,False,月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.5_H3,30,80,True,4.0,1.5,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.75_H3,30,80,True,4.0,1.75,3,True,False,True,,True,False,True,,True,False,False,月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.5_H3,25,80,True,4.0,1.5,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.75_H3,25,80,True,4.0,1.75,3,True,False,True,,True,False,True,,True,False,False,月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.5_H3,20,80,True,4.0,1.5,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
-down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.75_H3,20,80,True,4.0,1.75,3,True,False,True,,True,False,True,,True,False,False,月次プラス比率不足;ブートストラップ下限<=0
-down,validation,UP30_SCORE70_NIKKEION_TP4.0_SL1.5_H1,30,70,True,4.0,1.5,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
+down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.5_H1,25,80,True,4.0,1.5,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.5_H1,30,80,True,4.0,1.5,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.5_H1,20,80,True,4.0,1.5,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL2.0_H3,25,80,True,4.0,2.0,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL2.0_H3,20,80,True,4.0,2.0,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.75_H3,25,80,True,4.0,1.75,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL2.0_H3,30,80,True,4.0,2.0,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.75_H3,30,80,True,4.0,1.75,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.75_H3,20,80,True,4.0,1.75,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE70_NIKKEION_TP4.0_SL1.5_H1,20,70,True,4.0,1.5,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
 down,validation,UP25_SCORE70_NIKKEION_TP4.0_SL1.5_H1,25,70,True,4.0,1.5,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
+down,validation,UP30_SCORE70_NIKKEION_TP4.0_SL1.5_H1,30,70,True,4.0,1.5,1,True,False,True,,False,False,True,,True,False,False,最大DD超過;月次プラス比率不足;ブートストラップ下限<=0
+down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.5_H3,30,80,True,4.0,1.5,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.25_H3,20,80,True,4.0,1.25,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.5_H3,25,80,True,4.0,1.5,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP4.0_SL1.5_H3,20,80,True,4.0,1.5,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP4.0_SL1.25_H3,30,80,True,4.0,1.25,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE80_NIKKEION_TP4.0_SL1.25_H3,25,80,True,4.0,1.25,3,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP3.5_SL1.25_H1,30,80,True,3.5,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP25_SCORE80_NIKKEION_TP3.5_SL1.25_H1,25,80,True,3.5,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP3.5_SL1.25_H1,20,80,True,3.5,1.25,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP30_SCORE80_NIKKEION_TP3.5_SL1.75_H1,30,80,True,3.5,1.75,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
+down,validation,UP20_SCORE80_NIKKEION_TP3.5_SL1.5_H1,20,80,True,3.5,1.5,1,True,True,True,,True,False,True,,True,False,False,月次プラス比率不足
