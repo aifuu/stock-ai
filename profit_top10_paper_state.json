@@ -40,11 +40,9 @@
       "skipped_unaffordable": "285A.T,4004.T"
     }
   ],
-  "trade_count_date": "2026-10-23",
-  "trades_today": 1,
-  "trades_by_ticker_today": {
-    "6976.T": 1
-  },
+  "trade_count_date": "2026-10-26",
+  "trades_today": 0,
+  "trades_by_ticker_today": {},
   "daily_start_capital": 959283.9928934764,
   "last_exit_by_ticker": {
     "6472.T": "2026-10-09T09:26:02.492768+09:00",
