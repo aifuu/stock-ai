@@ -1,23 +1,8 @@
 {
-  "capital": 1079250.665,
-  "peak": 1079250.665,
+  "capital": 1086224.09,
+  "peak": 1086224.09,
   "max_dd": 0.0,
-  "position": {
-    "ticker": "7752.T",
-    "company": "リコー",
-    "entry_date": "2026-10-27",
-    "entry_price": 1858.5,
-    "shares": 500,
-    "invested_amount": 929250.0,
-    "tp": 1867.0897730922934,
-    "sl": 1853.5921160104488,
-    "atr": 39.04442314678833,
-    "score": 72.48525425609247,
-    "up_probability": 31.009432947936315,
-    "down_probability": 35.38230364736904,
-    "nikkei_macd_at_entry": -880.4190287931851,
-    "nikkei_macd_percentile_at_entry": 3.1746031746031744
-  },
+  "position": null,
   "trades_total": 3,
-  "last_exit_date": "2026-10-26"
+  "last_exit_date": "2026-10-27"
 }
