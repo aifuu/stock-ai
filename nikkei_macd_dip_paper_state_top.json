@@ -1,23 +1,8 @@
 {
-  "capital": 1086224.09,
+  "capital": 1070902.4200000002,
   "peak": 1086224.09,
-  "max_dd": 0.0,
-  "position": {
-    "ticker": "4523.T",
-    "company": "エーザイ",
-    "entry_date": "2026-10-28",
-    "entry_price": 5134.0,
-    "shares": 200,
-    "invested_amount": 1026800.0,
-    "tp": 5156.018508080492,
-    "sl": 5121.419425155828,
-    "atr": 100.08412763860012,
-    "score": 77.4059239346575,
-    "up_probability": 39.42282651923688,
-    "down_probability": 30.15224473311205,
-    "nikkei_macd_at_entry": -880.4190287931851,
-    "nikkei_macd_percentile_at_entry": 3.1746031746031744
-  },
+  "max_dd": 1.410544117098335,
+  "position": null,
   "trades_total": 4,
-  "last_exit_date": "2026-10-27"
+  "last_exit_date": "2026-10-28"
 }
