@@ -1,50 +1,5 @@
 {
-  "positions": [
-    {
-      "ticker": "5706.T",
-      "direction": "SHORT",
-      "entry_date": "2026-10-28",
-      "entry_time": "10:00",
-      "entry_datetime": "2026-10-28T10:00:00",
-      "entry_price": 2092.0,
-      "shares": 400,
-      "invested_amount": 836800.0,
-      "tp": 1930.2857142857142,
-      "sl": 2172.8571428571427,
-      "tp_pct": -7.730128380223985,
-      "sl_pct": 3.8650641901119815,
-      "score": 70.23964077374082,
-      "up_probability": 26.023589447696764,
-      "down_probability": 26.531945909598857,
-      "market_regime": "bearish",
-      "top10_rank": 2,
-      "top10_source": "live_tick_cache",
-      "skipped": "4004.T:budget",
-      "policy_file": "strategy_policy.json",
-      "policy_source": "daily_decision:2026-10-27",
-      "policy_hash": "cf106bdc4c56",
-      "model_id": "6dd91a9070b87ecc",
-      "model_version": "2026-10-28",
-      "price_bar_time": "2026-10-28T10:00:00",
-      "data_delay_minutes": 16.161307033333333,
-      "decision_time": "2026-10-28T09:56:10.581842",
-      "fill_bar_time": "2026-10-28T10:00:00",
-      "fill_method": "decision_next_bar_open_v2",
-      "atr_pct": 7.730128380223983,
-      "vwap_deviation_pct": 0.8419261916096467,
-      "mfe_yen": 2400.0,
-      "mae_yen": -32000.0,
-      "current_price": 2157.5,
-      "entry_window_start": "09:55",
-      "market_regime_raw": "bearish",
-      "direction_gate": "short_only_down_day",
-      "fee_rate": 0.0,
-      "exit_rule": "atr_tp1.0_sl0.5",
-      "atr": 161.71428571428572,
-      "atr_tp_mult": 1.0,
-      "atr_sl_mult": 0.5
-    }
-  ],
+  "positions": [],
   "pending": null,
   "trade_date": "2026-10-28",
   "trades_today": 1,
@@ -62,8 +17,9 @@
     "3436.T": "2026-10-22T15:21:05.200245+09:00",
     "8801.T": "2026-10-26T11:10:57.516170+09:00",
     "2282.T": "2026-10-26T15:21:14.037972+09:00",
-    "4751.T": "2026-10-27T15:21:18.472920+09:00"
+    "4751.T": "2026-10-27T15:21:18.472920+09:00",
+    "5706.T": "2026-10-28T15:20:58.543786+09:00"
   },
   "live_cache_miss_notice_date": null,
-  "daily_summary_sent_date": "2026-10-27"
+  "daily_summary_sent_date": "2026-10-28"
 }
