@@ -39,11 +39,9 @@
       "unrealized_pnl": 31612.85
     }
   ],
-  "trade_count_date": "2026-10-27",
-  "trades_today": 1,
-  "trades_by_ticker_today": {
-    "8801.T": 1
-  },
+  "trade_count_date": "2026-10-28",
+  "trades_today": 0,
+  "trades_by_ticker_today": {},
   "daily_start_capital": 971333.9228934764,
   "last_exit_by_ticker": {
     "6472.T": "2026-10-09T09:26:02.492768+09:00",
