@@ -2,7 +2,22 @@
   "capital": 1070902.4200000002,
   "peak": 1086224.09,
   "max_dd": 1.410544117098335,
-  "position": null,
-  "trades_total": 4,
+  "position": {
+    "ticker": "2002.T",
+    "company": "日清製粉グループ本社",
+    "entry_date": "2026-10-29",
+    "entry_price": 2117.5,
+    "shares": 500,
+    "invested_amount": 1058750.0,
+    "tp": 2127.877496943565,
+    "sl": 2111.570675609972,
+    "atr": 47.17044065256793,
+    "score": 72.55737328191785,
+    "up_probability": 32.45181346444388,
+    "down_probability": 32.65869398157185,
+    "nikkei_macd_at_entry": -931.1940933305887,
+    "nikkei_macd_percentile_at_entry": 2.7777777777777777
+  },
+  "trades_total": 5,
   "last_exit_date": "2026-10-28"
 }
