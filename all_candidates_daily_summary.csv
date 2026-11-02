@@ -84,7 +84,7 @@ date,bucket,candidate_count,trades_closed,win_rate,avg_return_pct,equal_weight_p
 2026-10-28,TOP1,0,0,,,
 2026-10-28,TOP3,0,0,,,
 2026-10-28,TOP5,0,0,,,
-2026-10-29,ALL,5,0,,,
+2026-10-29,ALL,5,5,0.8,1.3087476696910614,13087.476696910613
 2026-10-29,TOP1,0,0,,,
 2026-10-29,TOP3,0,0,,,
 2026-10-29,TOP5,0,0,,,
@@ -92,3 +92,7 @@ date,bucket,candidate_count,trades_closed,win_rate,avg_return_pct,equal_weight_p
 2026-10-30,TOP1,0,0,,,
 2026-10-30,TOP3,0,0,,,
 2026-10-30,TOP5,0,0,,,
+2026-11-02,ALL,34,0,,,
+2026-11-02,TOP1,0,0,,,
+2026-11-02,TOP3,0,0,,,
+2026-11-02,TOP5,0,0,,,
