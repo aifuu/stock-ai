@@ -1,23 +1,8 @@
 {
-  "capital": 1115745.4725000001,
+  "capital": 1111399.5375,
   "peak": 1115745.4725000001,
   "max_dd": 1.410544117098335,
-  "position": {
-    "ticker": "9201.T",
-    "company": "日本航空",
-    "entry_date": "2026-11-04",
-    "entry_price": 3175.0,
-    "shares": 300,
-    "invested_amount": 952500.0,
-    "tp": 3189.678008429124,
-    "sl": 3166.6135197293597,
-    "atr": 66.71822013238226,
-    "score": 72.57066872711562,
-    "up_probability": 32.7177223683994,
-    "down_probability": 35.15187021905541,
-    "nikkei_macd_at_entry": -883.1521341361804,
-    "nikkei_macd_percentile_at_entry": 3.968253968253968
-  },
+  "position": null,
   "trades_total": 7,
-  "last_exit_date": "2026-11-02"
+  "last_exit_date": "2026-11-04"
 }
