@@ -402,6 +402,147 @@ class TopOneNextBarFillTests(unittest.TestCase):
         finally:
             os.chdir(cwd)
 
+    # (m) 連鎖キャンセルバグ再現(2026-11-05実運用): 285A.T保有中(資産の大半を
+    # 使用、残り現金61,664円)に割安な7211.T(SHORT 380円)が「100株分の金額だけ
+    # なら残り現金で買える」ように見えても、実際のサイジング(open_positions、
+    # 総資産基準)では資金不足で開かれない。修正前はペンディング作成→1tick後に
+    # CANCELLED_NO_FILL_NOT_OPENEDで取消→即座に次のペンディング作成…の無限
+    # ループになり、8tickで15件のDiscord通知・7件のcancelled_entriesを生んだ
+    # (f561a05より前は無言で見送られていたケース)。修正後はf561a05より前と同じ
+    # 「無言で見送り」に戻る: ペンディングを作らず、Discord通知・取消ともに0件、
+    # stateは一切変化しない。
+    def test_m_same_tick_pending_chain_reproduction_8_ticks_silent(self):
+        held = {
+            "ticker": "285A.T", "direction": "SHORT", "entry_date": "2026-11-05",
+            "entry_time": "09:05", "entry_price": 10640.0, "tp": 10000.0, "sl": 10850.0,
+            "shares": 100, "invested_amount": 1_064_000.0, "score": 80.0,
+            "up_probability": 10.0, "down_probability": 85.0, "expected_value_pct": 1.0,
+            "company": "285A.T", "buy_reason": "test", "current_price": 10640.0,
+            "allocation": 1.0,
+        }
+        state = _state(capital=1_125_664.22, peak=1_125_664.22, positions=[held],
+                        trades_today=1, trades_by_ticker_today={"285A.T": 1})
+        before = copy.deepcopy(state)
+        candidate = _cand(ticker="7211.T", direction="SHORT", price=380.0, tp=350.0, sl=400.0)
+
+        with patch.object(app, "discord_send", side_effect=AssertionError("Discord通知は0件のはず")):
+            for i in range(8):
+                now = datetime(2026, 11, 5, 9, 1 + i, tzinfo=TZ)
+                filled = loop.fill_pending_entry(state, {}, now, True, False)
+                self.assertEqual(filled, [])
+                opened = _decide(state, [candidate], now, down_day=True)
+                self.assertEqual(opened, [])
+
+        self.assertIsNone(state["pending_entry"])
+        self.assertEqual(state["cancelled_entries"], [])
+        self.assertEqual(state["positions"], [held])
+        self.assertEqual(state, before, "資金不足で開けない候補はstateを一切変化させないはず")
+
+    # (n) リスクポリシーによる新規停止中(日次損失上限)もペンディングを作らない。
+    # フラットポジション(保有0件)でも、open_positions側(position_allowed経由)が
+    # 拒否する場合は同様にサイレントに見送るべき。
+    def test_n_risk_policy_daily_loss_stop_blocks_pending_flat_position(self):
+        state = _state(capital=900_000.0, daily_start_capital=1_000_000.0,
+                        peak=1_000_000.0, positions=[])
+        candidate = _cand(ticker="7203.T", direction="BUY", price=1000.0, tp=1100.0, sl=950.0)
+        with patch.object(app, "discord_send", side_effect=AssertionError("Discord通知は0件のはず")):
+            opened = _decide(state, [candidate], datetime(2026, 11, 5, 9, 1, tzinfo=TZ),
+                              regime="bullish", down_day=False)
+        self.assertEqual(opened, [])
+        self.assertIsNone(state["pending_entry"])
+
+    # (o) 資金に余裕がある通常ケース: ペンディングは1件だけ作られDiscord通知も
+    # 1件だけ。次バーOpenで約定し、約定した同一tick内でopen_top1_onlyを再度
+    # 呼んでも(残り現金がほぼ無くなっているため)安い2件目のペンディングは
+    # 作られない。
+    def test_o_free_cash_normal_case_creates_pending_fills_and_no_second_pending_same_tick(self):
+        state = _state(capital=1_000_000.0, peak=1_000_000.0, positions=[])
+        candidate1 = _cand(ticker="AAA.T", direction="BUY", price=1000.0, tp=1100.0, sl=950.0)
+        discord_calls = []
+        decide_now = datetime(2026, 11, 5, 9, 1, tzinfo=TZ)
+        with patch.object(app, "discord_send", side_effect=lambda msg: discord_calls.append(msg)):
+            opened = _decide(state, [candidate1], decide_now, regime="bullish", down_day=False)
+        self.assertEqual(opened, [])
+        self.assertIsNotNone(state["pending_entry"])
+        self.assertEqual(len(discord_calls), 1)
+
+        fill_now = datetime(2026, 11, 5, 9, 25, tzinfo=TZ)
+        bars = _bars([("2026-11-05 09:05", 1005.0, 1010.0, 995.0, 1000.0)])
+        with patch.object(app, "download_5m", return_value=bars):
+            filled = loop.fill_pending_entry(state, {}, fill_now, True, False)
+        self.assertEqual(len(filled), 1)
+        self.assertIsNone(state["pending_entry"])
+        self.assertEqual(len(state["positions"]), 1)
+
+        candidate2 = _cand(ticker="BBB.T", direction="BUY", price=50.0, tp=55.0, sl=47.0)
+        with patch.object(app, "discord_send", side_effect=AssertionError("2件目のDiscord通知は無いはず")):
+            opened2 = _decide(state, [candidate2], fill_now, regime="bullish", down_day=False)
+        self.assertEqual(opened2, [])
+        self.assertIsNone(state["pending_entry"])
+        self.assertEqual(len(state["positions"]), 1)
+
+    # (p) 小さい既存ポジションがあっても、総資産基準のサイジングで実際に入る余地が
+    # ある場合(ジャスト収まる計算)はペンディングを作り、通常どおり約定する
+    # (旧挙動の保持)。
+    def test_p_small_held_position_second_position_genuinely_fits_still_fills(self):
+        held = {"ticker": "ZZZ.T", "invested_amount": 500.0}
+        state = _state(capital=1_000_000.0, peak=1_000_000.0, positions=[held])
+        candidate = _cand(ticker="CCC.T", direction="BUY", price=333.0, tp=360.0, sl=320.0)
+        decide_now = datetime(2026, 11, 5, 9, 1, tzinfo=TZ)
+        with patch.object(app, "discord_send", side_effect=lambda msg: None):
+            opened = _decide(state, [candidate], decide_now, regime="bullish", down_day=False)
+        self.assertEqual(opened, [])
+        self.assertIsNotNone(
+            state["pending_entry"],
+            "総資産基準でも実際に入る余地がある場合はペンディングを作るべき(旧挙動)",
+        )
+
+        fill_now = datetime(2026, 11, 5, 9, 25, tzinfo=TZ)
+        bars = _bars([("2026-11-05 09:05", 333.0, 340.0, 325.0, 335.0)])
+        with patch.object(app, "download_5m", return_value=bars):
+            filled = loop.fill_pending_entry(state, {}, fill_now, True, False)
+        self.assertEqual(len(filled), 1, "資金に余地がある場合の約定(旧挙動)は維持されるべき")
+        self.assertEqual(state["positions"][-1]["ticker"], "CCC.T")
+
+    # (q) 発注シミュレーション(probe)自体が例外を投げても、そのtickを落とさず
+    # 従来どおりペンディングを作成する(実際の判定はfill_pending_entry側に委ねる)。
+    def test_q_probe_exception_does_not_block_pending_or_raise(self):
+        state = _state(capital=1_000_000.0, peak=1_000_000.0, positions=[])
+        candidate = _cand(ticker="DDD.T", direction="BUY", price=1000.0, tp=1100.0, sl=950.0)
+        decide_now = datetime(2026, 11, 5, 9, 1, tzinfo=TZ)
+        with patch.object(loop, "_original_open", side_effect=RuntimeError("probe boom")), \
+             patch.object(app, "discord_send", side_effect=lambda msg: None):
+            opened = _decide(state, [candidate], decide_now, regime="bullish", down_day=False)
+        self.assertEqual(opened, [])
+        self.assertIsNotNone(
+            state["pending_entry"],
+            "probe例外はtickを落とさずペンディング作成を継続すべき",
+        )
+        self.assertEqual(state["pending_entry"]["ticker"], "DDD.T")
+
+        fill_now = datetime(2026, 11, 5, 9, 25, tzinfo=TZ)
+        bars = _bars([("2026-11-05 09:05", 1000.0, 1010.0, 990.0, 1000.0)])
+        with patch.object(app, "download_5m", return_value=bars):
+            filled = loop.fill_pending_entry(state, {}, fill_now, True, False)
+        self.assertEqual(len(filled), 1, "probe失敗後も実際の約定(_original_open)は正常に行われるべき")
+
+    # (r) probeはstate実体のコピー上で行われ、実際のstate(trades_today・
+    # positions・trades_by_ticker_today)を変化させない。
+    def test_r_probe_does_not_mutate_real_state(self):
+        state = _state(capital=1_000_000.0, peak=1_000_000.0, positions=[],
+                        trades_today=2, trades_by_ticker_today={"EEE.T": 1})
+        candidate = _cand(ticker="FFF.T", direction="BUY", price=1000.0, tp=1100.0, sl=950.0)
+        before_positions = copy.deepcopy(state["positions"])
+        before_trades_today = state["trades_today"]
+        before_trades_by_ticker = copy.deepcopy(state["trades_by_ticker_today"])
+        decide_now = datetime(2026, 11, 5, 9, 1, tzinfo=TZ)
+        with patch.object(app, "discord_send", side_effect=lambda msg: None):
+            _decide(state, [candidate], decide_now, regime="bullish", down_day=False)
+        self.assertIsNotNone(state["pending_entry"])
+        self.assertEqual(state["positions"], before_positions)
+        self.assertEqual(state["trades_today"], before_trades_today)
+        self.assertEqual(state["trades_by_ticker_today"], before_trades_by_ticker)
+
 
 if __name__ == "__main__":
     unittest.main()
