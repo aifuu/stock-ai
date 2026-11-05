@@ -135,19 +135,15 @@ class Top1MatchesLiveOpenTop1Only(unittest.TestCase):
             loop._original_scan = orig
 
     def _live_choice(self, top10):
-        def fake_open(state, policy, cands, today):
-            state["positions"].append(dict(cands[0]))
-            return list(cands)
-
-        orig_open = loop._original_open
-        loop._original_open = fake_open
-        try:
-            state = {"positions": [], "trades_today": 0, "trades_by_ticker_today": {},
-                     "last_exit_by_ticker": {}}
-            opened = loop.open_top1_only(state, self.POLICY, top10, "2026-09-25")
-        finally:
-            loop._original_open = orig_open
-        return opened[0]["ticker"], opened[0]["direction"]
+        # 2026-11 TOP1建値バグ修正: open_top1_only()はこの時点では発注しない
+        # (_original_openは呼ばれない)。選ばれたTOP1はstate['pending_entry']に
+        # 保存されるので、そこからticker/directionを読む。
+        state = {"positions": [], "trades_today": 0, "trades_by_ticker_today": {},
+                 "last_exit_by_ticker": {}}
+        opened = loop.open_top1_only(state, self.POLICY, top10, "2026-09-25")
+        assert opened == []
+        pending = state["pending_entry"]
+        return pending["ticker"], pending["direction"]
 
     def test_daytrade_select_top1_matches_live_neutral_regime(self):
         with _RegimeAndFeedbackPatched("neutral"):

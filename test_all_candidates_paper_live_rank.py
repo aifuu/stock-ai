@@ -74,23 +74,16 @@ class LiveRankMatchesOpenTop1Only(unittest.TestCase):
 
     def _open_top1_choice(self, qualified):
         """liveのopen_top1_only()が実際に選ぶticker/directionを返す。
-        _original_open(実約定処理)はbypassし、選ばれたcandidateそのものを
-        そのまま返すだけのfakeに差し替える(資金/ポジション管理は本テストの
-        関心外)。"""
-        def _fake_open(state, policy, cands, today):
-            state["positions"].append(dict(cands[0]))
-            return list(cands)
-
-        orig_open = loop._original_open
-        loop._original_open = _fake_open
-        try:
-            state = {"positions": [], "trades_today": 0, "trades_by_ticker_today": {},
-                      "last_exit_by_ticker": {}}
-            opened = loop.open_top1_only(state, {}, qualified, "2026-09-25")
-        finally:
-            loop._original_open = orig_open
-        self.assertEqual(len(opened), 1)
-        return opened[0]["ticker"], opened[0]["direction"]
+        2026-11 TOP1建値バグ修正: open_top1_only()はこの時点では発注しない
+        (実約定処理の_original_openは呼ばれない)。選ばれたcandidateは
+        state['pending_entry']に保存されるので、そこから読む(資金/ポジション
+        管理・実約定タイミングは本テストの関心外)。"""
+        state = {"positions": [], "trades_today": 0, "trades_by_ticker_today": {},
+                  "last_exit_by_ticker": {}}
+        opened = loop.open_top1_only(state, {}, qualified, "2026-09-25")
+        self.assertEqual(opened, [])
+        pending = state["pending_entry"]
+        return pending["ticker"], pending["direction"]
 
     def test_live_rank_1_matches_open_top1_only_neutral_regime(self):
         qualified = self._qualified()
