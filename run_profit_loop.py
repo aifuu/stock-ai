@@ -6,6 +6,7 @@ Both BUY and SHORT are evaluated. Market regime determines the direction:
 Nikkei bullish -> BUY only, bearish -> SHORT only, neutral -> compare both.
 """
 from datetime import datetime, timedelta, time as dtime
+import copy
 import json
 import math
 import os
@@ -288,6 +289,31 @@ def open_top1_only(state,policy,candidates,today):
         eligible.append(candidate)
     if not eligible:print("⏸ 候補内に新規エントリ可能なTOP1なし");return []
     top1=eligible[0]
+    # ★追加(2026-11, 連鎖キャンセルバグ修正): 上のcash_remaining判定は100株分の
+    # 金額だけを見るが、実際のサイジング(open_positions)は毎回その時点の総資産を
+    # 丸ごと予算にする(2026-09の変更、コメント参照)ため、他の銘柄を保有中は
+    # invested>remainingとなって何も開かないことがある。そうなるとペンディングは
+    # 1tick後にCANCELLED_NO_FILL_NOT_OPENEDで取り消され、直後にまた同じ理由で
+    # ペンディングが作られる無限ループになり、f561a05前は無言で見送られていた
+    # ケースでDiscordに毎tick通知が飛んでしまっていた。ここでstateのコピー上で
+    # 実際のサイジングをドライランし、開かれない場合はf561a05前と同じ挙動
+    # (ペンディング作成せず無言で見送り、rank2へは進まない=選定ロジックは不変)
+    # に戻す。probe自体の例外はtickを落とさず、従来通りペンディングを作成する
+    # (実際の判定はfill_pending_entry側に委ねる)。
+    try:
+        probe=copy.deepcopy(state)
+        old_max_total=app.MAX_TOTAL_TRADES_PER_DAY;old_max_ticker=app.MAX_TRADES_PER_TICKER_PER_DAY
+        try:
+            app.MAX_TOTAL_TRADES_PER_DAY=MAX_DAILY_TRADES;app.MAX_TRADES_PER_TICKER_PER_DAY=MAX_TICKER_TRADES
+            would_open=_original_open(probe,policy,[top1],today)
+        finally:
+            app.MAX_TOTAL_TRADES_PER_DAY=old_max_total;app.MAX_TRADES_PER_TICKER_PER_DAY=old_max_ticker
+    except Exception as e:
+        print(f"⚠️ 発注シミュレーション失敗(ペンディング作成を継続、実際の判定はfill側で行う): {e}")
+    else:
+        if not would_open:
+            print(f"⏸ 実際のサイジングでは約定不可のため見送り(ペンディング作成せず): {top1.get('ticker')}")
+            return []
     # ★変更(2026-11): ここでは発注しない(decision)。約定(fill)はfill_pending_entry()が
     # 次に出現する5分足の直後バーのOpenで行う(モジュールdocstring参照)。
     now_naive=now.replace(tzinfo=None);fill_bar_time=_ceil_bar_time(now_naive);decision_price=float(top1.get("price",0) or 0)

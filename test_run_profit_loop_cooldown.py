@@ -89,30 +89,51 @@ class CooldownSelfHealTests(unittest.TestCase):
         self.assertEqual(cooldowns["TEST"], fresh)
 
     def test_healthy_expired_cooldown_pops_entry_and_allows_entry(self):
-        # 2026-11 TOP1建値バグ修正: open_top1_onlyはこの時点では発注しない
-        # (_original_openは呼ばれない)。選んだ候補はstate['pending_entry']に
-        # 保存され、実際の約定はfill_pending_entry()が後続tickで行う
-        # (test_top1_next_bar_fill.py参照)。
+        # 2026-11 TOP1建値バグ修正: open_top1_onlyはこの時点では実際の発注をせず
+        # 実stateには触れない。ただし2026-11連鎖キャンセルバグ修正により、実際に
+        # 開けるかをstateのコピー(probe)上でドライラン確認するため、_original_open
+        # は(実stateではなくコピーを渡して)1回だけ呼ばれるようになった。選んだ
+        # 候補はstate['pending_entry']に保存され、実際の約定はfill_pending_entry()
+        # が後続tickで行う(test_top1_next_bar_fill.py参照)。
         now = datetime.now(loop.app.TZ)
         expired = (now - timedelta(minutes=loop.SAME_TICKER_COOLDOWN_MINUTES + 5)).isoformat()
+        state = self._state(expired)
         opened = []
-        loop._original_open = lambda state, policy, cands, today: opened.append(cands) or []
-        result, cooldowns = self._run(expired)
+
+        def _stub_open(s, policy, cands, today):
+            opened.append((s is state, cands))
+            return [dict(cands[0])]
+
+        loop._original_open = _stub_open
+        result = loop.open_top1_only(state, {}, [_candidate()], "2026-09-20")
+        cooldowns = state["last_exit_by_ticker"]
         self.assertNotIn("TEST", cooldowns)
         self.assertEqual(result, [])
-        self.assertEqual(len(opened), 0)
-        pending = self._last_state["pending_entry"]
+        self.assertEqual(len(opened), 1, "実際に開けるかのドライラン確認で_original_openが1回呼ばれる")
+        self.assertFalse(opened[0][0], "ドライランはstateのコピー上で行われ、実stateは渡されない")
+        self.assertEqual(state["positions"], [], "ドライランは実stateのpositionsを変化させない")
+        pending = state["pending_entry"]
         self.assertEqual(pending["ticker"], "TEST")
 
     def test_no_cooldown_entry_allows_entry(self):
-        # 2026-11 TOP1建値バグ修正: 同上、発注ではなくpending_entryの作成を確認する。
+        # 2026-11 TOP1建値バグ修正/2026-11連鎖キャンセルバグ修正: 同上、発注では
+        # なくpending_entryの作成を確認する。_original_openはドライラン確認の
+        # ため1回だけ、実stateではなくコピーを渡して呼ばれる。
+        state = self._state(None)
         opened = []
-        loop._original_open = lambda state, policy, cands, today: opened.append(cands) or []
-        result, cooldowns = self._run(None)
+
+        def _stub_open(s, policy, cands, today):
+            opened.append((s is state, cands))
+            return [dict(cands[0])]
+
+        loop._original_open = _stub_open
+        result = loop.open_top1_only(state, {}, [_candidate()], "2026-09-20")
+        cooldowns = state["last_exit_by_ticker"]
         self.assertNotIn("TEST", cooldowns)
         self.assertEqual(result, [])
-        self.assertEqual(len(opened), 0)
-        self.assertEqual(self._last_state["pending_entry"]["ticker"], "TEST")
+        self.assertEqual(len(opened), 1, "実際に開けるかのドライラン確認で_original_openが1回呼ばれる")
+        self.assertFalse(opened[0][0], "ドライランはstateのコピー上で行われ、実stateは渡されない")
+        self.assertEqual(state["pending_entry"]["ticker"], "TEST")
 
     def test_naive_timestamp_treated_as_jst_wall_clock(self):
         now = datetime.now(loop.app.TZ)
