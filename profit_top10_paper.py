@@ -68,12 +68,16 @@ def load_policy(policy_file=None):
     elif not(status=='PENDING' and os.getenv('PAPER_TRADE_MODE','1')=='1'): raise RuntimeError(f'policy={status} 新規取引停止')
     p['up_threshold']=float(p['up_threshold']); p['min_score_for_buy']=float(p['min_score_for_buy']); p['nikkei_filter']=str(p['nikkei_filter']).lower() in ('true','1','yes','on'); p['atr_tp_multiplier']=float(p['atr_tp_multiplier']); p['atr_sl_multiplier']=float(p['atr_sl_multiplier']); p['hold_days']=int(p['hold_days']); return p
 
-def default_state(): return {'capital':INITIAL_CAPITAL,'peak':INITIAL_CAPITAL,'max_dd':0.0,'positions':[],'trade_count_date':None,'trades_today':0,'trades_by_ticker_today':{},'daily_start_capital':INITIAL_CAPITAL}
+def default_state(): return {'capital':INITIAL_CAPITAL,'peak':INITIAL_CAPITAL,'max_dd':0.0,'positions':[],'trade_count_date':None,'trades_today':0,'trades_by_ticker_today':{},'daily_start_capital':INITIAL_CAPITAL,'pending_entry':None,'cancelled_entries':[]}
 def load_state():
     s=default_state()
     loaded=safe_state.load_json_state(STATE_FILE,notify=lambda m:discord_send(m),label=STATE_FILE,validate=lambda d:isinstance(d,dict))
     if loaded is not None: s.update(loaded)
-    s.setdefault('positions',[]); s.setdefault('trades_by_ticker_today',{}); return s
+    s.setdefault('positions',[]); s.setdefault('trades_by_ticker_today',{})
+    # ★追加(2026-11, TOP1建値バグ修正): 旧stateファイル(この変更より前に保存)には
+    # これらのキーが無いため、無い場合だけデフォルトを補う(既存の値は上書きしない)。
+    s.setdefault('pending_entry',None); s.setdefault('cancelled_entries',[])
+    return s
 def save_state(s):
     safe_state.atomic_write_json(STATE_FILE,s)
 def reset_daily(s,today):
@@ -171,6 +175,13 @@ def scan(policy,limit=TOP_N):
     pool=cand or fallback
     return (pool if limit is None else pool[:limit]),scanned
 
+def fill_pending_entry(state,policy,now,entry_ok,buy_braked):
+    """デフォルトは何もしない(no-op)。run_profit_loop.pyがこのモジュールを
+    importすると、実装(TOP1 pending entryの次バーOpen約定確認)で上書きする
+    (app.scan/app.mark_and_close/app.open_positionsと同じパターン)。
+    profit_top10_paper.py単体をimportしただけでも動くようにするためのデフォルト。"""
+    return []
+
 def open_positions(s,policy,cands,today):
     active={p['ticker'] for p in s['positions']}; out=[]
     capital=float(s['capital'])
@@ -248,12 +259,19 @@ def mark_and_close(s,now,policy):
                         rollback_hold_limit=True
                         break
         held=count_tse_trading_days(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date()))
+        # ★追加(2026-11, TOP1建値バグ修正): fill_bar_time(実際に約定した5分足バーの
+        # 開始時刻)を持つポジションは、entry_dateが当日分であるそのバーより前の
+        # 当日バーでTP/SLを判定してはいけない(約定前の値動きで決済してしまうため)。
+        # 約定バー自体はSL優先の既存ロジックでそのまま判定する。fill_bar_timeを
+        # 持たない(従来どおりの)ポジションはこの判定を一切行わず、既存どおり動く。
+        fill_bar_time=pd.Timestamp(p['fill_bar_time']) if p.get('fill_bar_time') else None
         if exit_price is None:
             d=download_5m(p['ticker'])
             if d is not None and not d.empty:
                 bars=d[d.index.date==now.date()]; last=float(bars['Close'].iloc[-1]) if not bars.empty else float(p.get('current_price',ep)); p['current_price']=last
                 for ts,b in bars.iterrows():
                     if ts.time()<dtime(9,0):continue
+                    if fill_bar_time is not None and entry_date.date()==now.date() and ts<fill_bar_time:continue
                     hi,lo=float(b['High']),float(b['Low'])
                     if direction=='BUY':
                         if lo<=p['sl']:exit_price,reason=float(p['sl']),'SL'
@@ -280,7 +298,11 @@ def mark_and_close(s,now,policy):
         exit_time_str=pd.Timestamp(exit_dt).strftime('%H:%M') if rollback_hold_limit and exit_dt is not None else now.strftime('%H:%M')
         append_history({'entry_date':p['entry_date'],'entry_time':p['entry_time'],'exit_date':exit_date_str,'exit_time':exit_time_str,'ticker':p['ticker'],'company':p['company'],'direction':direction,'entry_price':ep,'exit_price':exit_price,'shares':sh,'invested_amount':p['invested_amount'],'exit_value':exit_value,'tp':p['tp'],'sl':p['sl'],'score':p['score'],'up_probability':p['up_probability'],'down_probability':p['down_probability'],'expected_value_pct':p.get('expected_value_pct',0),'return_pct':pnl/p['invested_amount']*100 if p['invested_amount'] else 0,'pnl':pnl,'result':reason,'total_assets':total,'buy_reason':p.get('buy_reason',''),
             # 末尾に追加(安全な列拡張、過去行は空値): A案の方向ゲート監査用。
-            'market_regime_raw':p.get('market_regime_raw'),'direction_gate':p.get('direction_gate')})
+            'market_regime_raw':p.get('market_regime_raw'),'direction_gate':p.get('direction_gate'),
+            # 末尾に追加(安全な列拡張、過去行は空値): TOP1建値バグ修正(2026-11)の
+            # 約定(fill)監査用。fill_methodが無い行(この変更以前の全既存行)は
+            # 従来どおり「約定時刻=判断時刻」の旧経路として扱う。
+            'fill_method':p.get('fill_method'),'decision_time':p.get('decision_time'),'fill_bar_time':p.get('fill_bar_time'),'decision_price':p.get('decision_price')})
         msgs.append(f"{'🟢' if pnl>=0 else '🔴'} 決済｜{p['company']}（{p['ticker']}）｜{direction}\n決済価格 {exit_price:,.1f}円｜{sh:,}株｜投資額 {p['invested_amount']:,.0f}円\n確定損益 {pnl:+,.0f}円｜💰総資産 {total:,.0f}円｜開始100万円から {total-INITIAL_CAPITAL:+,.0f}円")
     s['positions']=remaining
     new_peak=max(float(s.get('peak',s['capital'])),float(s['capital']))
@@ -300,6 +322,11 @@ def _run():
     except Exception as e: print(f'⚠️ 急落ブレーキ評価失敗(状態維持): {e}')
     entry_ok,block_reason=daily_decision.entry_status(trend_result)
     buy_braked=daily_decision.buy_blocked_by_crash_brake(trend_result)
+    # ★追加(2026-11, TOP1建値バグ修正): 新規スキャン/判断の前に、保留中の
+    # TOP1約定(pending_entry)があれば先に確認する(次の5分足バーのOpenで約定、
+    # または所定条件でキャンセル)。約定したポジションはopenedに含めて既存の
+    # エントリー通知/行に合流させる。
+    filled=fill_pending_entry(s,policy,now,entry_ok,buy_braked)
     cands,scanned=scan(policy)
     if cands:
         top1=cands[0]
@@ -333,6 +360,7 @@ def _run():
         if cands and not trend_result.get('entry_allowed') and trend_result.get('shadow_policy_file'):
             try: daily_decision.record_shadow(trend_result,cands[0],now,track='profit_top10')
             except Exception as e: print(f'⚠️ シャドー記録失敗: {e}')
+    opened=filled+opened
     save_state(s)
     entry_msgs=[
         f"🆕 エントリー｜{p['company']}（{p['ticker']}）｜{'買い' if p['direction']=='BUY' else '空売り'}\n"

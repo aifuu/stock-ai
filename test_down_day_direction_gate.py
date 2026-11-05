@@ -284,21 +284,30 @@ class OpenTop1OnlyDownDayGate(unittest.TestCase):
                 opened = loop.open_top1_only(state, {}, candidates or self._pool(), "2026-10-09")
         finally:
             loop._original_open = orig_open
+        self._last_state = state
         return opened
 
+    # 2026-11 TOP1建値バグ修正: open_top1_only()はこの時点では発注しない
+    # (_original_open/fake_openは呼ばれない)。選定結果はstate['pending_entry']
+    # に保存され、実際の約定はfill_pending_entry()が後続tickで行う
+    # (test_top1_next_bar_fill.py参照)。ここは「どのTOP1が選ばれ、どの
+    # direction_gateが付与されるか」という選定ロジック自体の回帰確認を続ける。
     def test_down_day_bullish_regime_opens_short(self):
         opened = self._open("bullish", True)
-        self.assertEqual(len(opened), 1)
-        self.assertEqual(opened[0]["direction"], "SHORT")
-        self.assertEqual(opened[0]["direction_gate"], "short_only_down_day")
+        self.assertEqual(opened, [])
+        pending = self._last_state["pending_entry"]
+        self.assertEqual(pending["direction"], "SHORT")
+        self.assertEqual(pending["direction_gate"], "short_only_down_day")
 
     def test_down_day_with_only_buy_candidates_opens_nothing(self):
         opened = self._open("bullish", True, candidates=[_cand("7203.T", "BUY", score=95.0, up=80.0, down=5.0)])
         self.assertEqual(opened, [])
+        self.assertIsNone(self._last_state.get("pending_entry"))
 
     def test_up_day_bullish_regime_opens_buy_unchanged(self):
         opened = self._open("bullish", False)
-        self.assertEqual(opened[0]["direction"], "BUY")
+        self.assertEqual(opened, [])
+        self.assertEqual(self._last_state["pending_entry"]["direction"], "BUY")
 
 
 # =========================================================================

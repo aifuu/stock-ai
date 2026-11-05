@@ -204,6 +204,10 @@ class Rank1UnaffordableFallsBackToRank2(unittest.TestCase):
     def test_rank1_unaffordable_rank2_affordable_opens_rank2(self):
         # 本番の2026-10-15 fixture: 6920.T SHORT 39,220円(100株=3,922,000円、
         # 残り資金100万円では買えない) / 8308.T SHORT 2,283.5円(100株=228,350円、買える)
+        # 2026-11 TOP1建値バグ修正: open_top1_only()はこの時点では発注しない。
+        # フォールバック選定(rank2を選ぶこと)自体はpending_entryで確認する。
+        # 実際の約定(position開設)はfill_pending_entry()が行う
+        # (test_top1_next_bar_fill.py参照)。
         candidates = [
             _cand("6920.T", "SHORT", price=39_220.0, score=90.0, up=5.0, down=85.0),
             _cand("8308.T", "SHORT", price=2_283.5, score=80.0, up=10.0, down=75.0),
@@ -212,12 +216,12 @@ class Rank1UnaffordableFallsBackToRank2(unittest.TestCase):
         with _IdentityPriorityDownDay(down_day=True, regime="bearish"):
             opened = loop.open_top1_only(state, {"up_threshold": 0, "min_score_for_buy": 0}, candidates, "2026-10-15")
 
-        self.assertEqual(len(opened), 1, "資金不足でも1件のみ開く(フォールバック先も1件まで)")
-        self.assertEqual(opened[0]["ticker"], "8308.T")
-        self.assertEqual(opened[0]["direction"], "SHORT")
-        self.assertEqual(len(state["positions"]), 1, "同時に複数ポジションを開かない")
-        self.assertEqual(state["positions"][0]["ticker"], "8308.T")
-        self.assertEqual(state["positions"][0].get("skipped_unaffordable"), "6920.T")
+        self.assertEqual(opened, [], "この時点では発注しない(decisionのみ)")
+        self.assertEqual(len(state["positions"]), 0, "pending段階ではpositionはまだ開かない")
+        pending = state["pending_entry"]
+        self.assertEqual(pending["ticker"], "8308.T")
+        self.assertEqual(pending["direction"], "SHORT")
+        self.assertEqual(pending.get("skipped_unaffordable"), "6920.T")
 
     def test_all_candidates_unaffordable_opens_nothing(self):
         candidates = [
@@ -231,8 +235,11 @@ class Rank1UnaffordableFallsBackToRank2(unittest.TestCase):
         self.assertEqual(state["positions"], [])
 
     def test_rank1_affordable_matches_pre_fix_behavior_byte_identical(self):
-        """rank1が買える通常ケースでは、FIX導入前と全く同じpositionが開く
-        (skipped_unaffordableキーも付与されない = 既存のstateスキーマを汚さない)。"""
+        """rank1が買える通常ケースでは、選定ロジック(rank1がそのまま選ばれ、
+        skipped_unaffordableが付与されない)はFIX導入前と変わらない。
+        2026-11 TOP1建値バグ修正: ただしこの時点ではまだ発注せずpending_entryに
+        保存するだけになった(実際にpositionが開く=約定するのはTOP1 next-bar-open
+        約定時、test_top1_next_bar_fill.py参照)。"""
         candidates = [
             _cand("8308.T", "SHORT", price=2_283.5, score=90.0, up=5.0, down=85.0),
             _cand("6920.T", "SHORT", price=1_000.0, score=80.0, up=10.0, down=75.0),
@@ -241,15 +248,11 @@ class Rank1UnaffordableFallsBackToRank2(unittest.TestCase):
         with _IdentityPriorityDownDay(down_day=True, regime="bearish"):
             opened = loop.open_top1_only(state, {}, candidates, "2026-10-15")
 
-        self.assertEqual(len(opened), 1)
-        self.assertEqual(opened[0]["ticker"], "8308.T", "rank1がそのまま選ばれる(2位は一切使われない)")
-        pos = state["positions"][0]
-        self.assertNotIn("skipped_unaffordable", pos, "買えた日は新規キーが一切追加されない(既存stateと完全一致)")
-        # open_positions()は1単元だけでなく予算(capital全額)で買える最大ロット数を使う
-        expected_shares = (int(1_000_000.0 // 2_283.5) // app.LOT_SIZE) * app.LOT_SIZE
-        self.assertEqual(pos["shares"], expected_shares)
-        self.assertAlmostEqual(pos["invested_amount"], expected_shares * 2_283.5)
-        self.assertEqual(pos["allocation"], 1.0)
+        self.assertEqual(opened, [])
+        self.assertEqual(state["positions"], [], "pending段階ではpositionはまだ開かない")
+        pending = state["pending_entry"]
+        self.assertEqual(pending["ticker"], "8308.T", "rank1がそのまま選ばれる(2位は一切使われない)")
+        self.assertNotIn("skipped_unaffordable", pending, "買えた日は新規キーが一切追加されない(既存stateと完全一致)")
 
     def test_short_direction_follows_same_affordability_rule_as_buy(self):
         candidates = [_cand("9999.T", "SHORT", price=50_000.0)]  # 100株=500万円、買えない

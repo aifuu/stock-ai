@@ -5,7 +5,7 @@ Research/OOS gates remain separate. This runtime path is for paper execution onl
 Both BUY and SHORT are evaluated. Market regime determines the direction:
 Nikkei bullish -> BUY only, bearish -> SHORT only, neutral -> compare both.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 import json
 import math
 import os
@@ -215,12 +215,41 @@ def _as_aware_jst(value):
     ts=value if isinstance(value,datetime) else app.pd.Timestamp(value).to_pydatetime()
     return ts.replace(tzinfo=app.TZ) if ts.tzinfo is None else ts.astimezone(app.TZ)
 
+# ★追加(2026-11, TOP1建値バグ修正): yfinanceの5分足は実時刻から15-20分程度遅延
+# するため、09:0x台のtickでdownload_5m()の最終バーが前営業日最終バー(例:
+# 11/04 15:20 close)になっている場合があり、それをそのまま約定価格として記録
+# すると実際には存在しない値段で約定したことになってしまう(2026-11-05の285A.T:
+# 記録上10,640円で約定したことになっていたが、実際の初値は09:05 Open 9,820円、
+# 当日の値動き全体が9,223-10,270円で10,640円は一度も付いていない)。
+# daytrade_tp5000_sl8000_paper.pyのFill rule v2(decision_next_bar_open_v2)と
+# 同じ原則で、TOP1も「判断(decision)」と「約定(fill)」を分離する:
+#   1. open_top1_only() はTOP1を選ぶが実際には発注しない。選んだ候補を
+#      state['pending_entry']として保存し、次に5分足の直後バーが実際に
+#      出現したtickでfill_pending_entry()が約定させる(このモジュールのみの
+#      変更。選定ロジック・スコアリング・方向ゲート・クールダウン・資金不足
+#      スキップはすべて従来どおり、約定タイミングだけを変える)。
+#   2. fill_pending_entry()は決定時刻をceilした次の5分足バーのOpenで約定する
+#      (そのバーが欠けていても、当日のそれ以降最初のバーを使う。285A.Tの
+#      11/05は09:00バー自体が存在せず最初のバーが09:05)。
+FILL_METHOD_TOP1_V1 = "decision_next_bar_open_top1_v1"
+
+def _ceil_bar_time(t):
+    """The first 5-minute bar START time that is >= t: t itself if it
+    already lands exactly on a 5-minute boundary, else the next one."""
+    t = pd.Timestamp(t)
+    floor = t.floor("5min")
+    return floor if floor == t else floor + pd.Timedelta(minutes=5)
+
 def close_positions_with_cooldown(state,now,policy):
     before={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};messages=_original_close(state,now,policy);after={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};cooldowns=state.setdefault("last_exit_by_ticker",{})
     for ticker in sorted(before-after):cooldowns[ticker]=app.pd.Timestamp(now).isoformat();print(f"⏳ 同一銘柄クールダウン開始: {ticker} {SAME_TICKER_COOLDOWN_MINUTES}分")
     return messages
 
 def open_top1_only(state,policy,candidates,today):
+    # ★変更(2026-11): ペンディング中の約定枠が1つあれば、それが埋まるかキャンセル
+    # されるまで新しい判断はしない(1枠を保持したまま重複判断しない)。
+    if state.get("pending_entry") is not None:
+        print("⏳ ペンディング中のTOP1約定待ちのため新規判断をスキップ");return []
     cooldowns=state.setdefault("last_exit_by_ticker",{});now=datetime.now(app.TZ);active={str(p.get("ticker")) for p in state.get("positions",[]) if p.get("ticker")};eligible=[];regime,_,_=_market_regime();down_day=_down_day_decision()
     # ★追加: rank1がRANK1でも1単元(100株)すら買えない場合、open_positions側は
     # その1件を渡されてcontinueするだけでその日は何も開かない(フォールバック無し)。
@@ -258,22 +287,96 @@ def open_top1_only(state,policy,candidates,today):
             continue
         eligible.append(candidate)
     if not eligible:print("⏸ 候補内に新規エントリ可能なTOP1なし");return []
-    top1=eligible[0];old_max_total=app.MAX_TOTAL_TRADES_PER_DAY;old_max_ticker=app.MAX_TRADES_PER_TICKER_PER_DAY
-    # 注意: app.TOP_N は上書きしない。budget=capital/TOP_N の計算がTOP_N=1だと
-    # 毎回「資金全額」を予算にしてしまい、複数ポジション同時保有時に資金オーバーする
-    # バグがあったため、常にapp.TOP_N(=同時保有上限と一致した分割数)を使う。
+    top1=eligible[0]
+    # ★変更(2026-11): ここでは発注しない(decision)。約定(fill)はfill_pending_entry()が
+    # 次に出現する5分足の直後バーのOpenで行う(モジュールdocstring参照)。
+    now_naive=now.replace(tzinfo=None);fill_bar_time=_ceil_bar_time(now_naive);decision_price=float(top1.get("price",0) or 0)
+    pending=dict(top1)
+    pending.update(decision_time=now_naive.isoformat(),decision_date=today,fill_bar_time=fill_bar_time.isoformat(),decision_price=decision_price)
+    if skipped_unaffordable:pending["skipped_unaffordable"]=",".join(skipped_unaffordable)
+    state["pending_entry"]=pending
+    print(f"⏳ TOP1 PENDING: {top1.get('direction','BUY')} {top1['ticker']} 判断={now_naive} 約定予定バー>={fill_bar_time}")
+    try:app.discord_send(f"⏳ 判断(ペンディング)｜{top1['ticker']}｜{'買い' if top1.get('direction','BUY')=='BUY' else '空売り'}\n判断時刻 {now_naive.strftime('%H:%M:%S')}｜約定予定バー {fill_bar_time.strftime('%H:%M')}(Open約定)")
+    except Exception as e:print(f"⚠️ discord通知失敗(ペンディング): {e}")
+    return []
+
+def fill_pending_entry(state,policy,now,entry_ok,buy_braked):
+    """state['pending_entry']の約定を確認する。約定予定バー(fill_bar_time)以降で
+    最初に実在する当日バーのOpenで約定させる(そのバー自体が欠けていてもよい。
+    285A.T 2026-11-05は09:00バーが無く最初のバーが09:05)。前営業日のバーは
+    絶対に使わない(本バグ修正の核心)。"""
+    pending=state.get("pending_entry")
+    if pending is None:return []
+    today=now.strftime("%Y-%m-%d")
+    ticker=str(pending.get("ticker","")).strip();direction=str(pending.get("direction","BUY")).upper()
+
+    def _cancel(reason):
+        state["pending_entry"]=None
+        row={"ticker":ticker,"direction":direction,"decision_time":pending.get("decision_time"),
+             "fill_bar_time":pending.get("fill_bar_time"),"reason":reason,
+             "cancelled_at":now.replace(tzinfo=None).isoformat()}
+        cancelled=state.setdefault("cancelled_entries",[]);cancelled.append(row)
+        del cancelled[:-50]
+        print(f"🚫 PENDING CANCELLED: {ticker} reason={reason}")
+        try:app.discord_send(f"🚫 ペンディング取消｜{ticker}｜{'買い' if direction=='BUY' else '空売り'}\n理由 {reason}")
+        except Exception as e:print(f"⚠️ discord通知失敗(取消): {e}")
+        return []
+
     try:
-        app.MAX_TOTAL_TRADES_PER_DAY=MAX_DAILY_TRADES;app.MAX_TRADES_PER_TICKER_PER_DAY=MAX_TICKER_TRADES;opened=_original_open(state,policy,[top1],today)
-    finally:
-        app.MAX_TOTAL_TRADES_PER_DAY=old_max_total;app.MAX_TRADES_PER_TICKER_PER_DAY=old_max_ticker
-    if opened:
-        p=state["positions"][-1];p["allocation"]=1.0;p["selection_mode"]=top1.get("selection_mode","normal");p["selection_level"]=int(top1.get("selection_level",1));p["top10_rank"]=int(top1.get("top10_rank",1));p["market_regime"]=top1.get("market_regime",regime);p["regime_preferred"]=bool(top1.get("regime_preferred",False));p["profit_ev_pct"]=float(top1.get("profit_ev_pct",0.0));p["profit_priority"]=float(top1.get("profit_priority",0.0));p["feedback_weight"]=float(top1.get("feedback_weight",1.0));p["market_regime_raw"]=top1.get("market_regime_raw",regime);p["direction_gate"]=top1.get("direction_gate",_direction_gate_label(down_day,regime))
-        if skipped_unaffordable:p["skipped_unaffordable"]=",".join(skipped_unaffordable)
-        print(f"🏆 TOP→TOP1 ENTRY: {top1.get('direction','BUY')} {top1['ticker']} LEVEL={p['selection_level']} MODE={p['selection_mode']} REGIME={p['market_regime']} score={top1['score']:.1f} UP={top1['up_probability']:.1f}% DOWN={top1.get('down_probability',0):.1f}% FEEDBACK_W={p['feedback_weight']:.2f}")
-    return opened
+        if pending.get("decision_date")!=today:
+            return _cancel("CANCELLED_NO_FILL_NEW_DAY")
+        if not entry_ok:
+            return _cancel("CANCELLED_NO_FILL_ENTRY_BLOCKED")
+        if direction=="BUY" and buy_braked:
+            return _cancel("CANCELLED_NO_FILL_CRASH_BRAKE")
+
+        fill_bar_time=pd.Timestamp(pending["fill_bar_time"]);decision_price=float(pending.get("decision_price",0) or 0)
+        bars=app.download_5m(ticker);bar_ts=None
+        if bars is not None and not bars.empty:
+            today_bars=bars[bars.index.date==pd.Timestamp(today).date()]
+            later=today_bars[today_bars.index>=fill_bar_time]
+            if not later.empty:bar_ts=later.index[0]
+
+        if bar_ts is None:
+            if now.time()>=dtime(15,30):
+                return _cancel("CANCELLED_NO_FILL_DATA_DELAY")
+            return []
+
+        fill_price=float(bars.loc[bar_ts]["Open"])
+        if not(math.isfinite(fill_price) and fill_price>0):
+            return []  # 価格がまだ不正/未確定 → 次tickで再確認(ペンディング維持)
+
+        shift=fill_price-decision_price;candidate=dict(pending)
+        candidate["price"]=fill_price;candidate["tp"]=float(pending["tp"])+shift;candidate["sl"]=float(pending["sl"])+shift
+
+        old_max_total=app.MAX_TOTAL_TRADES_PER_DAY;old_max_ticker=app.MAX_TRADES_PER_TICKER_PER_DAY
+        try:
+            app.MAX_TOTAL_TRADES_PER_DAY=MAX_DAILY_TRADES;app.MAX_TRADES_PER_TICKER_PER_DAY=MAX_TICKER_TRADES
+            opened=_original_open(state,policy,[candidate],today)
+        finally:
+            app.MAX_TOTAL_TRADES_PER_DAY=old_max_total;app.MAX_TRADES_PER_TICKER_PER_DAY=old_max_ticker
+
+        if not opened:
+            return _cancel("CANCELLED_NO_FILL_NOT_OPENED")
+
+        p=state["positions"][-1]
+        p["allocation"]=1.0;p["entry_time"]=bar_ts.strftime("%H:%M")
+        p["fill_method"]=FILL_METHOD_TOP1_V1;p["decision_time"]=pending.get("decision_time")
+        p["fill_bar_time"]=bar_ts.isoformat();p["decision_price"]=decision_price
+        for key in ("selection_mode","selection_level","top10_rank","market_regime","regime_preferred",
+                    "profit_ev_pct","profit_priority","feedback_weight","market_regime_raw","direction_gate"):
+            if key in pending:p[key]=pending[key]
+        if pending.get("skipped_unaffordable"):p["skipped_unaffordable"]=pending["skipped_unaffordable"]
+        state["pending_entry"]=None
+        print(f"🏆 TOP1 FILLED: {direction} {ticker} fill={fill_price:.1f} bar={bar_ts} decision={decision_price:.1f} delay_bars_ok")
+        return opened
+    except Exception as e:
+        print(f"⚠️ fill_pending_entry失敗(ペンディング維持、取引停止せず継続): {e}")
+        return []
 
 app.scan=scan_candidates_fixed
 app.mark_and_close=close_positions_with_cooldown
 app.open_positions=open_top1_only
+app.fill_pending_entry=fill_pending_entry
 
 if __name__=="__main__":app.main()

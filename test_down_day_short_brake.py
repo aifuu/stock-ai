@@ -169,8 +169,11 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
 
         state = self._live_tick(10, 0)
         self.assertEqual(self.loaded_policy_files[-1], "strategy_policy.json")
-        self.assertEqual(len(state["positions"]), 1)
-        pos = state["positions"][0]
+        # 2026-11 TOP1建値バグ修正: 1tickでは約定しない(次の5分足バーのOpen約定を
+        # 待つpending_entryになる)。download_5mは本ファイルではyfinance経由で
+        # ブロックされているため、この統合テストでは約定まで到達しない。
+        self.assertEqual(state["positions"], [])
+        pos = state["pending_entry"]
         self.assertEqual(pos["direction"], "SHORT")
         self.assertEqual(pos["ticker"], "8035.T")  # 弱気→空売りのみ、最上位の空売り
         self.assertEqual(pos["market_regime_raw"], "bearish")
@@ -191,8 +194,10 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         top10, _ = loop.scan_candidates_fixed(_real_policy_thresholds("strategy_policy.json"))
         self.assertEqual(pending["ticker"], top10[0]["ticker"])
         self.assertEqual(pending["direction"], "SHORT")
+        # 2026-11 TOP1建値バグ修正: liveもこの時点ではまだ約定せずpending_entry。
+        live_pending = live_state["pending_entry"]
         self.assertEqual((pending["ticker"], pending["direction"]),
-                         (live_state["positions"][0]["ticker"], live_state["positions"][0]["direction"]))
+                         (live_pending["ticker"], live_pending["direction"]))
 
     def test_same_daily_policy_file_on_every_tick_for_both_tracks(self):
         self.regime = "neutral"
@@ -223,8 +228,10 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         self.price_ratio = 0.984  # -1.6%
         live_state = self._live_tick(10, 0)
         self.assertTrue(self._decision()["intraday_crash_brake"])
-        self.assertEqual([p["direction"] for p in live_state["positions"]], ["SHORT"])
-        self.assertEqual(live_state["positions"][0]["ticker"], "8035.T")
+        # 2026-11 TOP1建値バグ修正: 1tickでは約定しない(pending_entryのまま)。
+        self.assertEqual(live_state["positions"], [])
+        self.assertEqual(live_state["pending_entry"]["direction"], "SHORT")
+        self.assertEqual(live_state["pending_entry"]["ticker"], "8035.T")
 
         dt_state = self._daytrade_entry(_FakeDT.current)
         pending = dt_state["pending"]
@@ -232,10 +239,12 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         self.assertEqual(pending["ticker"], "8035.T")
         self.assertNotIn("7203.T", pending["skipped"])
 
-        # 反発してもその日は解除されず、次のtickでもBUYは建たない
+        # 反発してもその日は解除されず、次のtickでもBUYは建たない(pendingはSHORTのまま、
+        # download_5mがブロックされているためこのテストでは約定もしない)。
         self.price_ratio = 1.02
         live_state = self._live_tick(11, 0)
-        self.assertTrue(all(p["direction"] == "SHORT" for p in live_state["positions"]))
+        self.assertEqual(live_state["positions"], [])
+        self.assertEqual(live_state["pending_entry"]["direction"], "SHORT")
         self.assertTrue(self._decision()["intraday_crash_brake"])
 
     def test_without_brake_neutral_regime_opens_top_buy(self):
@@ -245,8 +254,10 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         self.regime = "neutral"
         dd.ensure_decision(self._at(8, 30))
         live_state = self._live_tick(10, 0)
-        self.assertEqual(live_state["positions"][0]["direction"], "BUY")
-        self.assertEqual(live_state["positions"][0]["direction_gate"], "regime_neutral")
+        # 2026-11 TOP1建値バグ修正: 1tickでは約定しない(pending_entryのまま)。
+        self.assertEqual(live_state["positions"], [])
+        self.assertEqual(live_state["pending_entry"]["direction"], "BUY")
+        self.assertEqual(live_state["pending_entry"]["direction_gate"], "regime_neutral")
         pending = self._daytrade_entry(_FakeDT.current)["pending"]
         self.assertEqual((pending["ticker"], pending["direction"]), ("7203.T", "BUY"))
 
@@ -258,10 +269,13 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
         dd.ensure_decision(self._at(8, 30))
         self.price_ratio = 0.98  # ブレーキも発動させておく(買いが候補に出ないことの確認)
         live_state = self._live_tick(10, 0)
-        self.assertEqual([p["direction"] for p in live_state["positions"]], ["SHORT"])
-        self.assertEqual(live_state["positions"][0]["ticker"], "8035.T")
-        self.assertEqual(live_state["positions"][0]["market_regime_raw"], "bullish")
-        self.assertEqual(live_state["positions"][0]["direction_gate"], "short_only_down_day")
+        # 2026-11 TOP1建値バグ修正: 1tickでは約定しない(pending_entryのまま)。
+        self.assertEqual(live_state["positions"], [])
+        pos = live_state["pending_entry"]
+        self.assertEqual(pos["direction"], "SHORT")
+        self.assertEqual(pos["ticker"], "8035.T")
+        self.assertEqual(pos["market_regime_raw"], "bullish")
+        self.assertEqual(pos["direction_gate"], "short_only_down_day")
         self.assertTrue(self._decision()["intraday_crash_brake"])
 
         dt_state = self._daytrade_entry(_FakeDT.current)
@@ -298,10 +312,12 @@ class DownDayAndBrakeIntegration(unittest.TestCase):
                 live_state = json.load(f)
             dt_state = self._daytrade_entry(_FakeDT.current)
 
-        self.assertEqual(len(live_state["positions"]), 1)
-        self.assertEqual(live_state["positions"][0]["direction"], "SHORT")
-        self.assertEqual(live_state["positions"][0]["ticker"], "9501.T")  # SHORTの最高scoreが選ばれる
-        self.assertEqual(live_state["positions"][0]["direction_gate"], "short_only_down_day")
+        # 2026-11 TOP1建値バグ修正: 1tickでは約定しない(pending_entryのまま)。
+        self.assertEqual(live_state["positions"], [])
+        live_pending = live_state["pending_entry"]
+        self.assertEqual(live_pending["direction"], "SHORT")
+        self.assertEqual(live_pending["ticker"], "9501.T")  # SHORTの最高scoreが選ばれる
+        self.assertEqual(live_pending["direction_gate"], "short_only_down_day")
 
         pending = dt_state["pending"]
         self.assertEqual(pending["direction"], "SHORT")

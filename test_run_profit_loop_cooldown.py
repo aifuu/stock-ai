@@ -78,6 +78,7 @@ class CooldownSelfHealTests(unittest.TestCase):
     def _run(self, raw):
         state = self._state(raw)
         result = loop.open_top1_only(state, {}, [_candidate()], "2026-09-20")
+        self._last_state = state
         return result, state["last_exit_by_ticker"]
 
     def test_healthy_active_cooldown_blocks_and_is_byte_identical(self):
@@ -88,21 +89,30 @@ class CooldownSelfHealTests(unittest.TestCase):
         self.assertEqual(cooldowns["TEST"], fresh)
 
     def test_healthy_expired_cooldown_pops_entry_and_allows_entry(self):
+        # 2026-11 TOP1建値バグ修正: open_top1_onlyはこの時点では発注しない
+        # (_original_openは呼ばれない)。選んだ候補はstate['pending_entry']に
+        # 保存され、実際の約定はfill_pending_entry()が後続tickで行う
+        # (test_top1_next_bar_fill.py参照)。
         now = datetime.now(loop.app.TZ)
         expired = (now - timedelta(minutes=loop.SAME_TICKER_COOLDOWN_MINUTES + 5)).isoformat()
         opened = []
         loop._original_open = lambda state, policy, cands, today: opened.append(cands) or []
-        _, cooldowns = self._run(expired)
+        result, cooldowns = self._run(expired)
         self.assertNotIn("TEST", cooldowns)
-        self.assertEqual(len(opened), 1)
-        self.assertEqual(len(opened[0]), 1)
+        self.assertEqual(result, [])
+        self.assertEqual(len(opened), 0)
+        pending = self._last_state["pending_entry"]
+        self.assertEqual(pending["ticker"], "TEST")
 
     def test_no_cooldown_entry_allows_entry(self):
+        # 2026-11 TOP1建値バグ修正: 同上、発注ではなくpending_entryの作成を確認する。
         opened = []
         loop._original_open = lambda state, policy, cands, today: opened.append(cands) or []
-        _, cooldowns = self._run(None)
+        result, cooldowns = self._run(None)
         self.assertNotIn("TEST", cooldowns)
-        self.assertEqual(len(opened), 1)
+        self.assertEqual(result, [])
+        self.assertEqual(len(opened), 0)
+        self.assertEqual(self._last_state["pending_entry"]["ticker"], "TEST")
 
     def test_naive_timestamp_treated_as_jst_wall_clock(self):
         now = datetime.now(loop.app.TZ)
