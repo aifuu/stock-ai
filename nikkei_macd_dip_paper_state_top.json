@@ -1,23 +1,8 @@
 {
-  "capital": 1111399.5375,
+  "capital": 1093630.3475000001,
   "peak": 1115745.4725000001,
-  "max_dd": 1.410544117098335,
-  "position": {
-    "ticker": "2432.T",
-    "company": "ディー・エヌ・エー",
-    "entry_date": "2026-11-05",
-    "entry_price": 2678.0,
-    "shares": 400,
-    "invested_amount": 1071200.0,
-    "tp": 2689.5936944756418,
-    "sl": 2671.375784565508,
-    "atr": 52.69861125291739,
-    "score": 77.4461178111934,
-    "up_probability": 40.22670404995515,
-    "down_probability": 34.73437742407944,
-    "nikkei_macd_at_entry": -883.1521341361804,
-    "nikkei_macd_percentile_at_entry": 3.968253968253968
-  },
+  "max_dd": 1.9820940837382603,
+  "position": null,
   "trades_total": 8,
-  "last_exit_date": "2026-11-04"
+  "last_exit_date": "2026-11-06"
 }
