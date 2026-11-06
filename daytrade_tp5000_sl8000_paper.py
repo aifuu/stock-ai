@@ -188,6 +188,7 @@ profit_top10_paper are undone immediately in this module too.
 """
 import hashlib
 import json
+import math
 import os
 from datetime import datetime, timedelta
 from datetime import time as dtime
@@ -824,6 +825,13 @@ def _check_pending_fill(state, now, today):
         return []
 
     fill_price = float(bar["Open"])
+    if not (math.isfinite(fill_price) and fill_price > 0):
+        # 約定予定バーはあるがOpenが欠損/不正(値の付いていない足)。int(budget//NaN)
+        # で例外になりtick全体が落ちるのを防ぎ、ペンディングを維持して次tickで
+        # 再確認する(15:20以降は上のbar is None経路と同じくDATA_DELAYで取消)。
+        if now.time() >= FORCED_EXIT_TIME:
+            _cancel_pending(state, "CANCELLED_NO_FILL_DATA_DELAY", now)
+        return []
     budget = float(pending.get("budget", BUDGET_JPY))
     shares = (int(budget // fill_price) // LOT_SIZE) * LOT_SIZE
     if shares <= 0:

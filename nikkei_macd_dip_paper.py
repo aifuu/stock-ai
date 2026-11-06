@@ -123,53 +123,62 @@ def is_trading_window(now):
     )
 
 
-def get_current_price(ticker, fallback_close=None):
-    """実行時点(場中)で入手可能な最新価格を取得する。
-    優先順位: fast_info.last_price → 直近1分足の終値 → 当日の日次Open →
-    直近日次Close(fallback_close)。"""
+def today_traded_close(ticker, now=None):
+    """本日(JST)の5分足のうち出来高>0かつ有限・正のCloseを持つ最後の足の
+    Closeを返す。本日まだ1本も約定が無い(寄り付いていない)、またはデータ
+    取得に失敗した場合はNone。
+
+    ★2026-11-06 2914.T(終日売り気配のまま場中に値が付かず、大引けで
+    ストップ安比例配分)の修正: 寄り付いていない銘柄ではfast_info.last_price
+    や日足の最終Closeが前日終値(7,769円)のままのため、それを「現在価格」と
+    してエントリーし、約定し得ない価格でポジションを建てていた。本日の
+    約定(出来高>0の当日足)が確認できない限り価格を返さない。"""
+    now = now or datetime.now(TZ)
+    try:
+        d = yf.download(ticker, period="5d", interval="5m", auto_adjust=True, progress=False, threads=False)
+    except Exception:
+        return None
+    if d is None or d.empty:
+        return None
+    try:
+        if isinstance(d.columns, pd.MultiIndex):
+            d.columns = d.columns.get_level_values(0)
+        idx = pd.to_datetime(d.index)
+        idx = idx.tz_convert(TZ) if idx.tz is not None else idx.tz_localize("UTC").tz_convert(TZ)
+        today_bars = d[idx.date == now.date()]
+        if today_bars.empty or "Volume" not in today_bars.columns:
+            return None
+        close = pd.to_numeric(today_bars["Close"], errors="coerce")
+        vol = pd.to_numeric(today_bars["Volume"], errors="coerce")
+        traded = close[np.isfinite(close) & (close > 0) & (vol > 0)]
+        if traded.empty:
+            return None
+        return float(traded.iloc[-1])
+    except Exception:
+        return None
+
+
+def get_current_price(ticker, fallback_close=None, now=None):
+    """実行時点(場中)で入手可能な最新価格を取得する。本日の約定が確認できない
+    (未寄り付き・データ取得失敗)場合はNoneを返し、エントリー/決済判定を
+    見送らせる(today_traded_close()参照)。
+    優先順位: fast_info.last_price → 本日最後の約定済み5分足Close。
+    前日以前の価格(日足Close・fallback_close)には絶対にフォールバックしない
+    (fallback_closeは呼び出し互換のためだけに残しており使わない)。"""
+    today_close = today_traded_close(ticker, now=now)
+    if today_close is None:
+        return None
     try:
         fi = yf.Ticker(ticker).fast_info
         try:
             p = float(fi.last_price)
         except Exception:
             p = float(fi["lastPrice"])
-        if p and p > 0:
+        if np.isfinite(p) and p > 0:
             return p
     except Exception:
         pass
-    try:
-        d = yf.download(ticker, period="1d", interval="1m", auto_adjust=True, progress=False, threads=False)
-        if d is not None and not d.empty:
-            if isinstance(d.columns, pd.MultiIndex):
-                d.columns = d.columns.get_level_values(0)
-            p = float(d["Close"].dropna().iloc[-1])
-            if p > 0:
-                return p
-    except Exception:
-        pass
-    try:
-        d = yf.download(ticker, period="5d", interval="1d", auto_adjust=True, progress=False, threads=False)
-        if d is not None and not d.empty:
-            if isinstance(d.columns, pd.MultiIndex):
-                d.columns = d.columns.get_level_values(0)
-            today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-            if str(pd.Timestamp(d.index[-1]).date()) == today_str:
-                p = float(d["Open"].iloc[-1])
-                if p > 0:
-                    return p
-            p = float(d["Close"].iloc[-1])
-            if p > 0:
-                return p
-    except Exception:
-        pass
-    if fallback_close is not None:
-        try:
-            p = float(fallback_close)
-            if p > 0:
-                return p
-        except Exception:
-            pass
-    return None
+    return today_close
 
 
 def _fmt(x):
@@ -411,7 +420,7 @@ def try_entry(cfg, state, today, sig, best, scanned, fail_reason, current_price)
         return None
 
     if current_price is None or current_price <= 0:
-        send(f"⚠️ {cfg['label']}｜シグナル成立も現在価格取得失敗のためエントリー見送り({best['ticker']})")
+        send(f"⚠️ {cfg['label']}｜シグナル成立も未寄り付き(本日約定なし)または現在価格取得失敗のためエントリー見送り({best['ticker']}、次回判定で再確認)")
         return None
 
     # ★変更: エントリー価格は「その日の終値」ではなく実行時点(場中)の現在価格を
@@ -507,7 +516,7 @@ def _run():
         if pos:
             cp = price_for(pos["ticker"], fallback=pos.get("entry_price"))
             if cp is None:
-                print(f"⚠️ {cfg['label']}: 現在価格取得失敗のため決済判定をスキップ({pos['ticker']})")
+                print(f"⚠️ {cfg['label']}: 未寄り付き(本日約定なし)または現在価格取得失敗のため決済判定をスキップ({pos['ticker']})")
             else:
                 closed_msgs[cfg["name"]] = close_position(cfg, state, cp, today)
 

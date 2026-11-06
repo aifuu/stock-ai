@@ -68,6 +68,7 @@ import time
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 import daily_model_retrain as dmr
@@ -708,6 +709,22 @@ def download_5m(ticker):
         return None
 
 
+def traded_today(ticker, now, download_5m_fn=None):
+    """本日(now.date())の5分足に出来高>0かつ有限・正のCloseの足が1本でも
+    あればTrue。データ取得失敗時もFalse(約定を確認できない価格では建てない
+    側に倒す)。"""
+    download_5m_fn = download_5m_fn or download_5m
+    d = download_5m_fn(ticker)
+    if d is None or d.empty or "Volume" not in d.columns:
+        return False
+    bars = d[d.index.date == now.date()]
+    if bars.empty:
+        return False
+    close = pd.to_numeric(bars["Close"], errors="coerce")
+    vol = pd.to_numeric(bars["Volume"], errors="coerce")
+    return bool((np.isfinite(close) & (close > 0) & (vol > 0)).any())
+
+
 def evaluate_exits(positions, now, download_fn=None, download_5m_fn=None):
     """liveのmark_and_close()と同じ決済判定(直近営業日を日足で遡って
     TP/SL未検知を確認 → 当日5分足でTP/SL → 保有上限到達時のHOLD_LIMIT)を
@@ -873,9 +890,15 @@ def compute_live_ranking(qualified_candidates):
 
 def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
                          policy_hash, trend_down_flag, model_id=None, model_version=None,
-                         live_rank_map=None, rank_method=None):
+                         live_rank_map=None, rank_method=None, untraded_tickers=None):
     """scan()が返した全候補(既にexpected_value_pct,score降順=rankそのもの)から、
     まだ持っていないtrade_idの分だけ新規ポジションを作る。
+
+    ★未寄り付き除外(2026-11-06 2914.T): untraded_tickers(本日の約定が確認
+    できない銘柄、traded_today()参照)に含まれる候補はエントリーしない。
+    scan()の候補価格は5分足の最終Closeのため、終日値が付かなかった銘柄では
+    前日の終値になり、約定し得ない価格で建ててしまうため。rank(ev_rank)は
+    除外前のenumerate順のまま記録し、他の候補の順位はずらさない。
 
     ★決定(dedupキーのentry_timestamp): 仕様の「date|ticker|direction|
     entry_timestamp|policy_hash」のentry_timestampに実行時刻(HH:MM)を
@@ -898,7 +921,10 @@ def build_new_positions(known_trade_ids, candidates, today, policy, policy_file,
     rank_method=Noneの行は定義上RANK_METHOD_LEGACYとして集計される。
     """
     new_positions = []
+    untraded = set(untraded_tickers or ())
     for rank, c in enumerate(candidates, start=1):
+        if c["ticker"] in untraded:
+            continue
         data_date = c.get("data_date", today)
         trade_id = build_trade_id(today, c["ticker"], c["direction"], data_date, policy_hash)
         if trade_id in known_trade_ids:
@@ -1220,10 +1246,17 @@ def run(now=None, work_dir=".", upload=True):
     rank_info = compute_live_ranking(qualified)
 
     known_ids = {p["trade_id"] for p in remaining} | {p["trade_id"] for p in closed}
+    untraded = {
+        t for t in {str(c["ticker"]) for c in qualified}
+        if not traded_today(t, now)
+    }
+    if untraded:
+        print(f"⚠️ 本日約定なし(未寄り付き/データなし)のためエントリー除外: {sorted(untraded)}")
     new_positions = build_new_positions(
         known_ids, qualified, today, policy, frozen_policy_file, policy_hash, trend_down_flag,
         model_id=model_id, model_version=model_version,
         live_rank_map=rank_info, rank_method=RANK_METHOD_LIVE_V2,
+        untraded_tickers=untraded,
     )
 
     # ★決定(集計はこのrunの再リストに依存しない): list_release_assets()は
