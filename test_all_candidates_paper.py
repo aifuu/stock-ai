@@ -29,6 +29,19 @@ import profit_top10_paper as live
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 TZ = ZoneInfo("Asia/Tokyo")
 
+# run()は候補ごとにtraded_today()(本日の5分足)を確認する。このファイルの
+# テストは固定日付の候補を使い実データに依存しないため、全テストで
+# 「本日約定あり」に固定する(未寄り付き除外自体はtest_untraded_entry_guard.py)。
+_traded_today_patch = patch.object(acp, "traded_today", return_value=True)
+
+
+def setUpModule():
+    _traded_today_patch.start()
+
+
+def tearDownModule():
+    _traded_today_patch.stop()
+
 
 class TmpDirMixin:
     def setUp(self):

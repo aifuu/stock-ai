@@ -2,22 +2,26 @@
   "capital": 1046864.7225,
   "peak": 1046864.7225,
   "max_dd": 2.2604052499999994,
-  "position": {
-    "ticker": "2914.T",
-    "company": "日本たばこ産業",
-    "entry_date": "2026-11-06",
-    "entry_price": 7769.0,
-    "shares": 100,
-    "invested_amount": 776900.0,
-    "tp": 7975.99629849997,
-    "sl": 7650.71640085716,
-    "atr": 165.59703879997636,
-    "score": 75.84021176339121,
-    "up_probability": 51.586843963476234,
-    "down_probability": 26.556537431883015,
-    "nikkei_macd_at_entry": -969.4381223936361,
-    "nikkei_macd_percentile_at_entry": 2.380952380952381
-  },
-  "trades_total": 5,
-  "last_exit_date": "2026-11-05"
+  "position": null,
+  "trades_total": 4,
+  "last_exit_date": "2026-11-05",
+  "voided_entries": [
+    {
+      "ticker": "2914.T",
+      "company": "日本たばこ産業",
+      "entry_date": "2026-11-06",
+      "entry_price": 7769.0,
+      "shares": 100,
+      "invested_amount": 776900.0,
+      "tp": 7975.99629849997,
+      "sl": 7650.71640085716,
+      "atr": 165.59703879997636,
+      "score": 75.84021176339121,
+      "up_probability": 51.586843963476234,
+      "down_probability": 26.556537431883015,
+      "nikkei_macd_at_entry": -969.4381223936361,
+      "nikkei_macd_percentile_at_entry": 2.380952380952381,
+      "voided_reason": "UNTRADED_TODAY: 2914.T had no trade during the session on 2026-11-06 (limit-down quote all day, closing-auction 6269). Entry 7769 was the previous close and could not have filled. Voided per owner approval."
+    }
+  ]
 }

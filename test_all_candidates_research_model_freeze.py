@@ -37,6 +37,18 @@ from test_all_candidates_paper import FakeReleaseServer
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 TZ = ZoneInfo("Asia/Tokyo")
 
+# run()のtraded_today()(本日の5分足確認)は実データに依存するため、
+# このファイルの全テストで「本日約定あり」に固定する。
+_traded_today_patch = patch.object(acp, "traded_today", return_value=True)
+
+
+def setUpModule():
+    _traded_today_patch.start()
+
+
+def tearDownModule():
+    _traded_today_patch.stop()
+
 
 class TmpDirMixin:
     def setUp(self):
