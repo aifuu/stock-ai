@@ -315,6 +315,16 @@ def discord_send(message):
         return False
 
 
+def _red_text(message, limit=1800):
+    """売買(判断・約定・決済)の通知をDiscordで赤文字にする(owner要望 2026-11-09)。
+    ```ansi コードブロック内でANSIの赤(31)を各行の先頭に付ける。PC/ブラウザ版の
+    Discordで赤表示、スマホアプリは色なしのコードブロック表示(文言は同じ)。
+    discord_send()の1950字切り詰めで閉じ```が欠けないよう本文を先にlimitで切る。"""
+    body = str(message).replace("```", "'''")[:limit]
+    lines = "\n".join(f"\u001b[31m{line}" for line in body.split("\n"))
+    return f"```ansi\n{lines}\n```"
+
+
 def default_state():
     return {"positions": [], "pending": None, "trade_date": None, "trades_today": 0,
             "last_exit_by_ticker": {}, "live_cache_miss_notice_date": None,
@@ -1045,7 +1055,7 @@ def _force_close_late(state, now):
     if bars is not None and not bars.empty:
         price = float(bars["Close"].iloc[-1])
     msg = _close_position(state, now, price, "FORCED_LATE", now.replace(tzinfo=None))
-    discord_send(f"⚠️ 前日からの持ち越しポジションを強制決済しました\n{msg}")
+    discord_send(_red_text(f"⚠️ 前日からの持ち越しポジションを強制決済しました\n{msg}"))
 
 
 def _update_daily_summary(today):
@@ -1281,7 +1291,7 @@ def run(now=None):
         save_state(state)
 
     for m in messages:
-        discord_send(m)
+        discord_send(_red_text(m))
 
     _maybe_send_daily_summary(state, now, today)
 
