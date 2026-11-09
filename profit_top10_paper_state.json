@@ -39,8 +39,8 @@
       "invested_amount": 1216950.0,
       "allocation": 1.0,
       "policy_updated_at": "2026-09-16T06:39:35",
-      "current_price": 1767.5,
-      "unrealized_pnl": -21649.809999999998,
+      "current_price": 1763.0,
+      "unrealized_pnl": -18498.0775,
       "fill_method": "decision_next_bar_open_top1_v1"
     }
   ],
@@ -53,7 +53,6 @@
   "pending_entry": null,
   "cancelled_entries": [],
   "last_exit_by_ticker": {
-    "4704.T": "2026-10-15T09:01:20.657225+09:00",
     "7453.T": "2026-10-19T09:21:23.502446+09:00",
     "8801.T": "2026-10-29T09:00:41.624976+09:00",
     "285A.T": "2026-11-09T09:00:59.853129+09:00"
