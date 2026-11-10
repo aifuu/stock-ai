@@ -61,6 +61,7 @@ live(profit_top10_paper.py、TOP1のみを寄り後の朝一セッションで
 import gzip
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -725,6 +726,40 @@ def traded_today(ticker, now, download_5m_fn=None):
     return bool((np.isfinite(close) & (close > 0) & (vol > 0)).any())
 
 
+def _gap_open_exit(direction, o, tp, sl):
+    """始値の時点で既にSL/TPを越えていた(ギャップ)なら(始値, reason)、でなければ(None, None)。
+    liveのprofit_top10_paper._gap_open_exit()と同じ規則(2026-11-10 バグ修正)。"""
+    if o is None or not math.isfinite(o) or o <= 0:
+        return None, None
+    if direction == "BUY":
+        if o <= sl:
+            return o, "SL"
+        if o >= tp:
+            return o, "TP"
+    else:
+        if o >= sl:
+            return o, "SL"
+        if o <= tp:
+            return o, "TP"
+    return None, None
+
+
+def _official_open(ticker, day, download_fn):
+    """当日の公式始値(日足Open)。5分足の最初の足は寄付きの約定を含まないことがある
+    ため、寄りのギャップ判定はこちらを優先する。取得できなければNone。"""
+    try:
+        d = download_fn(ticker, period="5d")
+        if d is None or d.empty:
+            return None
+        row = d[[pd.Timestamp(t).date() == pd.Timestamp(day).date() for t in d.index]]
+        if row.empty:
+            return None
+        o = float(row["Open"].iloc[0])
+        return o if math.isfinite(o) and o > 0 else None
+    except Exception:
+        return None
+
+
 def evaluate_exits(positions, now, download_fn=None, download_5m_fn=None):
     """liveのmark_and_close()と同じ決済判定(直近営業日を日足で遡って
     TP/SL未検知を確認 → 当日5分足でTP/SL → 保有上限到達時のHOLD_LIMIT)を
@@ -747,7 +782,11 @@ def evaluate_exits(positions, now, download_fn=None, download_5m_fn=None):
             if daily is not None and not daily.empty:
                 for ts, b in daily[daily.index.normalize().isin(prior_days)].iterrows():
                     hi, lo = float(b["High"]), float(b["Low"])
-                    if direction == "BUY":
+                    exit_price, reason = _gap_open_exit(
+                        direction, float(b["Open"]) if "Open" in b.index else None, float(p["tp"]), float(p["sl"]))
+                    if reason:
+                        pass
+                    elif direction == "BUY":
                         if lo <= p["sl"] and hi >= p["tp"]:
                             exit_price, reason = float(p["sl"]), "SL"
                         elif hi >= p["tp"]:
@@ -789,11 +828,25 @@ def evaluate_exits(positions, now, download_fn=None, download_5m_fn=None):
             d = download_5m_fn(p["ticker"])
             if d is not None and not d.empty:
                 bars = d[d.index.date == now.date()]
+                first_bar = True
                 for ts, b in bars.iterrows():
                     if ts.time() < dtime(9, 0):
                         continue
                     hi, lo = float(b["High"]), float(b["Low"])
-                    if direction == "BUY":
+                    # 寄り・昼休み明け等の始値ギャップ(当日建ての約定足は対象外)。
+                    gap_ok = entry_date.date() < now.date()
+                    o = float(b["Open"]) if "Open" in b.index else None
+                    touched = (lo <= p["sl"] or hi >= p["tp"]) if direction == "BUY" else (hi >= p["sl"] or lo <= p["tp"])
+                    if gap_ok and first_bar and touched:
+                        oo = _official_open(p["ticker"], now.date(), download_fn)
+                        if oo is not None:
+                            o = oo
+                    first_bar = False
+                    exit_price, reason = (_gap_open_exit(direction, o, float(p["tp"]), float(p["sl"]))
+                                          if gap_ok else (None, None))
+                    if reason:
+                        pass
+                    elif direction == "BUY":
                         if lo <= p["sl"]:
                             exit_price, reason = float(p["sl"]), "SL"
                         elif hi >= p["tp"]:
