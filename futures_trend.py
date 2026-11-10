@@ -8,6 +8,7 @@
 - MA5 < MA20 -> 下落トレンド
 - MA5 >= MA20 -> 上昇トレンド
 - 前日比 <= -CRASH_THRESHOLDの場合は強制的に下落トレンド扱い(急落の取りこぼし防止)
+- 前日比 >= +SURGE_THRESHOLDの場合は強制的に上昇トレンド扱い(本番confirmed_trendのみ、2026-11-10追加)
 """
 import os
 import numpy as np
@@ -21,6 +22,12 @@ FALLBACK_TICKER = "^N225"
 MA_SHORT = int(os.getenv("FUTURES_TREND_MA_SHORT", "5"))
 MA_LONG = int(os.getenv("FUTURES_TREND_MA_LONG", "20"))
 CRASH_THRESHOLD = float(os.getenv("FUTURES_TREND_CRASH_PCT", "0.015"))  # 1.5%
+# ★追加(2026-11-10 オーナー決定): 急落補助条件の上げ版。前日確定比 >= +SURGE_THRESHOLD
+# なら本番の日次判定(confirmed_trend)を強制的に上昇トレンド扱いにする。11/6の急落後、
+# 先物が+4.8%反発してもMA5<MA20のまま「下落」=空売りのみで負けた事象への対応。
+# 週次検証(classify_close_series/historical_trend_series)には入れない(policy検証・
+# 研究凍結の判定系列を変えないため)。
+SURGE_THRESHOLD = float(os.getenv("FUTURES_TREND_SURGE_PCT", "0.015"))  # +1.5%
 
 UP = "up"
 DOWN = "down"
@@ -159,6 +166,8 @@ def classify_close_series(close):
 
     検証(historical_trend_series)と本番(confirmed_trend→daily_decision)の
     両方がこの関数を使うので、判定式が食い違うことはない。
+    唯一の例外: 本番のconfirmed_trend()だけが急騰補助条件(SURGE_THRESHOLD、
+    2026-11-10オーナー決定)を上乗せする。
     """
     close = pd.Series(close).astype(float)
     ma_short = close.rolling(MA_SHORT).mean()
@@ -204,6 +213,10 @@ def confirmed_trend(today, downloader=None):
     ms, ml = float(last["ma_short"]), float(last["ma_long"])
     if chg <= -CRASH_THRESHOLD:
         reason = f"急落補助条件: 前日確定比{chg * 100:.2f}% <= -{CRASH_THRESHOLD * 100:.1f}%"
+    elif chg >= SURGE_THRESHOLD:
+        trend = UP
+        reason = (f"急騰補助条件: 前日確定比+{chg * 100:.2f}% >= +{SURGE_THRESHOLD * 100:.1f}% "
+                  f"(MA{MA_SHORT}={ms:.1f}/MA{MA_LONG}={ml:.1f})")
     else:
         reason = f"MA{MA_SHORT}={ms:.1f} {'>=' if trend == UP else '<'} MA{MA_LONG}={ml:.1f}"
     return {

@@ -223,6 +223,34 @@ def open_positions(s,policy,cands,today):
         s['trades_today']=int(s.get('trades_today',0))+1; s.setdefault('trades_by_ticker_today',{})[c['ticker']]=cnt+1; active.add(c['ticker']); out.append(s['positions'][-1])
     return out
 
+def _gap_open_exit(direction,o,tp,sl):
+    # ★追加(2026-11-10 バグ修正・オーナー承認): 始値の時点で既にSL/TPを越えていた
+    # (ギャップで飛び越えた)場合、ラインの価格では約定し得ないので始値で決済する。
+    # 例: 10/9 6472.T BUYはSL371.1に対し始値369.3で寄ったのにSL371.1で記録され、
+    # 損失が4,439円小さく記録されていた。越えていなければ(None,None)。
+    if o is None or not math.isfinite(o) or o<=0:return None,None
+    if direction=='BUY':
+        if o<=sl:return o,'SL'
+        if o>=tp:return o,'TP'
+    else:
+        if o>=sl:return o,'SL'
+        if o<=tp:return o,'TP'
+    return None,None
+
+def _official_open(ticker,day):
+    # 当日の公式始値(日足Open)。yfinanceの5分足の最初の足は寄付きの約定を含まない
+    # ことがある(11/10 8750.T: 日足Open1,789.0 / 5分足最初のOpen1,799.5)ため、
+    # 寄りのギャップ判定は日足Openを優先する。取得できなければNone。
+    try:
+        d=download(ticker,period='5d')
+        if d is None or d.empty:return None
+        row=d[[pd.Timestamp(t).date()==pd.Timestamp(day).date() for t in d.index]]
+        if row.empty:return None
+        o=float(row['Open'].iloc[0])
+        return o if math.isfinite(o) and o>0 else None
+    except Exception:
+        return None
+
 def mark_and_close(s,now,policy):
     # policy['hold_days']が示す営業日数だけ保有を許す(以前は毎日15:25に全ポジション
     # 強制決済していたが、検証済み戦略は複数営業日保有を前提としているため一致させる)。
@@ -238,7 +266,9 @@ def mark_and_close(s,now,policy):
             if daily is not None and not daily.empty:
                 for ts,b in daily[daily.index.normalize().isin(prior_days)].iterrows():
                     hi,lo=float(b['High']),float(b['Low'])
-                    if direction=='BUY':
+                    exit_price,reason=_gap_open_exit(direction,float(b['Open']) if 'Open' in b.index else None,float(p['tp']),float(p['sl']))
+                    if reason:pass
+                    elif direction=='BUY':
                         if lo<=p['sl'] and hi>=p['tp']:exit_price,reason=float(p['sl']),'SL'
                         elif hi>=p['tp']:exit_price,reason=float(p['tp']),'TP'
                         elif lo<=p['sl']:exit_price,reason=float(p['sl']),'SL'
@@ -269,11 +299,23 @@ def mark_and_close(s,now,policy):
             d=download_5m(p['ticker'])
             if d is not None and not d.empty:
                 bars=d[d.index.date==now.date()]; last=float(bars['Close'].iloc[-1]) if not bars.empty else float(p.get('current_price',ep)); p['current_price']=last
+                first_bar=True
                 for ts,b in bars.iterrows():
                     if ts.time()<dtime(9,0):continue
                     if fill_bar_time is not None and entry_date.date()==now.date() and ts<fill_bar_time:continue
                     hi,lo=float(b['High']),float(b['Low'])
-                    if direction=='BUY':
+                    # 寄り(前日から保有)と昼休み明け等の足の始値ギャップ。約定足そのもの
+                    # (始値で建てた足)と、当日建てでfill_bar_timeの無い旧形式は対象外。
+                    gap_ok=entry_date.date()<now.date() or (fill_bar_time is not None and ts>fill_bar_time)
+                    o=float(b['Open']) if 'Open' in b.index else None
+                    touched=(lo<=p['sl'] or hi>=p['tp']) if direction=='BUY' else (hi>=p['sl'] or lo<=p['tp'])
+                    if gap_ok and first_bar and entry_date.date()<now.date() and touched:
+                        oo=_official_open(p['ticker'],now.date())
+                        if oo is not None:o=oo
+                    first_bar=False
+                    exit_price,reason=_gap_open_exit(direction,o,float(p['tp']),float(p['sl'])) if gap_ok else (None,None)
+                    if reason:pass
+                    elif direction=='BUY':
                         if lo<=p['sl']:exit_price,reason=float(p['sl']),'SL'
                         elif hi>=p['tp']:exit_price,reason=float(p['tp']),'TP'
                     else:
