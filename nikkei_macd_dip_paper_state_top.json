@@ -2,7 +2,22 @@
   "capital": 1072750.4675000003,
   "peak": 1115745.4725000001,
   "max_dd": 3.8534778818024633,
-  "position": null,
-  "trades_total": 10,
+  "position": {
+    "ticker": "4901.T",
+    "company": "富士フイルムホールディングス",
+    "entry_date": "2026-11-12",
+    "entry_price": 3564.0,
+    "shares": 300,
+    "invested_amount": 1069200.0,
+    "tp": 3582.8659135388225,
+    "sl": 3553.2207030371364,
+    "atr": 85.7541524491925,
+    "score": 72.3702493863314,
+    "up_probability": 28.709335552714794,
+    "down_probability": 31.945763512095702,
+    "nikkei_macd_at_entry": -1678.5482225857122,
+    "nikkei_macd_percentile_at_entry": 0.7936507936507936
+  },
+  "trades_total": 11,
   "last_exit_date": "2026-11-11"
 }
