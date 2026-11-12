@@ -44,11 +44,9 @@
       "fill_method": "decision_next_bar_open_top1_v1"
     }
   ],
-  "trade_count_date": "2026-11-11",
-  "trades_today": 1,
-  "trades_by_ticker_today": {
-    "3402.T": 1
-  },
+  "trade_count_date": "2026-11-12",
+  "trades_today": 0,
+  "trades_by_ticker_today": {},
   "daily_start_capital": 1300153.9057064175,
   "pending_entry": null,
   "cancelled_entries": [],
