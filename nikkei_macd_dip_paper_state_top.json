@@ -2,7 +2,22 @@
   "capital": 1079070.2225000001,
   "peak": 1115745.4725000001,
   "max_dd": 3.8534778818024633,
-  "position": null,
-  "trades_total": 11,
+  "position": {
+    "ticker": "9735.T",
+    "company": "セコム",
+    "entry_date": "2026-11-13",
+    "entry_price": 6999.0,
+    "shares": 100,
+    "invested_amount": 699900.0,
+    "tp": 7034.69501527513,
+    "sl": 6978.605166272346,
+    "atr": 162.25006943240902,
+    "score": 72.41331532703066,
+    "up_probability": 29.570654366700154,
+    "down_probability": 28.90153347077798,
+    "nikkei_macd_at_entry": -1588.309327240764,
+    "nikkei_macd_percentile_at_entry": 1.1904761904761905
+  },
+  "trades_total": 12,
   "last_exit_date": "2026-11-12"
 }
