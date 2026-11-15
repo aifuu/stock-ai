@@ -44,15 +44,15 @@
 | トレード数不足 (gate_signals) | 0 | 0 |
 | PF不足 (gate_pf) | 0 | 0 |
 | 平均リターン不足 (gate_avg_return) | 0 | 0 |
-| OOS/Validation PF比不足 (gate_ratio) | 50 | 48 |
+| OOS/Validation PF比不足 (gate_ratio) | 50 | 47 |
 | 月次プラス比率不足 (gate_monthly_positive_ratio) | 0 | 0 |
-| 最大DD超過 (gate_dd) | 2 | 0 |
+| 最大DD超過 (gate_dd) | 3 | 0 |
 | OOS複利リターン<=0 (gate_compound) | 0 | 0 |
 
 上位の失敗ゲート組み合わせ(多い順、上位5件):
 
-- 「OOS/Validation PF比不足」: 48件
-- 「OOS/Validation PF比不足;最大DD超過」: 2件
+- 「OOS/Validation PF比不足」: 47件
+- 「OOS/Validation PF比不足;最大DD超過」: 3件
 
 全50件の戦略のうち、ゲート判定結果(全gateの合否パターン)が完全に一致する重複を除くと、識別可能な『結果パターン』の種類は 2 種類(多くの UP20/25/30 等の行が実質的に同一結果の重複であることを示す)。
 
@@ -66,7 +66,7 @@
   - 最新fold(up)の候補群(DEV top50由来)に、up/score/nikkeiが一致する行が1件も存在しません。この承認済みパラメータ組み合わせは今回のfoldのstability_objective上位50に入らなかったため、最新OOSでの直接の成績はこのファイル群からは導出できません(validatorの再実行が必要であり、本スクリプトはそれを行いません)。
 - `strategy_policy_up.json` (strategy_name=`UP20_SCORE70_NIKKEIOFF_TP3.0_SL1.0_H3`):
   - 一致方法: nearest(up/score/nikkei一致,tp/sl/hold違い)
-  - oos_signals=173, oos_pf=2.1805530156194344, oos_avg_return=1.3632606479264553, oos_dd=-31.0619256023722, oos_monthly_positive_ratio=60.0, oos_pf_ratio=0.3093371002663228, oos_pass=False
+  - oos_signals=173, oos_pf=2.1470525879454656, oos_avg_return=1.3009969193093427, oos_dd=-32.89185736960801, oos_monthly_positive_ratio=60.0, oos_pf_ratio=0.3059864341929173, oos_pass=False
 
 ## DOWNトレンド
 
@@ -81,17 +81,18 @@
 | 平均リターン不足 (gate_avg_return) | 0 | 0 |
 | 最大DD超過 (gate_dd) | 21 | 0 |
 | 年率シグナル数不足 (gate_annual_signals) | 0 | 0 |
-| 月次プラス比率不足 (gate_monthly_positive_ratio) | 32 | 28 |
-| ブートストラップ下限<=0 (gate_avg_lower) | 22 | 0 |
+| 月次プラス比率不足 (gate_monthly_positive_ratio) | 36 | 27 |
+| ブートストラップ下限<=0 (gate_avg_lower) | 20 | 0 |
 
 上位の失敗ゲート組み合わせ(多い順、上位5件):
 
-- 「月次プラス比率不足」: 28件
-- 「最大DD超過;ブートストラップ下限<=0」: 18件
-- 「最大DD超過;月次プラス比率不足;ブートストラップ下限<=0」: 3件
-- 「月次プラス比率不足;ブートストラップ下限<=0」: 1件
+- 「月次プラス比率不足」: 27件
+- 「最大DD超過;ブートストラップ下限<=0」: 14件
+- 「最大DD超過;月次プラス比率不足;ブートストラップ下限<=0」: 4件
+- 「最大DD超過;月次プラス比率不足」: 3件
+- 「月次プラス比率不足;ブートストラップ下限<=0」: 2件
 
-全50件の戦略のうち、ゲート判定結果(全gateの合否パターン)が完全に一致する重複を除くと、識別可能な『結果パターン』の種類は 4 種類(多くの UP20/25/30 等の行が実質的に同一結果の重複であることを示す)。
+全50件の戦略のうち、ゲート判定結果(全gateの合否パターン)が完全に一致する重複を除くと、識別可能な『結果パターン』の種類は 5 種類(多くの UP20/25/30 等の行が実質的に同一結果の重複であることを示す)。
 
 ### OOS
 
