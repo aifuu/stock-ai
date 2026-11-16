@@ -1,29 +1,6 @@
 {
   "positions": [],
-  "pending": {
-    "ticker": "8253.T",
-    "direction": "SHORT",
-    "decision_date": "2026-11-16",
-    "decision_time": "2026-11-16T10:00:55.202479",
-    "fill_bar_time": "2026-11-16T10:05:00",
-    "score": 45.88571228948271,
-    "up_probability": 35.69654828680394,
-    "down_probability": 37.49685448530651,
-    "market_regime": "neutral",
-    "top10_rank": 1,
-    "top10_source": "live_tick_cache",
-    "skipped": "",
-    "policy_file": "strategy_policy.json",
-    "policy_source": "daily_decision:2026-11-15",
-    "policy_hash": "cf106bdc4c56",
-    "model_id": "4d1e54051a84e848",
-    "model_version": "2026-11-11",
-    "budget": 1000000.0,
-    "entry_window_start": "09:55",
-    "market_regime_raw": "neutral",
-    "direction_gate": "short_only_down_day",
-    "fee_rate": 0.0
-  },
+  "pending": null,
   "trade_date": "2026-11-16",
   "trades_today": 0,
   "last_exit_by_ticker": {
@@ -53,5 +30,5 @@
     "6113.T": "2026-11-13T15:21:05.857838+09:00"
   },
   "live_cache_miss_notice_date": null,
-  "daily_summary_sent_date": "2026-11-13"
+  "daily_summary_sent_date": "2026-11-16"
 }
