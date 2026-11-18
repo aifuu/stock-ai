@@ -1,50 +1,5 @@
 {
-  "positions": [
-    {
-      "ticker": "7532.T",
-      "direction": "SHORT",
-      "entry_date": "2026-11-18",
-      "entry_time": "10:00",
-      "entry_datetime": "2026-11-18T10:00:00",
-      "entry_price": 821.0999755859375,
-      "shares": 1200,
-      "invested_amount": 985319.970703125,
-      "tp": 795.7428327287946,
-      "sl": 833.778547014509,
-      "tp_pct": -3.088191890280841,
-      "sl_pct": 1.5440959451404206,
-      "score": 41.41462596228516,
-      "up_probability": 30.91861256826109,
-      "down_probability": 31.988171419616112,
-      "market_regime": "bearish",
-      "top10_rank": 1,
-      "top10_source": "live_tick_cache",
-      "skipped": "",
-      "policy_file": "strategy_policy.json",
-      "policy_source": "daily_decision:2026-11-17",
-      "policy_hash": "cf106bdc4c56",
-      "model_id": "4d1e54051a84e848",
-      "model_version": "2026-11-11",
-      "price_bar_time": "2026-11-18T10:00:00",
-      "data_delay_minutes": 15.877787433333333,
-      "decision_time": "2026-11-18T09:55:54.905909",
-      "fill_bar_time": "2026-11-18T10:00:00",
-      "fill_method": "decision_next_bar_open_v2",
-      "atr_pct": 3.0881918902808376,
-      "vwap_deviation_pct": -1.040261032206182,
-      "mfe_yen": 7919.970703125,
-      "mae_yen": -8640.0146484375,
-      "current_price": 815.7999877929688,
-      "entry_window_start": "09:55",
-      "market_regime_raw": "bearish",
-      "direction_gate": "short_only_down_day",
-      "fee_rate": 0.0,
-      "exit_rule": "atr_tp1.0_sl0.5",
-      "atr": 25.357142857142858,
-      "atr_tp_mult": 1.0,
-      "atr_sl_mult": 0.5
-    }
-  ],
+  "positions": [],
   "pending": null,
   "trade_date": "2026-11-18",
   "trades_today": 1,
@@ -73,8 +28,8 @@
     "8354.T": "2026-11-11T15:21:33.636228+09:00",
     "4062.T": "2026-11-12T15:21:14.232148+09:00",
     "6113.T": "2026-11-13T15:21:05.857838+09:00",
-    "7532.T": "2026-11-17T15:21:04.084323+09:00"
+    "7532.T": "2026-11-18T15:20:38.213862+09:00"
   },
   "live_cache_miss_notice_date": null,
-  "daily_summary_sent_date": "2026-11-17"
+  "daily_summary_sent_date": "2026-11-18"
 }
