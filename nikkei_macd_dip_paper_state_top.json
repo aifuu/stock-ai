@@ -1,23 +1,8 @@
 {
-  "capital": 1074371.8225,
+  "capital": 1086230.4425000001,
   "peak": 1115745.4725000001,
   "max_dd": 3.8534778818024633,
-  "position": {
-    "ticker": "4911.T",
-    "company": "資生堂",
-    "entry_date": "2026-11-17",
-    "entry_price": 4247.0,
-    "shares": 200,
-    "invested_amount": 849400.0,
-    "tp": 4280.958610902544,
-    "sl": 4227.597284588865,
-    "atr": 154.35732228429237,
-    "score": 72.95885767336222,
-    "up_probability": 40.48150129333138,
-    "down_probability": 26.227403921366143,
-    "nikkei_macd_at_entry": -1447.7589069894966,
-    "nikkei_macd_percentile_at_entry": 2.380952380952381
-  },
+  "position": null,
   "trades_total": 14,
-  "last_exit_date": "2026-11-16"
+  "last_exit_date": "2026-11-18"
 }
