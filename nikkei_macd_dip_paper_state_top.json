@@ -2,7 +2,22 @@
   "capital": 1086230.4425000001,
   "peak": 1115745.4725000001,
   "max_dd": 3.8534778818024633,
-  "position": null,
-  "trades_total": 14,
+  "position": {
+    "ticker": "4661.T",
+    "company": "オリエンタルランド",
+    "entry_date": "2026-11-19",
+    "entry_price": 3981.0,
+    "shares": 200,
+    "invested_amount": 796200.0,
+    "tp": 4006.013006833969,
+    "sl": 3966.708477458955,
+    "atr": 113.6954856089505,
+    "score": 72.5035029452716,
+    "up_probability": 31.374406731518818,
+    "down_probability": 33.38828373880937,
+    "nikkei_macd_at_entry": -1555.8433365126475,
+    "nikkei_macd_percentile_at_entry": 1.5873015873015872
+  },
+  "trades_total": 15,
   "last_exit_date": "2026-11-18"
 }
