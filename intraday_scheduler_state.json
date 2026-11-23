@@ -1,9 +1,9 @@
 {
   "date": "2026-11-24",
-  "phase": "before_premarket",
+  "phase": "premarket",
   "premarket_done": true,
   "open_rescore_done": false,
   "final_decision_done": false,
   "last_exit_by_ticker": {},
-  "updated_at": "2026-11-24T08:25:00.111073+09:00"
+  "updated_at": "2026-11-24T08:30:00.039896+09:00"
 }
