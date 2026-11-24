@@ -1,25 +1,10 @@
 {
-  "capital": 1007509.6950000001,
+  "capital": 992497.035,
   "peak": 1042215.6075,
-  "max_dd": 4.501437338146943,
-  "position": {
-    "ticker": "2269.T",
-    "company": "明治ホールディングス",
-    "entry_date": "2026-11-18",
-    "entry_price": 4638.0,
-    "shares": 200,
-    "invested_amount": 927600.0,
-    "tp": 5028.670698959672,
-    "sl": 4414.759600594473,
-    "atr": 111.62019970276341,
-    "score": 72.47309955254234,
-    "up_probability": 30.766338876933695,
-    "down_probability": 36.27651198936391,
-    "nikkei_macd_at_entry": -1481.9778053264527,
-    "nikkei_macd_percentile_at_entry": 2.380952380952381
-  },
+  "max_dd": 4.7704690029793095,
+  "position": null,
   "trades_total": 6,
-  "last_exit_date": "2026-11-17",
+  "last_exit_date": "2026-11-24",
   "voided_entries": [
     {
       "ticker": "2914.T",
