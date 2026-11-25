@@ -2,7 +2,22 @@
   "capital": 1074361.3650000002,
   "peak": 1115745.4725000001,
   "max_dd": 4.333645189853096,
-  "position": null,
-  "trades_total": 17,
+  "position": {
+    "ticker": "4704.T",
+    "company": "トレンドマイクロ",
+    "entry_date": "2026-11-25",
+    "entry_price": 7685.0,
+    "shares": 100,
+    "invested_amount": 768500.0,
+    "tp": 7752.205155023843,
+    "sl": 7646.601418243195,
+    "atr": 305.47797738110245,
+    "score": 72.42404758896751,
+    "up_probability": 29.785299605437142,
+    "down_probability": 32.84937509734892,
+    "nikkei_macd_at_entry": -1751.0503415941275,
+    "nikkei_macd_percentile_at_entry": 0.3968253968253968
+  },
+  "trades_total": 18,
   "last_exit_date": "2026-11-24"
 }
