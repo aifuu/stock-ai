@@ -1,23 +1,8 @@
 {
-  "capital": 1068718.6550000003,
+  "capital": 1063821.6250000002,
   "peak": 1115745.4725000001,
-  "max_dd": 4.333645189853096,
-  "position": {
-    "ticker": "7751.T",
-    "company": "キヤノン",
-    "entry_date": "2026-11-26",
-    "entry_price": 4996.0,
-    "shares": 200,
-    "invested_amount": 999200.0,
-    "tp": 5020.758297411751,
-    "sl": 4981.854009160649,
-    "atr": 112.53771550795977,
-    "score": 72.51499326388522,
-    "up_probability": 31.604213103791164,
-    "down_probability": 32.38404087303363,
-    "nikkei_macd_at_entry": -1710.4524420581438,
-    "nikkei_macd_percentile_at_entry": 0.7936507936507936
-  },
+  "max_dd": 4.653735890467609,
+  "position": null,
   "trades_total": 19,
-  "last_exit_date": "2026-11-25"
+  "last_exit_date": "2026-11-26"
 }
