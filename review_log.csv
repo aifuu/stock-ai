@@ -1,0 +1,2 @@
+date,trend,trend_reason,predicted_trend,trend_hit,closes_expected,closes_hit,unexpected_closes,pnl_total,pnl_top1,pnl_daytrade,pnl_macd_top,pnl_macd_mid,pnl_macd_bottom,loss_count,open_positions,top1_dd_pct,cadence,max_gap_min,price_verified,has_review
+2026-11-26,down,MA5=57014.0 < MA20=59966.7,,,,,,-7097.03,0,-2200.0,-4897.03,0,0,2,3,0.119,ok,6,verified,1

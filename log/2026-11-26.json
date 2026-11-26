@@ -1,0 +1,189 @@
+{
+ "schema": 1,
+ "date": "2026-11-26",
+ "generated_at": "2026-11-26T23:44:32+09:00",
+ "decision": {
+  "date": "2026-11-26",
+  "trend": "down",
+  "trend_reason": "MA5=57014.0 < MA20=59966.7",
+  "trend_data_as_of": "2026-11-25",
+  "ma_short": 57014.0,
+  "ma_long": 59966.65,
+  "last_confirmed_close": 57250.0,
+  "last_confirmed_change_pct": -0.002700113230554857,
+  "policy_file": "strategy_policy.json",
+  "policy_hash": "cf106bdc4c56",
+  "entry_allowed": true,
+  "entry_block_reason": null,
+  "intraday_crash_brake": false,
+  "crash_brake_reason": null
+ },
+ "closed_today": [
+  {
+   "track": "daytrade",
+   "ticker": "5101.T",
+   "company": null,
+   "direction": "SHORT",
+   "entry_date": "2026-11-26",
+   "entry_time": "10:25",
+   "entry_price": 7029.0,
+   "exit_date": "2026-11-26",
+   "exit_time": "15:21",
+   "exit_price": 7051.0,
+   "shares": 100.0,
+   "result": "FORCED_EXIT",
+   "pnl": -2200.0
+  },
+  {
+   "track": "macd_top",
+   "ticker": "7751.T",
+   "company": "キヤノン",
+   "direction": "LONG",
+   "entry_date": "2026-11-26",
+   "entry_time": null,
+   "entry_price": 4996.0,
+   "exit_date": "2026-11-26",
+   "exit_time": null,
+   "exit_price": 4977.0,
+   "shares": 200.0,
+   "result": "SL",
+   "pnl": -4897.03
+  }
+ ],
+ "pnl_by_track": {
+  "daytrade": -2200.0,
+  "macd_top": -4897.03
+ },
+ "losses": [
+  {
+   "track": "daytrade",
+   "ticker": "5101.T",
+   "company": null,
+   "direction": "SHORT",
+   "entry_date": "2026-11-26",
+   "entry_time": "10:25",
+   "entry_price": 7029.0,
+   "exit_date": "2026-11-26",
+   "exit_time": "15:21",
+   "exit_price": 7051.0,
+   "shares": 100.0,
+   "result": "FORCED_EXIT",
+   "pnl": -2200.0
+  },
+  {
+   "track": "macd_top",
+   "ticker": "7751.T",
+   "company": "キヤノン",
+   "direction": "LONG",
+   "entry_date": "2026-11-26",
+   "entry_time": null,
+   "entry_price": 4996.0,
+   "exit_date": "2026-11-26",
+   "exit_time": null,
+   "exit_price": 4977.0,
+   "shares": 200.0,
+   "result": "SL",
+   "pnl": -4897.03
+  }
+ ],
+ "positions": [
+  {
+   "ticker": "9532.T",
+   "company": "大阪ガス",
+   "direction": "SHORT",
+   "entry_date": "2026-11-25",
+   "entry_time": "10:25",
+   "entry_price": 5810.0,
+   "shares": 200,
+   "tp": 5270.045352731056,
+   "sl": 5944.988661817236,
+   "current_price": 5754.0,
+   "unrealized_pnl": 9927.96,
+   "track": "top1"
+  },
+  {
+   "ticker": "7951.T",
+   "company": "ヤマハ",
+   "entry_date": "2026-11-24",
+   "entry_price": 1399.0,
+   "shares": 700,
+   "tp": 1448.483012494194,
+   "sl": 1370.7239928604606,
+   "track": "macd_mid",
+   "direction": "LONG"
+  },
+  {
+   "ticker": "4704.T",
+   "company": "トレンドマイクロ",
+   "entry_date": "2026-11-25",
+   "entry_price": 7685.0,
+   "shares": 100,
+   "tp": 8754.172920833858,
+   "sl": 7074.044045237795,
+   "track": "macd_bottom",
+   "direction": "LONG"
+  }
+ ],
+ "capital": {
+  "top1": {
+   "capital": 1364524.9237484098,
+   "peak": 1366150.5246859097,
+   "dd_pct": 0.119
+  },
+  "macd_top": {
+   "capital": 1063821.6250000002,
+   "peak": 1115745.4725000001,
+   "dd_pct": 4.654
+  },
+  "macd_mid": {
+   "capital": 1048384.4950000001,
+   "peak": 1055915.205,
+   "dd_pct": 0.713
+  },
+  "macd_bottom": {
+   "capital": 992497.035,
+   "peak": 1042215.6075,
+   "dd_pct": 4.77
+  }
+ },
+ "history_counts": {
+  "top1": 20,
+  "daytrade": 42,
+  "macd_top": 19,
+  "macd_mid": 7,
+  "macd_bottom": 6
+ },
+ "cadence": {
+  "status": "ok",
+  "commits": 91,
+  "first": "08:13",
+  "last": "15:30",
+  "max_gap_min": 6,
+  "gaps_over_threshold": [],
+  "threshold_min": 12
+ },
+ "previous_outlook_grade": {
+  "status": "no_previous_log"
+ },
+ "review": {
+  "kaiko": "判定: 下げ(MA5=57014.0 < MA20=59966.7、前日確定比-0.27%、補助条件なし)。デイトレ 5101.T 空売り 10:25 7,029 → 15:21 強制決済 7,051 = -2,200円(下げ判定で方向は合致、日中に反発)。MACD上 7751.T キヤノン 買い 4,996 → SL 4,977 = -4,897円。TOP1 は 9532.T 大阪ガス 空売り 5,810 を保有中(終値5,724、含み益)。11/24 に TOP1 が売買できなかったのは保有期限が決済日の判定を使う不具合が原因で、本日 655dd7d で修正済み。",
+  "tenbou": "11/27: 先物 MA5<MA20 のため、急騰補助(前日比+1.5%以上)に届かなければ下げ判定の見込み。TOP1 9532.T は下げ判定なら朝に HOLD_LIMIT 決済(約+17,200円見込み)。上げ判定なら修正前の建玉のため最大3日持ち越し。MACD中 7951.T ヤマハ(11/24建て)は保有3日目で HOLD_LIMIT 予定。MACD下 4704.T は11/28が期限。",
+  "kensho": "5101.T 10:25 足の始値 7,030 に対し記録 7,029(1円のデータ改訂、レンジ内)。7751.T の SL 4,977 は当日5分足レンジ内。約定方式(次の足の始値)どおり。保有期限の不具合は修正・本番反映を確認済み(raw main の sha 一致)。",
+  "price_verified": "verified",
+  "price_unverified_reason": "",
+  "outlook": {
+   "next_trend": "down",
+   "expected_closes": [
+    {
+     "track": "top1",
+     "ticker": "9532.T"
+    },
+    {
+     "track": "macd_mid",
+     "ticker": "7951.T"
+    }
+   ]
+  },
+  "author": "seed (2026-11-26 手動回顧から)"
+ }
+}
