@@ -315,14 +315,20 @@ def discord_send(message):
         return False
 
 
-def _red_text(message, limit=1800):
+def _red_text(message, limit=1750, head_limit=80):
     """売買(判断・約定・決済)の通知をDiscordで赤文字にする(owner要望 2026-11-09)。
     ```ansi コードブロック内でANSIの赤(31)を各行の先頭に付ける。PC/ブラウザ版の
     Discordで赤表示、スマホアプリは色なしのコードブロック表示(文言は同じ)。
-    discord_send()の1950字切り詰めで閉じ```が欠けないよう本文を先にlimitで切る。"""
+    discord_send()の1950字切り詰めで閉じ```が欠けないよう本文を先にlimitで切る。
+
+    ★変更(2026-11-11): 1行目(売買・銘柄の要点)を大見出し(# )でも出す(owner
+    要望「赤文字に加えて大きく」)。Discordは見出しに色を付けられず、赤はコード
+    ブロック内でしか出せないため、大見出し(🔴付き)+赤本文の2段構成にした。"""
     body = str(message).replace("```", "'''")[:limit]
     lines = "\n".join(f"\u001b[31m{line}" for line in body.split("\n"))
-    return f"```ansi\n{lines}\n```"
+    block = f"```ansi\n{lines}\n```"
+    head = body.split("\n", 1)[0].strip()[:head_limit]
+    return f"# \U0001f534 {head}\n{block}" if head else block
 
 
 def default_state():

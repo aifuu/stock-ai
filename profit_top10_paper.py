@@ -219,7 +219,9 @@ def open_positions(s,policy,cands,today):
         invested=shares*price
         if invested>remaining:continue
         remaining-=invested
-        s['positions'].append({**c,'entry_date':today,'entry_time':datetime.now(TZ).strftime('%H:%M'),'entry_price':price,'shares':shares,'invested_amount':invested,'allocation':(invested/capital) if capital else 0,'policy_updated_at':policy.get('updated_at'),'current_price':price,'unrealized_pnl':0.0})
+        # ★追加(2026-11-26 バグ修正・オーナー承認): 建てた時点のpolicyの保有上限を
+        # ポジションに記録する(決済判定はこの値を使う。_position_hold_limit参照)。
+        s['positions'].append({**c,'entry_date':today,'entry_time':datetime.now(TZ).strftime('%H:%M'),'entry_price':price,'shares':shares,'invested_amount':invested,'allocation':(invested/capital) if capital else 0,'policy_updated_at':policy.get('updated_at'),'hold_days':max(1,int(policy.get('hold_days') or 1)),'current_price':price,'unrealized_pnl':0.0})
         s['trades_today']=int(s.get('trades_today',0))+1; s.setdefault('trades_by_ticker_today',{})[c['ticker']]=cnt+1; active.add(c['ticker']); out.append(s['positions'][-1])
     return out
 
@@ -251,13 +253,29 @@ def _official_open(ticker,day):
     except Exception:
         return None
 
+def _position_hold_limit(p,default):
+    # ★追加(2026-11-26 バグ修正・オーナー承認): 保有上限はエントリー時のpolicyの
+    # hold_days(ポジションに記録)で判定する。以前は決済時点(当日)のpolicyを
+    # 使っていたため、11/19に下落日policy(hold_days=1)で建てた7532.Tが、11/24は
+    # 急騰補助で上昇日policy(hold_days=3)に切り替わったことで決済されず、TOP1枠を
+    # 塞いだまま11/25に持ち越された(記録は11/20終値のHOLD_LIMIT)。
+    # all_candidates_paper.evaluate_exitsは既にポジションのhold_daysを使っている。
+    # hold_daysを持たない旧ポジションは従来どおり当日policyの値を使う。
+    try:
+        v=int(p.get('hold_days'))
+        if v>=1:return v
+    except (TypeError,ValueError):
+        pass
+    return default
+
 def mark_and_close(s,now,policy):
     # policy['hold_days']が示す営業日数だけ保有を許す(以前は毎日15:25に全ポジション
     # 強制決済していたが、検証済み戦略は複数営業日保有を前提としているため一致させる)。
     # まずエントリー翌営業日〜前営業日を日足で遡り、当日のイントラデイ監視を挟めずに
     # TP/SLを踏んでいないか確認(セッション未実行日などの取りこぼし対策)。
-    remaining=[]; msgs=[]; hold_limit=max(1,int(policy.get('hold_days') or 1))
+    remaining=[]; msgs=[]; policy_hold_limit=max(1,int(policy.get('hold_days') or 1))
     for p in s['positions']:
+        hold_limit=_position_hold_limit(p,policy_hold_limit)
         ep=float(p['entry_price']); sh=int(p.get('shares',0)); direction=p.get('direction','BUY'); entry_date=pd.Timestamp(p['entry_date'])
         exit_price=reason=exit_dt=None; rollback_hold_limit=False
         prior_days=tse_trading_days_between(entry_date+pd.Timedelta(days=1),pd.Timestamp(now.date())-pd.Timedelta(days=1))
