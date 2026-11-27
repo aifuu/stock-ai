@@ -1,25 +1,10 @@
 {
-  "capital": 1048384.4950000001,
-  "peak": 1055915.205,
+  "capital": 1056052.4525000001,
+  "peak": 1056052.4525000001,
   "max_dd": 2.2604052499999994,
-  "position": {
-    "ticker": "7951.T",
-    "company": "ヤマハ",
-    "entry_date": "2026-11-24",
-    "entry_price": 1399.0,
-    "shares": 700,
-    "invested_amount": 979300.0,
-    "tp": 1448.483012494194,
-    "sl": 1370.7239928604606,
-    "atr": 39.58640999535527,
-    "score": 72.33240815020244,
-    "up_probability": 27.95251083013554,
-    "down_probability": 36.23270884303233,
-    "nikkei_macd_at_entry": -1751.0503415941275,
-    "nikkei_macd_percentile_at_entry": 0.3968253968253968
-  },
+  "position": null,
   "trades_total": 8,
-  "last_exit_date": "2026-11-20",
+  "last_exit_date": "2026-11-27",
   "voided_entries": [
     {
       "ticker": "2914.T",
