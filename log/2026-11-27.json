@@ -1,0 +1,214 @@
+{
+ "schema": 1,
+ "date": "2026-11-27",
+ "generated_at": "2026-11-27T15:51:07+09:00",
+ "decision": {
+  "date": "2026-11-27",
+  "trend": "down",
+  "trend_reason": "MA5=57016.0 < MA20=59623.7",
+  "trend_data_as_of": "2026-11-26",
+  "ma_short": 57016.0,
+  "ma_long": 59623.65,
+  "last_confirmed_close": 57815.0,
+  "last_confirmed_change_pct": 0.008196006626558505,
+  "policy_file": "strategy_policy.json",
+  "policy_hash": "cf106bdc4c56",
+  "entry_allowed": true,
+  "entry_block_reason": null,
+  "intraday_crash_brake": false,
+  "crash_brake_reason": null
+ },
+ "closed_today": [
+  {
+   "track": "top1",
+   "ticker": "9532.T",
+   "company": "大阪ガス",
+   "direction": "SHORT",
+   "entry_date": "2026-11-25",
+   "entry_time": "10:25",
+   "entry_price": 5810.0,
+   "exit_date": "2026-11-26",
+   "exit_time": "15:30",
+   "exit_price": 5724.0,
+   "shares": 200.0,
+   "result": "HOLD_LIMIT",
+   "pnl": 15931.26
+  },
+  {
+   "track": "daytrade",
+   "ticker": "5101.T",
+   "company": null,
+   "direction": "SHORT",
+   "entry_date": "2026-11-27",
+   "entry_time": "10:30",
+   "entry_price": 7087.0,
+   "exit_date": "2026-11-27",
+   "exit_time": "15:21",
+   "exit_price": 7103.0,
+   "shares": 100.0,
+   "result": "FORCED_EXIT",
+   "pnl": -1600.0
+  },
+  {
+   "track": "macd_mid",
+   "ticker": "7951.T",
+   "company": "ヤマハ",
+   "direction": "LONG",
+   "entry_date": "2026-11-24",
+   "entry_time": null,
+   "entry_price": 1399.0,
+   "exit_date": "2026-11-27",
+   "exit_time": null,
+   "exit_price": 1411.5,
+   "shares": 700.0,
+   "result": "HOLD_LIMIT",
+   "pnl": 7667.96
+  }
+ ],
+ "pnl_by_track": {
+  "top1": 15931.26,
+  "daytrade": -1600.0,
+  "macd_mid": 7667.96
+ },
+ "losses": [
+  {
+   "track": "daytrade",
+   "ticker": "5101.T",
+   "company": null,
+   "direction": "SHORT",
+   "entry_date": "2026-11-27",
+   "entry_time": "10:30",
+   "entry_price": 7087.0,
+   "exit_date": "2026-11-27",
+   "exit_time": "15:21",
+   "exit_price": 7103.0,
+   "shares": 100.0,
+   "result": "FORCED_EXIT",
+   "pnl": -1600.0
+  }
+ ],
+ "positions": [
+  {
+   "ticker": "4062.T",
+   "company": "イビデン",
+   "direction": "SHORT",
+   "entry_date": "2026-11-27",
+   "entry_time": "09:20",
+   "entry_price": 4712.0,
+   "shares": 200,
+   "tp": 1915.7231117822653,
+   "sl": 5411.069222054433,
+   "hold_days": 1,
+   "current_price": 5052.0,
+   "unrealized_pnl": -69074.04000000001,
+   "track": "top1"
+  },
+  {
+   "ticker": "4307.T",
+   "company": "野村総合研究所",
+   "entry_date": "2026-11-27",
+   "entry_price": 6689.0,
+   "shares": 100,
+   "tp": 6739.304569901433,
+   "sl": 6660.257798015409,
+   "track": "macd_top",
+   "direction": "LONG"
+  },
+  {
+   "ticker": "4704.T",
+   "company": "トレンドマイクロ",
+   "entry_date": "2026-11-25",
+   "entry_price": 7685.0,
+   "shares": 100,
+   "tp": 8754.172920833858,
+   "sl": 7074.044045237795,
+   "track": "macd_bottom",
+   "direction": "LONG"
+  }
+ ],
+ "capital": {
+  "top1": {
+   "capital": 1380456.1837484099,
+   "peak": 1380456.1837484099,
+   "dd_pct": 0.0
+  },
+  "macd_top": {
+   "capital": 1063821.6250000002,
+   "peak": 1115745.4725000001,
+   "dd_pct": 4.654
+  },
+  "macd_mid": {
+   "capital": 1056052.4525000001,
+   "peak": 1056052.4525000001,
+   "dd_pct": 0.0
+  },
+  "macd_bottom": {
+   "capital": 992497.035,
+   "peak": 1042215.6075,
+   "dd_pct": 4.77
+  }
+ },
+ "history_counts": {
+  "top1": 21,
+  "daytrade": 43,
+  "macd_top": 19,
+  "macd_mid": 8,
+  "macd_bottom": 6
+ },
+ "cadence": {
+  "status": "ok",
+  "commits": 91,
+  "first": "08:12",
+  "last": "15:30",
+  "max_gap_min": 6,
+  "gaps_over_threshold": [],
+  "threshold_min": 12
+ },
+ "previous_outlook_grade": {
+  "status": "graded",
+  "previous_date": "2026-11-26",
+  "trend": {
+   "predicted": "down",
+   "actual": "down",
+   "hit": true
+  },
+  "expected_closes": [
+   {
+    "track": "top1",
+    "ticker": "9532.T",
+    "closed": true,
+    "still_open": false
+   },
+   {
+    "track": "macd_mid",
+    "ticker": "7951.T",
+    "closed": true,
+    "still_open": false
+   }
+  ],
+  "unexpected_closes": [
+   {
+    "track": "daytrade",
+    "ticker": "5101.T"
+   }
+  ],
+  "closes_hit": 2,
+  "closes_expected": 2
+ },
+ "review": {
+  "kaiko": "daytrade track 5101.T(空運) をSHORTでエントリー(10:30, 7087円)。先物MA5=57016<MA20=59623.7で下降トレンド判定(短期MA/長期MAの通常判定、急落補助ではない)、direction_gate=short_only_down_dayに従った正当な方向。しかし当日は前日確定終値比+0.82%とむしろ小幅高で、5101.Tも7087→7103円(+0.23%)とわずかに上昇し、TP(6754.57)・SL(7253.21)いずれにも達せずFORCED_EXIT、-1600円の小幅損失。地合い判定と逆方向への小動きによる通常のノイズ損失で、SL発動や異常ではない。",
+  "tenbou": "翌営業日(2026-11-30)時点の先物MA5=57016.0 < MA20=59623.65が継続しており、急騰補助(+1.5%以上)・急落補助(-1.5%以下)条件には届いていないため、通常のMA判定ロジックにより翌営業日も『down』(ショートのみ許可)判定になる可能性が高い。保有中ポジションはTOP1の4062.T(イビデン)SHORT、建値4712円、TP1915.72/SL5411.07、hold_days=1のため翌営業日の建て替え(決済)が見込まれる。現在unrealized_pnl -69,074円と評価損だが、SL5411円には未達。",
+  "kensho": "daytrade 5101.Tの建値7087円・決済値7103円、エントリー10:30/決済15:21はdecision_next_bar_open_v2方式およびFORCED_EXITルールと整合。価格そのものがレンジ内かはyfinance(Yahoo Finance)がプロキシ経由で403エラーとなり確認不能だった。前日(2026-11-26)outlookのexpected_closes(top1:9532.T, macd_mid:7951.T)はいずれもclosed=trueで一致(hit=true, closes_hit=2/2)。5101.T(daytrade)がunexpected_closesに分類されているが、daytradeは当日中にエントリー・決済が完結する track特性上、前日夜のoutlookには原理的に載せられないため、これは記録上の仕様であり異常ではない。cadence.status=ok、max_gap_min=6分で記録抜けなし。",
+  "price_verified": "unverified",
+  "price_unverified_reason": "yfinance経由のYahoo Finance API呼び出しがプロキシで403(CONNECT tunnel failed)となり、5101.Tおよび先物の実勢レンジを取得できなかったため価格照合未実施。",
+  "outlook": {
+   "next_trend": "down",
+   "expected_closes": [
+    {
+     "track": "top1",
+     "ticker": "4062.T"
+    }
+   ]
+  }
+ }
+}
