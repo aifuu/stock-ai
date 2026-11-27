@@ -40,8 +40,8 @@
       "allocation": 1.0,
       "policy_updated_at": "2026-09-16T06:39:35",
       "hold_days": 1,
-      "current_price": 4960.0,
-      "unrealized_pnl": -50663.92,
+      "current_price": 5025.0,
+      "unrealized_pnl": -63671.07,
       "fill_method": "decision_next_bar_open_top1_v1"
     }
   ],
