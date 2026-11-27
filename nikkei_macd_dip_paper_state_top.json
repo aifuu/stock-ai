@@ -2,7 +2,22 @@
   "capital": 1063821.6250000002,
   "peak": 1115745.4725000001,
   "max_dd": 4.653735890467609,
-  "position": null,
-  "trades_total": 19,
+  "position": {
+    "ticker": "4307.T",
+    "company": "野村総合研究所",
+    "entry_date": "2026-11-27",
+    "entry_price": 6689.0,
+    "shares": 100,
+    "invested_amount": 668900.0,
+    "tp": 6739.304569901433,
+    "sl": 6660.257798015409,
+    "atr": 228.65713591560242,
+    "score": 72.40204461511173,
+    "up_probability": 29.34524012832164,
+    "down_probability": 35.73259422127414,
+    "nikkei_macd_at_entry": -1792.0068006764195,
+    "nikkei_macd_percentile_at_entry": 0.3968253968253968
+  },
+  "trades_total": 20,
   "last_exit_date": "2026-11-26"
 }
